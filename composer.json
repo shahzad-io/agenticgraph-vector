@@ -1,48 +1,54 @@
 {
-    "name": ":vendor_slug/:package_slug",
-    "description": ":package_description",
+    "name": "shahzad/agenticgraph-vector",
+    "description": "Laravel-native vector retrieval for AgenticGraph workflows.",
     "keywords": [
-        ":vendor_name",
+        "shahzad",
+        "agenticgraph",
         "laravel",
-        ":package_slug"
+        "vector",
+        "embeddings",
+        "retrieval"
     ],
-    "homepage": "https://github.com/:vendor_slug/:package_slug",
+    "homepage": "https://github.com/shahzad-io/agenticgraph-vector",
     "license": "MIT",
+    "support": {
+        "issues": "https://github.com/shahzad-io/agenticgraph-vector/issues",
+        "source": "https://github.com/shahzad-io/agenticgraph-vector"
+    },
     "authors": [
         {
-            "name": ":author_name",
-            "email": "author@domain.com",
+            "name": "shahzazd",
+            "email": "shahzadsarwar.work@gmail.com",
             "role": "Developer"
         }
     ],
     "require": {
-        "php": "^8.4",
-        "spatie/laravel-package-tools": "^1.16",
-        "illuminate/contracts": "^11.0||^12.0||^13.0"
+        "php": "^8.2",
+        "illuminate/contracts": "^11.0|^12.0|^13.0",
+        "prism-php/prism": ">=0.99.20 <0.100.0",
+        "spatie/laravel-package-tools": "^1.16"
     },
     "require-dev": {
+        "larastan/larastan": "^3.9.3",
         "laravel/pint": "^1.14",
-        "nunomaduro/collision": "^8.8",
-        "larastan/larastan": "^3.0",
-        "orchestra/testbench": "^11.0.0||^10.0.0||^9.0.0",
+        "nunomaduro/collision": "^8.9.2",
+        "orchestra/testbench": "^9.0|^10.0|^11.0",
         "pestphp/pest": "^4.0",
         "pestphp/pest-plugin-arch": "^4.0",
-        "pestphp/pest-plugin-laravel": "^4.0",
+        "pestphp/pest-plugin-laravel": "^4.1",
         "phpstan/extension-installer": "^1.4",
         "phpstan/phpstan-deprecation-rules": "^2.0",
         "phpstan/phpstan-phpunit": "^2.0",
-        "spatie/laravel-ray": "^1.35"
+        "spatie/laravel-ray": "^1.43.6"
     },
     "autoload": {
         "psr-4": {
-            "VendorName\\Skeleton\\": "src/",
-            "VendorName\\Skeleton\\Database\\Factories\\": "database/factories/"
+            "AgenticGraph\\Vector\\": "src/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "VendorName\\Skeleton\\Tests\\": "tests/",
-            "Workbench\\App\\": "workbench/app/"
+            "AgenticGraph\\Vector\\Tests\\": "tests/"
         }
     },
     "scripts": {
@@ -52,6 +58,9 @@
         "test": "vendor/bin/pest",
         "test-coverage": "vendor/bin/pest --coverage",
         "format": "vendor/bin/pint"
+    },
+    "suggest": {
+        "shahzad/agenticgraph": "Optional — enables automatic tracing of vector operations when used inside AgenticGraph nodes."
     },
     "config": {
         "sort-packages": true,
@@ -63,11 +72,8 @@
     "extra": {
         "laravel": {
             "providers": [
-                "VendorName\\Skeleton\\SkeletonServiceProvider"
-            ],
-            "aliases": {
-                "Skeleton": "VendorName\\Skeleton\\Facades\\Skeleton"
-            }
+                "AgenticGraph\\Vector\\VectorServiceProvider"
+            ]
         }
     },
     "minimum-stability": "dev",

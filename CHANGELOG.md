@@ -1,3 +1,3 @@
 # Changelog
 
-All notable changes to `:package_name` will be documented in this file.
+All notable changes to `shahzad/agenticgraph-vector` will be documented in this file.
