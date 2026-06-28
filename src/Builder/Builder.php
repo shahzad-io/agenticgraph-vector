@@ -11,6 +11,7 @@ use AgenticGraph\Vector\Enums\FilterOperator;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Tracing\TraceSpan;
+use AgenticGraph\Vector\Tracing\VectorTraceContext;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\FilterCondition;
 use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
@@ -147,7 +148,11 @@ final class Builder
     {
         $documentStore = $this->documentStore();
 
-        return TraceSpan::fetch($ids, fn (): SearchResult => $documentStore->fetch($this->collection, $ids));
+        return TraceSpan::fetch(
+            $ids,
+            fn (): SearchResult => $documentStore->fetch($this->collection, $ids),
+            VectorTraceContext::forCollection($this->collection),
+        );
     }
 
     /**
@@ -157,7 +162,11 @@ final class Builder
     {
         $documentStore = $this->documentStore();
 
-        TraceSpan::insert($documents, fn () => $documentStore->insert($this->collection, $documents, $this->onProgress));
+        TraceSpan::insert(
+            $documents,
+            fn () => $documentStore->insert($this->collection, $documents, $this->onProgress),
+            VectorTraceContext::forWrite($this->collection, count($documents)),
+        );
     }
 
     /**
@@ -171,6 +180,7 @@ final class Builder
         TraceSpan::upsert(
             $documents,
             fn () => $documentStore->upsert($this->collection, $documents, $globalMetadata, $this->onProgress),
+            VectorTraceContext::forWrite($this->collection, count($documents)),
         );
     }
 
@@ -203,6 +213,7 @@ final class Builder
             TraceSpan::deleteByFilter(
                 $normalized,
                 fn () => $documentStore->deleteByFilter($this->collection, $normalized),
+                VectorTraceContext::forWrite($this->collection, 0, $normalized),
             );
 
             return;
@@ -212,7 +223,11 @@ final class Builder
             throw new VectorQueryException('Delete requires document id(s) or filter conditions.');
         }
 
-        TraceSpan::delete($ids, fn () => $documentStore->delete($this->collection, $ids));
+        TraceSpan::delete(
+            $ids,
+            fn () => $documentStore->delete($this->collection, $ids),
+            VectorTraceContext::forCollection($this->collection),
+        );
     }
 
     public function deleteByFilter(NormalizedFilter $filter): void
@@ -221,7 +236,11 @@ final class Builder
 
         $this->assertDeleteByFilterSupported();
 
-        TraceSpan::deleteByFilter($filter, fn () => $documentStore->deleteByFilter($this->collection, $filter));
+        TraceSpan::deleteByFilter(
+            $filter,
+            fn () => $documentStore->deleteByFilter($this->collection, $filter),
+            VectorTraceContext::forWrite($this->collection, 0, $filter),
+        );
     }
 
     public function compile(): SearchQuery
@@ -248,7 +267,11 @@ final class Builder
 
         $query = $this->compile();
 
-        return TraceSpan::search($query, fn (): SearchResult => $this->store->search($query));
+        return TraceSpan::search(
+            $query,
+            fn (): SearchResult => $this->store->search($query),
+            VectorTraceContext::forSearch($query),
+        );
     }
 
     public function store(): SearchStoreContract
