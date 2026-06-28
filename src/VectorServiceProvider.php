@@ -15,4 +15,13 @@ class VectorServiceProvider extends PackageServiceProvider
             ->name('vector')
             ->hasConfigFile();
     }
+
+    public function packageRegistered(): void
+    {
+        $this->app->singleton(VectorManager::class, fn ($app): VectorManager => new VectorManager($app));
+        $this->app->singleton(EmbeddingsManager::class, fn ($app): EmbeddingsManager => new EmbeddingsManager($app));
+
+        $this->app->alias(VectorManager::class, 'vector');
+        $this->app->alias(EmbeddingsManager::class, 'vector.embeddings');
+    }
 }

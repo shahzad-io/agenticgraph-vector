@@ -23,5 +23,7 @@ class TestCase extends Orchestra
             'database' => ':memory:',
             'prefix' => '',
         ]);
+
+        $app['config']->set('vector', require __DIR__.'/../config/vector.php');
     }
 }
