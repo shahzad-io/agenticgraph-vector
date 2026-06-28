@@ -1,6 +1,7 @@
 <?php
 
 use AgenticGraph\Vector\Enums\FilterOperator;
+use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
 use AgenticGraph\Vector\Exceptions\VectorInvalidMetadataException;
 use AgenticGraph\Vector\Facades\Vector;
 use AgenticGraph\Vector\Tests\Support\PgvectorTestHelper;
@@ -153,5 +154,5 @@ it('deletes documents by normalized filter', function () {
 
 it('does not expose storage terminology in collection errors', function () {
     expect(fn () => $this->store->fetch('missing-collection', ['one']))
-        ->toThrow(\AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException::class, 'Collection [missing-collection] was not found.');
+        ->toThrow(VectorCollectionNotFoundException::class, 'Collection [missing-collection] was not found.');
 });

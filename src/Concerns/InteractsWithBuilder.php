@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Concerns;
 
 use AgenticGraph\Vector\Builder\Builder;
-use AgenticGraph\Vector\Contracts\SearchStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 
 trait InteractsWithBuilder

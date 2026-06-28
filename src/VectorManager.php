@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector;
 
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
-use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Stores\PgVectorStore;
 use AgenticGraph\Vector\Support\MetadataValidator;
 use Illuminate\Database\DatabaseManager;
