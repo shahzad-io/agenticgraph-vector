@@ -8,6 +8,7 @@ on:
       - 'phpunit.xml.dist'
       - 'composer.json'
       - 'composer.lock'
+      - 'docker-compose.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,6 +18,21 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: agenticgraph_vector_test
+          POSTGRES_USER: agenticgraph
+          POSTGRES_PASSWORD: agenticgraph
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd="pg_isready -U agenticgraph -d agenticgraph_vector_test"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=10
 
     strategy:
       fail-fast: true
@@ -43,8 +59,19 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: dom, curl, libxml, mbstring, zip, pcntl, pdo, sqlite, pdo_sqlite, bcmath, soap, intl, gd, exif, iconv, imagick, fileinfo
+          extensions: dom, curl, libxml, mbstring, zip, pcntl, pdo, pgsql, sqlite, pdo_sqlite, bcmath, soap, intl, gd, exif, iconv, imagick, fileinfo
           coverage: none
+
+      - name: Wait for Postgres
+        run: |
+          for i in `seq 1 30`;
+          do
+            nc -z 127.0.0.1 5433 && echo "Postgres is ready!" && exit 0
+            echo "Waiting for Postgres..."
+            sleep 1
+          done
+          echo "Postgres failed to start"
+          exit 1
 
       - name: Setup problem matchers
         run: |
@@ -60,4 +87,11 @@ jobs:
         run: composer show -D
 
       - name: Execute tests
+        env:
+          VECTOR_PG_HOST: 127.0.0.1
+          VECTOR_PG_PORT: 5433
+          VECTOR_PG_DATABASE: agenticgraph_vector_test
+          VECTOR_PG_USERNAME: agenticgraph
+          VECTOR_PG_PASSWORD: agenticgraph
+          VECTOR_PGVECTOR_INTEGRATION: true
         run: vendor/bin/pest --ci

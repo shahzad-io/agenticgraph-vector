@@ -31,6 +31,9 @@ return [
             'index' => 'hnsw',
             'metric' => 'cosine',
             'batch_size' => 100,
+            'registry_table' => 'vector_collection_registry',
+            'install_extension' => true,
+            'ivfflat_lists' => 100,
         ],
 
     ],

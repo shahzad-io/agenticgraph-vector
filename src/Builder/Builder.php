@@ -4,15 +4,23 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector\Builder;
 
+use AgenticGraph\Vector\Contracts\DocumentStoreContract;
 use AgenticGraph\Vector\Contracts\SearchStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\FilterOperator;
+use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Tracing\TraceSpan;
+use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\FilterCondition;
 use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use AgenticGraph\Vector\ValueObjects\SearchResult;
 
+/**
+ * Fluent, immutable query and document builder. Collection context is owned here
+ * and injected into store calls — callers use ->collection('articles'), never
+ * positional collection arguments on the golden path.
+ */
 final class Builder
 {
     /** @var list<FilterCondition> */
@@ -117,6 +125,54 @@ final class Builder
         return $clone;
     }
 
+    /**
+     * @param  list<string|int>  $ids
+     */
+    public function fetch(array $ids): SearchResult
+    {
+        $documentStore = $this->documentStore();
+
+        return TraceSpan::fetch($ids, fn (): SearchResult => $documentStore->fetch($this->collection, $ids));
+    }
+
+    /**
+     * @param  list<Document>  $documents
+     */
+    public function insert(array $documents): void
+    {
+        $documentStore = $this->documentStore();
+
+        TraceSpan::upsert($documents, fn () => $documentStore->insert($this->collection, $documents));
+    }
+
+    /**
+     * @param  list<Document>  $documents
+     * @param  array<string, mixed>  $globalMetadata
+     */
+    public function upsert(array $documents, array $globalMetadata = []): void
+    {
+        $documentStore = $this->documentStore();
+
+        TraceSpan::upsert($documents, fn () => $documentStore->upsert($this->collection, $documents, $globalMetadata));
+    }
+
+    /**
+     * @param  list<string|int>|string|int  $ids
+     */
+    public function delete(array|string|int $ids): void
+    {
+        $documentStore = $this->documentStore();
+
+        TraceSpan::delete($ids, fn () => $documentStore->delete($this->collection, $ids));
+    }
+
+    public function deleteByFilter(NormalizedFilter $filter): void
+    {
+        $documentStore = $this->documentStore();
+
+        TraceSpan::deleteByFilter($filter, fn () => $documentStore->deleteByFilter($this->collection, $filter));
+    }
+
     public function compile(): SearchQuery
     {
         $vector = $this->vector ?? $this->resolveEmbedding($this->similarToText);
@@ -144,6 +200,15 @@ final class Builder
 
     public function store(): SearchStoreContract
     {
+        return $this->store;
+    }
+
+    private function documentStore(): DocumentStoreContract
+    {
+        if (! $this->store instanceof DocumentStoreContract) {
+            throw new VectorUnsupportedOperationException('This store does not support document operations.');
+        }
+
         return $this->store;
     }
 

@@ -2,15 +2,16 @@
 
 use AgenticGraph\Vector\Contracts\EmbeddingProviderContract;
 use AgenticGraph\Vector\Contracts\SearchStoreContract;
+use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\FilterOperator;
 use AgenticGraph\Vector\Exceptions\VectorException;
 use AgenticGraph\Vector\Exceptions\VectorInvalidMetadataException;
+use AgenticGraph\Vector\Exceptions\VectorNotImplementedException;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Facades\Embeddings;
 use AgenticGraph\Vector\Facades\Vector;
 use AgenticGraph\Vector\Providers\PrismEmbeddingProvider;
-use AgenticGraph\Vector\Stores\PgVectorStore;
 use AgenticGraph\Vector\Support\MetadataValidator;
 use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\ValueObjects\SearchHit;
@@ -43,7 +44,7 @@ it('can publish the vector config', function () {
 });
 
 it('resolves pgvector store and prism embedding provider via facades', function () {
-    expect(Vector::store('pgvector'))->toBeInstanceOf(PgVectorStore::class)
+    expect(Vector::store('pgvector'))->toBeInstanceOf(VectorStoreContract::class)
         ->and(Embeddings::using('prism'))->toBeInstanceOf(PrismEmbeddingProvider::class);
 });
 
@@ -214,6 +215,7 @@ it('defines the vector exception hierarchy', function () {
         \AgenticGraph\Vector\Exceptions\VectorInvalidFilterException::class,
         \AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException::class,
         \AgenticGraph\Vector\Exceptions\VectorNotImplementedException::class,
+        \AgenticGraph\Vector\Exceptions\VectorExtensionMissingException::class,
         VectorInvalidMetadataException::class,
     ];
 
@@ -238,11 +240,11 @@ it('passes through TraceSpan when agenticgraph is absent', function () {
         ->and($result)->toBe('ok');
 });
 
-it('throws a not-yet-implemented exception from stubbed store methods', function () {
-    expect(fn () => Vector::store('pgvector')->search(new SearchQuery('articles', [0.1])))
+it('throws a not-yet-implemented exception from stubbed embedding methods', function () {
+    expect(fn () => Embeddings::using('prism')->embed('hello'))
         ->toThrow(
-            \AgenticGraph\Vector\Exceptions\VectorNotImplementedException::class,
-            'PgVectorStore::search() is not yet implemented.',
+            VectorNotImplementedException::class,
+            'PrismEmbeddingProvider::embed() is not yet implemented.',
         );
 });
 
