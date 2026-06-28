@@ -39,6 +39,9 @@ final class Builder
     /** @var array<string, mixed> */
     private array $options = [];
 
+    /** @var (callable(int, int): void)|null */
+    private $onProgress = null;
+
     public function __construct(
         private readonly SearchStoreContract $store,
         private string $collection,
@@ -127,6 +130,17 @@ final class Builder
     }
 
     /**
+     * @param  callable(int, int): void  $callback
+     */
+    public function onProgress(callable $callback): self
+    {
+        $clone = clone $this;
+        $clone->onProgress = $callback;
+
+        return $clone;
+    }
+
+    /**
      * @param  list<string|int>  $ids
      */
     public function fetch(array $ids): SearchResult
@@ -143,7 +157,7 @@ final class Builder
     {
         $documentStore = $this->documentStore();
 
-        TraceSpan::insert($documents, fn () => $documentStore->insert($this->collection, $documents));
+        TraceSpan::insert($documents, fn () => $documentStore->insert($this->collection, $documents, $this->onProgress));
     }
 
     /**
@@ -154,7 +168,10 @@ final class Builder
     {
         $documentStore = $this->documentStore();
 
-        TraceSpan::upsert($documents, fn () => $documentStore->upsert($this->collection, $documents, $globalMetadata));
+        TraceSpan::upsert(
+            $documents,
+            fn () => $documentStore->upsert($this->collection, $documents, $globalMetadata, $this->onProgress),
+        );
     }
 
     /**
@@ -181,6 +198,8 @@ final class Builder
 
             $normalized = new NormalizedFilter($conditions);
 
+            $this->assertDeleteByFilterSupported();
+
             TraceSpan::deleteByFilter(
                 $normalized,
                 fn () => $documentStore->deleteByFilter($this->collection, $normalized),
@@ -199,6 +218,8 @@ final class Builder
     public function deleteByFilter(NormalizedFilter $filter): void
     {
         $documentStore = $this->documentStore();
+
+        $this->assertDeleteByFilterSupported();
 
         TraceSpan::deleteByFilter($filter, fn () => $documentStore->deleteByFilter($this->collection, $filter));
     }
@@ -249,6 +270,15 @@ final class Builder
         if ($this->vector === null && $this->similarToText === null) {
             throw new VectorQueryException(
                 'A query is required: call similarTo(text) or usingVector(vector) before get().',
+            );
+        }
+    }
+
+    private function assertDeleteByFilterSupported(): void
+    {
+        if (! $this->store->capabilities()->supportsDeleteByFilter()) {
+            throw new VectorUnsupportedOperationException(
+                'Delete by filter is not supported by this store.',
             );
         }
     }

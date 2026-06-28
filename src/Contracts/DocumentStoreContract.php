@@ -22,14 +22,16 @@ interface DocumentStoreContract
 
     /**
      * @param  list<Document>  $documents
+     * @param  (callable(int, int): void)|null  $onProgress
      */
-    public function insert(string $collection, array $documents): void;
+    public function insert(string $collection, array $documents, ?callable $onProgress = null): void;
 
     /**
      * @param  list<Document>  $documents
      * @param  array<string, mixed>  $globalMetadata
+     * @param  (callable(int, int): void)|null  $onProgress
      */
-    public function upsert(string $collection, array $documents, array $globalMetadata = []): void;
+    public function upsert(string $collection, array $documents, array $globalMetadata = [], ?callable $onProgress = null): void;
 
     /**
      * @param  list<string|int>|string|int  $ids

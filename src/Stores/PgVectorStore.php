@@ -151,59 +151,26 @@ final class PgVectorStore implements VectorStoreContract
         });
     }
 
-    public function insert(string $collection, array $documents): void
+    public function insert(string $collection, array $documents, ?callable $onProgress = null): void
     {
-        $this->run(function () use ($collection, $documents): void {
-            $this->preparePgVector();
-
-            if ($documents === []) {
-                return;
-            }
-
-            $resolved = $this->registry->resolve($collection);
-            $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
-            $documents = $this->resolveDocumentsWithEmbeddings($documents);
-
-            foreach ($documents as $document) {
-                $this->insertDocument($storage, $document, $resolved['dimensions'], $collection);
-            }
-        });
+        $this->ingestDocuments(
+            collection: $collection,
+            documents: $documents,
+            globalMetadata: [],
+            upsert: false,
+            onProgress: $onProgress,
+        );
     }
 
-    public function upsert(string $collection, array $documents, array $globalMetadata = []): void
+    public function upsert(string $collection, array $documents, array $globalMetadata = [], ?callable $onProgress = null): void
     {
-        $this->run(function () use ($collection, $documents, $globalMetadata): void {
-            $this->preparePgVector();
-
-            if ($documents === []) {
-                return;
-            }
-
-            $resolved = $this->registry->resolve($collection);
-            $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
-            $documents = $this->resolveDocumentsWithEmbeddings($documents);
-
-            foreach ($documents as $document) {
-                $metadata = array_merge($globalMetadata, $document->metadata);
-                $this->metadataValidator->validate($metadata);
-                $vector = $this->requireVector($document, $resolved['dimensions'], $collection);
-
-                $this->connection()->statement(
-                    "INSERT INTO {$storage} (id, content, embedding, metadata)
-                     VALUES (?, ?, ?::vector, ?::jsonb)
-                     ON CONFLICT (id) DO UPDATE SET
-                        content = EXCLUDED.content,
-                        embedding = EXCLUDED.embedding,
-                        metadata = EXCLUDED.metadata",
-                    [
-                        (string) $document->id,
-                        $document->content,
-                        PgVectorVectorFormatter::format($vector),
-                        json_encode($metadata, JSON_THROW_ON_ERROR),
-                    ],
-                );
-            }
-        });
+        $this->ingestDocuments(
+            collection: $collection,
+            documents: $documents,
+            globalMetadata: $globalMetadata,
+            upsert: true,
+            onProgress: $onProgress,
+        );
     }
 
     public function delete(string $collection, array|string|int $ids): void
@@ -250,6 +217,12 @@ final class PgVectorStore implements VectorStoreContract
 
     public function batchSize(): int
     {
+        $storeOverride = config('vector.stores.pgvector.batch_size');
+
+        if ($storeOverride !== null) {
+            return (int) $storeOverride;
+        }
+
         return (int) ($this->config['batch_size'] ?? config('vector.batch.size', 100));
     }
 
@@ -356,6 +329,168 @@ final class PgVectorStore implements VectorStoreContract
     }
 
     /**
+     * Ingest documents in store-advised chunks. Each chunk is embedded and written in its own
+     * transaction; prior chunks remain persisted if a later chunk fails.
+     *
+     * @param  list<Document>  $documents
+     * @param  array<string, mixed>  $globalMetadata
+     * @param  (callable(int, int): void)|null  $onProgress
+     */
+    private function ingestDocuments(
+        string $collection,
+        array $documents,
+        array $globalMetadata,
+        bool $upsert,
+        ?callable $onProgress,
+    ): void {
+        $this->run(function () use ($collection, $documents, $globalMetadata, $upsert, $onProgress): void {
+            $this->preparePgVector();
+
+            if ($documents === []) {
+                return;
+            }
+
+            $resolved = $this->registry->resolve($collection);
+            $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
+            $total = count($documents);
+            $processed = 0;
+
+            foreach ($this->chunkDocuments($documents) as $chunk) {
+                $this->connection()->transaction(function () use (
+                    $storage,
+                    $chunk,
+                    $resolved,
+                    $collection,
+                    $globalMetadata,
+                    $upsert,
+                ): void {
+                    $embedded = $this->resolveDocumentsWithEmbeddings($chunk);
+
+                    if ($upsert) {
+                        $this->bulkUpsertDocuments(
+                            storage: $storage,
+                            documents: $embedded,
+                            dimensions: $resolved['dimensions'],
+                            collection: $collection,
+                            globalMetadata: $globalMetadata,
+                        );
+
+                        return;
+                    }
+
+                    $this->bulkInsertDocuments(
+                        storage: $storage,
+                        documents: $embedded,
+                        dimensions: $resolved['dimensions'],
+                        collection: $collection,
+                    );
+                });
+
+                $processed += count($chunk);
+
+                if ($onProgress !== null) {
+                    $onProgress($processed, $total);
+                }
+            }
+        });
+    }
+
+    /**
+     * @param  list<Document>  $documents
+     * @return list<list<Document>>
+     */
+    private function chunkDocuments(array $documents): array
+    {
+        $size = max(1, $this->batchSize());
+
+        return array_chunk($documents, $size);
+    }
+
+    /**
+     * @param  list<Document>  $documents
+     */
+    private function bulkInsertDocuments(
+        string $storage,
+        array $documents,
+        int $dimensions,
+        string $collection,
+    ): void {
+        if ($documents === []) {
+            return;
+        }
+
+        $placeholders = [];
+        $bindings = [];
+
+        foreach ($documents as $document) {
+            $this->metadataValidator->validate($document->metadata);
+            $vector = $this->requireVector($document, $dimensions, $collection);
+
+            $placeholders[] = '(?, ?, ?::vector, ?::jsonb)';
+            array_push(
+                $bindings,
+                (string) $document->id,
+                $document->content,
+                PgVectorVectorFormatter::format($vector),
+                json_encode($document->metadata, JSON_THROW_ON_ERROR),
+            );
+        }
+
+        $values = implode(', ', $placeholders);
+
+        $this->connection()->insert(
+            "INSERT INTO {$storage} (id, content, embedding, metadata) VALUES {$values}",
+            $bindings,
+        );
+    }
+
+    /**
+     * @param  list<Document>  $documents
+     * @param  array<string, mixed>  $globalMetadata
+     */
+    private function bulkUpsertDocuments(
+        string $storage,
+        array $documents,
+        int $dimensions,
+        string $collection,
+        array $globalMetadata,
+    ): void {
+        if ($documents === []) {
+            return;
+        }
+
+        $placeholders = [];
+        $bindings = [];
+
+        foreach ($documents as $document) {
+            $metadata = array_merge($globalMetadata, $document->metadata);
+            $this->metadataValidator->validate($metadata);
+            $vector = $this->requireVector($document, $dimensions, $collection);
+
+            $placeholders[] = '(?, ?, ?::vector, ?::jsonb)';
+            array_push(
+                $bindings,
+                (string) $document->id,
+                $document->content,
+                PgVectorVectorFormatter::format($vector),
+                json_encode($metadata, JSON_THROW_ON_ERROR),
+            );
+        }
+
+        $values = implode(', ', $placeholders);
+
+        $this->connection()->statement(
+            "INSERT INTO {$storage} (id, content, embedding, metadata)
+             VALUES {$values}
+             ON CONFLICT (id) DO UPDATE SET
+                content = EXCLUDED.content,
+                embedding = EXCLUDED.embedding,
+                metadata = EXCLUDED.metadata",
+            $bindings,
+        );
+    }
+
+    /**
      * @param  list<Document>  $documents
      * @return list<Document>
      */
@@ -396,22 +531,6 @@ final class PgVectorStore implements VectorStoreContract
                 );
             },
             $documents,
-        );
-    }
-
-    private function insertDocument(string $storage, Document $document, int $dimensions, string $collection): void
-    {
-        $this->metadataValidator->validate($document->metadata);
-        $vector = $this->requireVector($document, $dimensions, $collection);
-
-        $this->connection()->insert(
-            "INSERT INTO {$storage} (id, content, embedding, metadata) VALUES (?, ?, ?::vector, ?::jsonb)",
-            [
-                (string) $document->id,
-                $document->content,
-                PgVectorVectorFormatter::format($vector),
-                json_encode($document->metadata, JSON_THROW_ON_ERROR),
-            ],
         );
     }
 
