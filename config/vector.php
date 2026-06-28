@@ -56,8 +56,15 @@ return [
 
             'prism' => [
                 'driver' => 'prism',
+                'provider' => 'openai',
                 'model' => 'text-embedding-3-small',
                 'dimensions' => 1536,
+                'api_key' => null,
+            ],
+
+            'deterministic' => [
+                'driver' => 'deterministic',
+                'dimensions' => 8,
             ],
 
         ],

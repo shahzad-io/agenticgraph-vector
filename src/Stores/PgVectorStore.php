@@ -11,6 +11,7 @@ use AgenticGraph\Vector\Enums\PgVectorMetric;
 use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
 use AgenticGraph\Vector\Exceptions\VectorConnectionException;
 use AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException;
+use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
 use AgenticGraph\Vector\Exceptions\VectorExtensionMissingException;
 use AgenticGraph\Vector\Exceptions\VectorInvalidMetadataException;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
@@ -161,6 +162,7 @@ final class PgVectorStore implements VectorStoreContract
 
             $resolved = $this->registry->resolve($collection);
             $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
+            $documents = $this->resolveDocumentsWithEmbeddings($documents);
 
             foreach ($documents as $document) {
                 $this->insertDocument($storage, $document, $resolved['dimensions'], $collection);
@@ -179,6 +181,7 @@ final class PgVectorStore implements VectorStoreContract
 
             $resolved = $this->registry->resolve($collection);
             $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
+            $documents = $this->resolveDocumentsWithEmbeddings($documents);
 
             foreach ($documents as $document) {
                 $metadata = array_merge($globalMetadata, $document->metadata);
@@ -352,6 +355,50 @@ final class PgVectorStore implements VectorStoreContract
         );
     }
 
+    /**
+     * @param  list<Document>  $documents
+     * @return list<Document>
+     */
+    private function resolveDocumentsWithEmbeddings(array $documents): array
+    {
+        $needsEmbedding = array_values(array_filter(
+            $documents,
+            static fn (Document $document): bool => $document->vector === null,
+        ));
+
+        if ($needsEmbedding === []) {
+            return $documents;
+        }
+
+        $vectors = $this->embeddings->using()->embedBatch(array_map(
+            static fn (Document $document): string => $document->content,
+            $needsEmbedding,
+        ));
+
+        $vectorById = [];
+        foreach ($needsEmbedding as $index => $document) {
+            $vectorById[(string) $document->id] = $vectors[$index];
+        }
+
+        return array_map(
+            static function (Document $document) use ($vectorById): Document {
+                $vector = $vectorById[(string) $document->id] ?? $document->vector;
+
+                if ($vector === null) {
+                    return $document;
+                }
+
+                return new Document(
+                    id: $document->id,
+                    content: $document->content,
+                    metadata: $document->metadata,
+                    vector: $vector,
+                );
+            },
+            $documents,
+        );
+    }
+
     private function insertDocument(string $storage, Document $document, int $dimensions, string $collection): void
     {
         $this->metadataValidator->validate($document->metadata);
@@ -374,7 +421,7 @@ final class PgVectorStore implements VectorStoreContract
     private function requireVector(Document $document, int $dimensions, string $collection): array
     {
         if ($document->vector === null) {
-            throw new VectorQueryException("Document [{$document->id}] requires a precomputed vector.");
+            throw new VectorQueryException("Document [{$document->id}] could not be embedded.");
         }
 
         $this->assertVectorDimensions($document->vector, $dimensions, $collection);
@@ -432,7 +479,7 @@ final class PgVectorStore implements VectorStoreContract
     {
         try {
             return $callback();
-        } catch (VectorCollectionNotFoundException|VectorDimensionMismatchException|VectorExtensionMissingException|VectorInvalidMetadataException|VectorQueryException $exception) {
+        } catch (VectorCollectionNotFoundException|VectorDimensionMismatchException|VectorEmbeddingException|VectorExtensionMissingException|VectorInvalidMetadataException|VectorQueryException $exception) {
             throw $exception;
         } catch (Throwable $exception) {
             throw new VectorConnectionException(

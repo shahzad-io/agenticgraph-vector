@@ -1,14 +1,22 @@
 <?php
 
+use AgenticGraph\Vector\Builder\Builder;
 use AgenticGraph\Vector\Contracts\EmbeddingProviderContract;
 use AgenticGraph\Vector\Contracts\SearchStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\FilterOperator;
+use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
+use AgenticGraph\Vector\Exceptions\VectorConnectionException;
+use AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException;
+use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
 use AgenticGraph\Vector\Exceptions\VectorException;
+use AgenticGraph\Vector\Exceptions\VectorExtensionMissingException;
+use AgenticGraph\Vector\Exceptions\VectorInvalidFilterException;
 use AgenticGraph\Vector\Exceptions\VectorInvalidMetadataException;
 use AgenticGraph\Vector\Exceptions\VectorNotImplementedException;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
+use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Facades\Embeddings;
 use AgenticGraph\Vector\Facades\Vector;
 use AgenticGraph\Vector\Providers\PrismEmbeddingProvider;
@@ -17,14 +25,16 @@ use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\ValueObjects\SearchHit;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use AgenticGraph\Vector\ValueObjects\SearchResult;
+use AgenticGraph\Vector\ValueObjects\StoreCapabilities;
 use AgenticGraph\Vector\VectorManager;
+use AgenticGraph\Vector\VectorServiceProvider;
 
 it('registers the service provider', function () {
     $providers = collect($this->app->getLoadedProviders())
         ->filter()
         ->keys();
 
-    expect($providers)->toContain(\AgenticGraph\Vector\VectorServiceProvider::class);
+    expect($providers)->toContain(VectorServiceProvider::class);
 });
 
 it('loads the vector config with expected shape', function () {
@@ -38,7 +48,7 @@ it('loads the vector config with expected shape', function () {
 
 it('can publish the vector config', function () {
     $this->artisan('vendor:publish', [
-        '--provider' => \AgenticGraph\Vector\VectorServiceProvider::class,
+        '--provider' => VectorServiceProvider::class,
         '--tag' => 'vector-config',
     ])->assertSuccessful();
 });
@@ -99,7 +109,7 @@ it('compiles builder intent into SearchQuery and delegates to store search', fun
         }
     });
 
-    $builder = new \AgenticGraph\Vector\Builder\Builder($store, 'x', $embeddings);
+    $builder = new Builder($store, 'x', $embeddings);
 
     $builder
         ->where('a', 1)
@@ -149,7 +159,7 @@ it('maps similarTo and usingVector to the same SearchQuery vector field', functi
 
     $store = Mockery::mock(SearchStoreContract::class);
 
-    $builder = new \AgenticGraph\Vector\Builder\Builder($store, 'articles', $embeddings);
+    $builder = new Builder($store, 'articles', $embeddings);
 
     $fromText = $builder->similarTo('hello')->compile();
     $fromVector = $builder->usingVector([0.5, 0.6])->compile();
@@ -162,7 +172,7 @@ it('keeps the builder immutable across chained calls', function () {
     $store = Mockery::mock(SearchStoreContract::class);
     $embeddings = Mockery::mock(EmbeddingsManager::class);
 
-    $original = new \AgenticGraph\Vector\Builder\Builder($store, 'articles', $embeddings);
+    $original = new Builder($store, 'articles', $embeddings);
     $withWhere = $original->where('status', 'published');
     $modified = $withWhere->take(5);
 
@@ -209,13 +219,14 @@ it('validates metadata types', function () {
 it('defines the vector exception hierarchy', function () {
     $exceptions = [
         VectorQueryException::class,
-        \AgenticGraph\Vector\Exceptions\VectorConnectionException::class,
-        \AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException::class,
-        \AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException::class,
-        \AgenticGraph\Vector\Exceptions\VectorInvalidFilterException::class,
-        \AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException::class,
-        \AgenticGraph\Vector\Exceptions\VectorNotImplementedException::class,
-        \AgenticGraph\Vector\Exceptions\VectorExtensionMissingException::class,
+        VectorConnectionException::class,
+        VectorDimensionMismatchException::class,
+        VectorCollectionNotFoundException::class,
+        VectorInvalidFilterException::class,
+        VectorUnsupportedOperationException::class,
+        VectorNotImplementedException::class,
+        VectorExtensionMissingException::class,
+        VectorEmbeddingException::class,
         VectorInvalidMetadataException::class,
     ];
 
@@ -240,12 +251,11 @@ it('passes through TraceSpan when agenticgraph is absent', function () {
         ->and($result)->toBe('ok');
 });
 
-it('throws a not-yet-implemented exception from stubbed embedding methods', function () {
-    expect(fn () => Embeddings::using('prism')->embed('hello'))
-        ->toThrow(
-            VectorNotImplementedException::class,
-            'PrismEmbeddingProvider::embed() is not yet implemented.',
-        );
+it('embeds via the configured deterministic provider by default in tests', function () {
+    $vector = Embeddings::using('deterministic')->embed('hello');
+
+    expect($vector)->toHaveCount(8)
+        ->and(Embeddings::using('deterministic')->dimensions())->toBe(8);
 });
 
 it('allows registering a custom store via the manager extend seam', function () {
@@ -256,9 +266,9 @@ it('allows registering a custom store via the manager extend seam', function () 
             return SearchResult::empty();
         }
 
-        public function capabilities(): \AgenticGraph\Vector\ValueObjects\StoreCapabilities
+        public function capabilities(): StoreCapabilities
         {
-            return new \AgenticGraph\Vector\ValueObjects\StoreCapabilities;
+            return new StoreCapabilities;
         }
     });
 

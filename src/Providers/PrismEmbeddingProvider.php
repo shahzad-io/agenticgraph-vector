@@ -5,11 +5,16 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Providers;
 
 use AgenticGraph\Vector\Contracts\EmbeddingProviderContract;
-use AgenticGraph\Vector\Support\ThrowsWhenNotImplemented;
+use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
+use Prism\Prism\Embeddings\Response as EmbeddingResponse;
+use Prism\Prism\Exceptions\PrismException;
+use Prism\Prism\Facades\Prism;
+use Prism\Prism\ValueObjects\Embedding;
+use Throwable;
 
 final class PrismEmbeddingProvider implements EmbeddingProviderContract
 {
-    use ThrowsWhenNotImplemented;
+    private ?int $resolvedDimensions = null;
 
     /**
      * @param  array<string, mixed>  $config
@@ -20,21 +25,152 @@ final class PrismEmbeddingProvider implements EmbeddingProviderContract
 
     public function embed(string $text): array
     {
-        $this->throwNotImplemented(__METHOD__);
+        $response = $this->requestEmbeddings([$text]);
+
+        return $this->extractVectors($response)[0];
     }
 
     public function embedBatch(array $texts): array
     {
-        $this->throwNotImplemented(__METHOD__);
+        if ($texts === []) {
+            return [];
+        }
+
+        return $this->extractVectors($this->requestEmbeddings($texts));
     }
 
     public function dimensions(): int
     {
-        return (int) ($this->config['dimensions'] ?? 1536);
+        if ($this->resolvedDimensions !== null) {
+            return $this->resolvedDimensions;
+        }
+
+        $configured = (int) ($this->config['dimensions'] ?? 0);
+
+        if ($configured > 0) {
+            return $configured;
+        }
+
+        $this->embed('dimension-probe');
+
+        return $this->resolvedDimensions ?? throw new VectorEmbeddingException(
+            'Unable to determine embedding dimensions from Prism.',
+        );
     }
 
     public function model(): string
     {
-        return (string) ($this->config['model'] ?? 'text-embedding-3-small');
+        [, $model] = $this->parseProviderAndModel();
+
+        return $model;
+    }
+
+    /**
+     * @param  list<string>  $texts
+     */
+    private function requestEmbeddings(array $texts): EmbeddingResponse
+    {
+        [$provider, $model] = $this->parseProviderAndModel();
+
+        try {
+            $request = Prism::embeddings()
+                ->using($provider, $model, $this->providerConfig())
+                ->fromArray($texts);
+
+            return $request->asEmbeddings();
+        } catch (PrismException $exception) {
+            throw new VectorEmbeddingException(
+                'Embedding generation failed: '.$exception->getMessage(),
+                previous: $exception,
+            );
+        } catch (Throwable $exception) {
+            throw new VectorEmbeddingException(
+                'Embedding generation failed: '.$exception->getMessage(),
+                previous: $exception,
+            );
+        }
+    }
+
+    /**
+     * @return list<list<float>>
+     */
+    private function extractVectors(EmbeddingResponse $response): array
+    {
+        if ($response->embeddings === []) {
+            throw new VectorEmbeddingException('Prism returned no embeddings.');
+        }
+
+        $vectors = array_map(
+            static function (Embedding $embedding): array {
+                /** @var list<float> $values */
+                $values = array_map(static fn (int|string|float $value): float => (float) $value, $embedding->embedding);
+
+                return $values;
+            },
+            $response->embeddings,
+        );
+
+        foreach ($vectors as $vector) {
+            $this->rememberDimensions($vector);
+        }
+
+        return $vectors;
+    }
+
+    /**
+     * @param  list<float>  $vector
+     */
+    private function rememberDimensions(array $vector): void
+    {
+        $count = count($vector);
+
+        if ($count === 0) {
+            throw new VectorEmbeddingException('Prism returned an empty embedding vector.');
+        }
+
+        if ($this->resolvedDimensions === null) {
+            $this->resolvedDimensions = $count;
+
+            return;
+        }
+
+        if ($this->resolvedDimensions !== $count) {
+            throw new VectorEmbeddingException('Prism returned inconsistent embedding dimensions.');
+        }
+    }
+
+    /**
+     * @return array{0: string, 1: string}
+     */
+    private function parseProviderAndModel(): array
+    {
+        $provider = $this->config['provider'] ?? null;
+        $model = (string) ($this->config['model'] ?? 'text-embedding-3-small');
+
+        if (is_string($provider) && $provider !== '') {
+            return [$provider, $model];
+        }
+
+        if (str_contains($model, ':')) {
+            [$parsedProvider, $parsedModel] = explode(':', $model, 2);
+
+            return [$parsedProvider, $parsedModel];
+        }
+
+        return ['openai', $model];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function providerConfig(): array
+    {
+        $config = [];
+
+        if (isset($this->config['api_key']) && is_string($this->config['api_key']) && $this->config['api_key'] !== '') {
+            $config['api_key'] = $this->config['api_key'];
+        }
+
+        return $config;
     }
 }
