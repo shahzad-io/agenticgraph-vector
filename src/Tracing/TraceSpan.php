@@ -158,8 +158,11 @@ final class TraceSpan
             return $result;
         }
 
-        return call_user_func(
-            [self::TRACE_FACADE_CLASS, 'span'],
+        // Deliberate string-based resolution — never add a hard Tracer import (breaks standalone).
+        // See tests/Unit/Tracing/TraceSpanSoftBoundaryTest.php.
+        $tracer = app()->make(self::TRACER_CLASS);
+
+        return $tracer->span(
             "vector.{$operation}",
             function () use ($execute, &$attributes, $operation) {
                 $started = hrtime(true);

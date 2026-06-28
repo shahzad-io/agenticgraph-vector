@@ -14,6 +14,7 @@ use AgenticGraph\Vector\ValueObjects\SearchHit;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use AgenticGraph\Vector\ValueObjects\SearchResult;
 use Illuminate\Support\Facades\Event;
+use Shahzad\AgenticGraph\Tracing\Tracer;
 
 test('contract freeze guard: vector span schema v1 attribute keys are frozen', function () {
     expect(VectorSpanSchema::VERSION)->toBe('v1')
@@ -154,6 +155,61 @@ it('passes through TraceSpan when agenticgraph is absent', function () {
 
     expect($executed)->toBeTrue()
         ->and($result)->toBeInstanceOf(SearchResult::class);
+});
+
+it('passes enriched attributes by reference to Tracer::span after callback', function () {
+    app()->singleton(Tracer::class);
+
+    expect(TraceSpan::isAgenticGraphTracingAvailable())->toBeTrue();
+
+    /** @var Tracer $tracer */
+    $tracer = app()->make(Tracer::class);
+
+    $query = new SearchQuery(collection: 'articles', vector: [0.1, 0.2], topK: 2);
+
+    TraceSpan::search(
+        $query,
+        fn (): SearchResult => new SearchResult([
+            new SearchHit('a', 0.91, 'alpha'),
+            new SearchHit('b', 0.72, 'beta'),
+        ], 2),
+        VectorTraceContext::forSearch($query),
+    );
+
+    expect($tracer->exportedAttributes)->not->toBeNull()
+        ->and($tracer->exportedAttributes)->toHaveKeys([
+            'vector.result_count',
+            'vector.latency_ms',
+            'vector.score_min',
+            'vector.score_max',
+        ])
+        ->and($tracer->exportedAttributes['vector.result_count'])->toBe(2)
+        ->and($tracer->exportedAttributes['vector.score_min'])->toBe(0.72)
+        ->and($tracer->exportedAttributes['vector.score_max'])->toBe(0.91);
+});
+
+it('documents that span attributes must be passed by reference to survive export', function () {
+    $attributes = ['vector.operation' => 'search'];
+
+    $spanByValue = function (string $name, callable $callback, array $attrs): array {
+        $result = $callback();
+
+        return [$result, $attrs];
+    };
+
+    [$result, $exported] = $spanByValue(
+        'vector.search',
+        function () use (&$attributes): string {
+            $attributes['vector.result_count'] = 2;
+
+            return 'ok';
+        },
+        $attributes,
+    );
+
+    expect($result)->toBe('ok')
+        ->and($exported)->not->toHaveKey('vector.result_count')
+        ->and($attributes)->toHaveKey('vector.result_count');
 });
 
 it('dispatches one upsert event for a large batched upsert', function () {

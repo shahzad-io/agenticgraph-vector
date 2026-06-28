@@ -50,7 +50,8 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "AgenticGraph\\Vector\\Tests\\": "tests/"
+            "AgenticGraph\\Vector\\Tests\\": "tests/",
+            "Shahzad\\AgenticGraph\\": "tests/Stubs/AgenticGraph/"
         }
     },
     "scripts": {
