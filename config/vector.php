@@ -18,8 +18,8 @@ return [
     | Vector Stores
     |--------------------------------------------------------------------------
     |
-    | Each store adapter is configured here. Connection and index settings
-    | are filled in when the pgvector adapter is implemented.
+    | Each store adapter is configured here. Index, metric, and batch settings
+    | apply to the pgvector adapter.
     |
     */
 
@@ -27,7 +27,17 @@ return [
 
         'pgvector' => [
             'driver' => 'pgvector',
-            'connection' => 'pgsql',
+
+            /*
+            | The database connection (defined in config/database.php) that backs
+            | the vector store. This can be a SEPARATE, dedicated pgvector-enabled
+            | Postgres connection — distinct from your app's primary database.
+            | For example, if your app runs on MySQL, define a separate "pgvector"
+            | connection in config/database.php and point this at it. The vector
+            | store uses ONLY this connection; your primary database is untouched.
+            */
+            'connection' => env('VECTOR_DB_CONNECTION', 'pgsql'),
+
             'index' => 'hnsw',
             'metric' => 'cosine',
             'batch_size' => 100,
@@ -44,7 +54,6 @@ return [
     |--------------------------------------------------------------------------
     |
     | Default embedding provider and provider-specific configuration.
-    | Prism wiring is applied when the embeddings adapter is implemented.
     |
     */
 

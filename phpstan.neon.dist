@@ -6,6 +6,8 @@ parameters:
     paths:
         - src
         - config
+    configDirectories:
+        - config
     scanFiles:
         - stubs/agenticgraph-tracing.stub.php
     tmpDir: build/phpstan
