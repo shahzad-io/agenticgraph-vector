@@ -11,7 +11,7 @@ use AgenticGraph\Vector\ValueObjects\SearchQuery;
 
 beforeEach(function () {
     if (! PgvectorTestHelper::isAvailable()) {
-        $this->markTestSkipped('Pgvector database is not available.');
+        $this->markTestSkipped(PgvectorTestHelper::skipReason());
     }
 
     $this->store = Vector::store('pgvector');
@@ -119,7 +119,7 @@ it('auto-embeds document content on write when no vector is supplied', function 
 
 it('runs a gated real Prism embedding round-trip when configured', function () {
     if (! PrismIntegrationHelper::isAvailable()) {
-        $this->markTestSkipped('Real Prism integration is not configured.');
+        $this->markTestSkipped(PrismIntegrationHelper::skipReason());
     }
 
     app()->forgetInstance(EmbeddingsManager::class);

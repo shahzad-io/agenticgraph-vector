@@ -11,7 +11,7 @@ use Illuminate\Database\Connection;
 
 beforeEach(function () {
     if (! PgvectorTestHelper::isAvailable()) {
-        $this->markTestSkipped('Pgvector database is not available.');
+        $this->markTestSkipped(PgvectorTestHelper::skipReason());
     }
 
     $this->store = Vector::store('pgvector');

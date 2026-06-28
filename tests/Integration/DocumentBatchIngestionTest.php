@@ -14,7 +14,7 @@ use AgenticGraph\Vector\VectorManager;
 
 beforeEach(function () {
     if (! PgvectorTestHelper::isAvailable()) {
-        $this->markTestSkipped('Pgvector database is not available.');
+        $this->markTestSkipped(PgvectorTestHelper::skipReason());
     }
 
     $this->countingProvider = new CountingEmbeddingProvider(new DeterministicEmbeddingProvider(dimensions: 8));

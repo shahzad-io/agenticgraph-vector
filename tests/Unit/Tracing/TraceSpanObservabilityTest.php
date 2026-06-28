@@ -71,7 +71,7 @@ test('contract freeze guard: built search attributes only use frozen keys', func
 
 it('dispatches VectorOperationCompleted on successful search through the builder', function () {
     if (! PgvectorTestHelper::isAvailable()) {
-        $this->markTestSkipped('Pgvector database is not available.');
+        $this->markTestSkipped(PgvectorTestHelper::skipReason());
     }
 
     Event::fake([VectorOperationCompleted::class, VectorOperationFailed::class]);
@@ -214,7 +214,7 @@ it('documents that span attributes must be passed by reference to survive export
 
 it('dispatches one upsert event for a large batched upsert', function () {
     if (! PgvectorTestHelper::isAvailable()) {
-        $this->markTestSkipped('Pgvector database is not available.');
+        $this->markTestSkipped(PgvectorTestHelper::skipReason());
     }
 
     Event::fake([VectorOperationCompleted::class]);

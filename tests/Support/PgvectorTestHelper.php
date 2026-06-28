@@ -54,6 +54,22 @@ final class PgvectorTestHelper
         }
     }
 
+    public static function skipReason(): string
+    {
+        if (self::env('VECTOR_PGVECTOR_INTEGRATION', 'true') === 'false') {
+            return 'Skipping: VECTOR_PGVECTOR_INTEGRATION=false (pgvector integration disabled).';
+        }
+
+        $config = self::connectionConfig();
+
+        return sprintf(
+            'Skipping: pgvector not available at %s:%s/%s.',
+            $config['host'],
+            $config['port'],
+            $config['database'],
+        );
+    }
+
     private static function env(string $key, string $default): string
     {
         $value = getenv($key);
