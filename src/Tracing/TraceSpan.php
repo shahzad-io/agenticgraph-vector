@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector\Tracing;
 
+use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use Closure;
@@ -27,6 +28,7 @@ final class TraceSpan
 
     /**
      * @param  list<string|int>  $ids
+     *
      * @template TReturn
      *
      * @param  Closure(): TReturn  $execute
@@ -38,7 +40,8 @@ final class TraceSpan
     }
 
     /**
-     * @param  list<\AgenticGraph\Vector\ValueObjects\Document>  $documents
+     * @param  list<Document>  $documents
+     *
      * @template TReturn
      *
      * @param  Closure(): TReturn  $execute
@@ -50,7 +53,21 @@ final class TraceSpan
     }
 
     /**
+     * @param  list<Document>  $documents
+     *
+     * @template TReturn
+     *
+     * @param  Closure(): TReturn  $execute
+     * @return TReturn
+     */
+    public static function insert(array $documents, Closure $execute): mixed
+    {
+        return self::run('insert', $execute);
+    }
+
+    /**
      * @param  list<string|int>|string|int  $ids
+     *
      * @template TReturn
      *
      * @param  Closure(): TReturn  $execute

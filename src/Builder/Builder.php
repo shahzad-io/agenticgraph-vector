@@ -8,6 +8,7 @@ use AgenticGraph\Vector\Contracts\DocumentStoreContract;
 use AgenticGraph\Vector\Contracts\SearchStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\FilterOperator;
+use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\ValueObjects\Document;
@@ -142,7 +143,7 @@ final class Builder
     {
         $documentStore = $this->documentStore();
 
-        TraceSpan::upsert($documents, fn () => $documentStore->insert($this->collection, $documents));
+        TraceSpan::insert($documents, fn () => $documentStore->insert($this->collection, $documents));
     }
 
     /**
@@ -157,11 +158,40 @@ final class Builder
     }
 
     /**
-     * @param  list<string|int>|string|int  $ids
+     * @param  list<string|int>|string|int|null  $ids
+     * @param  array<string, mixed>  $filter
      */
-    public function delete(array|string|int $ids): void
+    public function delete(array|string|int|null $ids = null, array $filter = []): void
     {
         $documentStore = $this->documentStore();
+
+        if ($filter !== [] || ($ids === null && $this->filterConditions !== [])) {
+            $conditions = $this->filterConditions;
+
+            if ($filter !== []) {
+                $conditions = [
+                    ...$conditions,
+                    ...NormalizedFilter::fromAssociative($filter)->conditions,
+                ];
+            }
+
+            if ($conditions === []) {
+                throw new VectorQueryException('Delete by filter requires at least one filter condition.');
+            }
+
+            $normalized = new NormalizedFilter($conditions);
+
+            TraceSpan::deleteByFilter(
+                $normalized,
+                fn () => $documentStore->deleteByFilter($this->collection, $normalized),
+            );
+
+            return;
+        }
+
+        if ($ids === null) {
+            throw new VectorQueryException('Delete requires document id(s) or filter conditions.');
+        }
 
         TraceSpan::delete($ids, fn () => $documentStore->delete($this->collection, $ids));
     }
@@ -193,6 +223,8 @@ final class Builder
 
     public function get(): SearchResult
     {
+        $this->assertQueryVectorIsSet();
+
         $query = $this->compile();
 
         return TraceSpan::search($query, fn (): SearchResult => $this->store->search($query));
@@ -210,6 +242,15 @@ final class Builder
         }
 
         return $this->store;
+    }
+
+    private function assertQueryVectorIsSet(): void
+    {
+        if ($this->vector === null && $this->similarToText === null) {
+            throw new VectorQueryException(
+                'A query is required: call similarTo(text) or usingVector(vector) before get().',
+            );
+        }
     }
 
     /**

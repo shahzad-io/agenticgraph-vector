@@ -41,45 +41,99 @@ final class PgVectorFilterTranslator
     private function translateCondition(FilterCondition $condition): array
     {
         $field = $this->assertSafeField($condition->field);
-        $path = "metadata->>'{$field}'";
 
         return match ($condition->operator) {
-            FilterOperator::Equals => [
-                "{$path} = ?",
-                [$this->scalarValue($condition->value)],
-            ],
-            FilterOperator::In => $this->translateIn($path, $condition->value),
+            FilterOperator::Equals => $this->translateEquals($field, $condition->value),
+            FilterOperator::In => $this->translateIn($field, $condition->value),
         };
     }
 
     /**
      * @return array{0: string, 1: list<mixed>}
      */
-    private function translateIn(string $path, mixed $value): array
+    private function translateEquals(string $field, mixed $value): array
+    {
+        if (is_bool($value)) {
+            return [
+                "(metadata->'{$field}')::boolean = ?",
+                [$value],
+            ];
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return [
+                "(metadata->'{$field}')::numeric = ?",
+                [$value],
+            ];
+        }
+
+        if (is_string($value)) {
+            return [
+                "metadata->>'{$field}' = ?",
+                [$value],
+            ];
+        }
+
+        throw new VectorInvalidFilterException('Filter values must be scalar.');
+    }
+
+    /**
+     * @return array{0: string, 1: list<mixed>}
+     */
+    private function translateIn(string $field, mixed $value): array
     {
         if (! is_array($value) || $value === []) {
             throw new VectorInvalidFilterException('The In filter operator requires a non-empty array of values.');
         }
 
-        $placeholders = implode(', ', array_fill(0, count($value), '?'));
+        $first = $value[0];
 
-        return [
-            "{$path} IN ({$placeholders})",
-            array_map(fn (mixed $item): string => $this->scalarValue($item), $value),
-        ];
-    }
+        if (is_bool($first)) {
+            foreach ($value as $item) {
+                if (! is_bool($item)) {
+                    throw new VectorInvalidFilterException('In filter values must share the same scalar type.');
+                }
+            }
 
-    private function scalarValue(mixed $value): string
-    {
-        if (is_bool($value)) {
-            return $value ? 'true' : 'false';
+            $placeholders = implode(', ', array_fill(0, count($value), '?'));
+
+            return [
+                "(metadata->'{$field}')::boolean IN ({$placeholders})",
+                $value,
+            ];
         }
 
-        if (is_scalar($value)) {
-            return (string) $value;
+        if (is_int($first) || is_float($first)) {
+            foreach ($value as $item) {
+                if (! is_int($item) && ! is_float($item)) {
+                    throw new VectorInvalidFilterException('In filter values must share the same scalar type.');
+                }
+            }
+
+            $placeholders = implode(', ', array_fill(0, count($value), '?'));
+
+            return [
+                "(metadata->'{$field}')::numeric IN ({$placeholders})",
+                $value,
+            ];
         }
 
-        throw new VectorInvalidFilterException('Filter values must be scalar.');
+        if (is_string($first)) {
+            foreach ($value as $item) {
+                if (! is_string($item)) {
+                    throw new VectorInvalidFilterException('In filter values must share the same scalar type.');
+                }
+            }
+
+            $placeholders = implode(', ', array_fill(0, count($value), '?'));
+
+            return [
+                "metadata->>'{$field}' IN ({$placeholders})",
+                $value,
+            ];
+        }
+
+        throw new VectorInvalidFilterException('In filter values must be scalar.');
     }
 
     private function assertSafeField(string $field): string

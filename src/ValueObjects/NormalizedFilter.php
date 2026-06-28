@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\ValueObjects;
 
 use AgenticGraph\Vector\Enums\FilterOperator;
+use AgenticGraph\Vector\Exceptions\VectorInvalidFilterException;
 
 final readonly class NormalizedFilter
 {
@@ -36,6 +37,28 @@ final readonly class NormalizedFilter
             },
             $whereConditions,
         );
+
+        return new self($conditions);
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     */
+    public static function fromAssociative(array $filters): self
+    {
+        $conditions = [];
+
+        foreach ($filters as $field => $value) {
+            if ($field === '') {
+                throw new VectorInvalidFilterException('Filter field names must be non-empty strings.');
+            }
+
+            $conditions[] = new FilterCondition(
+                field: $field,
+                operator: FilterOperator::Equals,
+                value: $value,
+            );
+        }
 
         return new self($conditions);
     }
