@@ -42,6 +42,18 @@ enum PgVectorMetric: string
         };
     }
 
+    /**
+     * SQL expression that converts a pgvector distance sub-expression into a similarity score.
+     */
+    public function scoreSqlExpression(string $distanceExpression): string
+    {
+        return match ($this) {
+            self::Cosine => '(1 - ('.$distanceExpression.'))',
+            self::L2 => '(1 / (1 + ('.$distanceExpression.')))',
+            self::InnerProduct => '(-('.$distanceExpression.'))',
+        };
+    }
+
     public function maxDistanceForMinScore(float $minScore): float
     {
         return match ($this) {

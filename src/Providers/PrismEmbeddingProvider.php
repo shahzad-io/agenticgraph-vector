@@ -45,9 +45,9 @@ final class PrismEmbeddingProvider implements EmbeddingProviderContract
             return $this->resolvedDimensions;
         }
 
-        $configured = (int) ($this->config['dimensions'] ?? 0);
+        $configured = $this->configuredDimensions();
 
-        if ($configured > 0) {
+        if ($configured !== null) {
             return $configured;
         }
 
@@ -76,6 +76,12 @@ final class PrismEmbeddingProvider implements EmbeddingProviderContract
             $request = Prism::embeddings()
                 ->using($provider, $model, $this->providerConfig())
                 ->fromArray($texts);
+
+            $providerOptions = $this->embeddingProviderOptions();
+
+            if ($providerOptions !== []) {
+                $request = $request->withProviderOptions($providerOptions);
+            }
 
             return $request->asEmbeddings();
         } catch (PrismException $exception) {
@@ -172,5 +178,26 @@ final class PrismEmbeddingProvider implements EmbeddingProviderContract
         }
 
         return $config;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function embeddingProviderOptions(): array
+    {
+        $dimensions = $this->configuredDimensions();
+
+        if ($dimensions === null) {
+            return [];
+        }
+
+        return ['dimensions' => $dimensions];
+    }
+
+    private function configuredDimensions(): ?int
+    {
+        $configured = (int) ($this->config['dimensions'] ?? 0);
+
+        return $configured > 0 ? $configured : null;
     }
 }

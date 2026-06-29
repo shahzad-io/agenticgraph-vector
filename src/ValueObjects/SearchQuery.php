@@ -10,6 +10,10 @@ namespace AgenticGraph\Vector\ValueObjects;
  * The `$options` array is reserved STRICTLY for store-specific implementation details
  * (tuning knobs only one store understands). First-class cross-store capabilities MUST
  * become explicit typed fields on this object, NOT `$options` keys.
+ *
+ * pgvector supported keys (see PgVectorSearchOptions):
+ * - hnsw.ef_search (int): HNSW recall vs latency
+ * - ivfflat.probes (int): IVFFlat recall vs latency
  */
 final readonly class SearchQuery
 {

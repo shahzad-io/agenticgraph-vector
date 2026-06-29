@@ -18,6 +18,7 @@ use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorCollectionRegistry;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorExtensionGuard;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorFilterTranslator;
+use AgenticGraph\Vector\Stores\PgVector\PgVectorSearchOptions;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorVectorFormatter;
 use AgenticGraph\Vector\Support\MetadataValidator;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
@@ -69,48 +70,49 @@ final class PgVectorStore implements VectorStoreContract
     {
         return $this->run(function () use ($query): SearchResult {
             $this->preparePgVector();
-            $collection = $this->registry->resolve($query->collection);
-            $this->assertVectorDimensions($query->vector, $collection['dimensions'], $query->collection);
 
-            $metric = $collection['metric'];
-            $storage = $this->registry->qualifiedStorageName($collection['storage_identifier']);
-            $operator = $metric->distanceOperator();
-            $vector = PgVectorVectorFormatter::format($query->vector);
-            $filter = $this->filterTranslator->translate($query->filter);
+            return $this->connection()->transaction(function () use ($query): SearchResult {
+                PgVectorSearchOptions::apply($this->connection(), $query->options);
 
-            $distanceExpression = "embedding {$operator} ?::vector";
-            $scoreExpression = match ($metric) {
-                PgVectorMetric::Cosine => "(1 - ({$distanceExpression}))",
-                PgVectorMetric::L2 => "(1 / (1 + ({$distanceExpression})))",
-                PgVectorMetric::InnerProduct => "(-({$distanceExpression}))",
-            };
+                $collection = $this->registry->resolve($query->collection);
+                $this->assertVectorDimensions($query->vector, $collection['dimensions'], $query->collection);
 
-            $sql = "SELECT id, content, metadata, {$scoreExpression} AS score FROM {$storage} WHERE {$filter['sql']}";
-            $bindings = [$vector, ...$filter['bindings']];
+                $metric = $collection['metric'];
+                $storage = $this->registry->qualifiedStorageName($collection['storage_identifier']);
+                $operator = $metric->distanceOperator();
+                $vector = PgVectorVectorFormatter::format($query->vector);
+                $filter = $this->filterTranslator->translate($query->filter);
 
-            if ($query->minScore !== null) {
-                $sql .= " AND {$scoreExpression} >= ?";
+                $distanceExpression = "embedding {$operator} ?::vector";
+                $scoreExpression = $metric->scoreSqlExpression($distanceExpression);
+
+                $sql = "SELECT id, content, metadata, {$scoreExpression} AS score FROM {$storage} WHERE {$filter['sql']}";
+                $bindings = [$vector, ...$filter['bindings']];
+
+                if ($query->minScore !== null) {
+                    $sql .= " AND ({$distanceExpression}) <= ?";
+                    $bindings[] = $vector;
+                    $bindings[] = $metric->maxDistanceForMinScore($query->minScore);
+                }
+
+                $sql .= " ORDER BY {$distanceExpression} LIMIT ?";
                 $bindings[] = $vector;
-                $bindings[] = $query->minScore;
-            }
+                $bindings[] = $query->topK;
 
-            $sql .= " ORDER BY {$distanceExpression} LIMIT ?";
-            $bindings[] = $vector;
-            $bindings[] = $query->topK;
+                $rows = $this->connection()->select($sql, $bindings);
 
-            $rows = $this->connection()->select($sql, $bindings);
+                $hits = array_map(
+                    fn (object $row): SearchHit => new SearchHit(
+                        id: $row->id,
+                        score: (float) $row->score,
+                        content: (string) $row->content,
+                        metadata: $this->decodeMetadata($row->metadata),
+                    ),
+                    $rows,
+                );
 
-            $hits = array_map(
-                fn (object $row): SearchHit => new SearchHit(
-                    id: $row->id,
-                    score: (float) $row->score,
-                    content: (string) $row->content,
-                    metadata: $this->decodeMetadata($row->metadata),
-                ),
-                $rows,
-            );
-
-            return new SearchResult(hits: $hits, count: count($hits));
+                return new SearchResult(hits: $hits, count: count($hits));
+            });
         });
     }
 
@@ -232,7 +234,7 @@ final class PgVectorStore implements VectorStoreContract
             $this->preparePgVector();
 
             $dimensions = $definition->dimensions ?? $this->embeddings->using()->dimensions();
-            $metric = PgVectorMetric::fromString($definition->metric);
+            $metric = PgVectorMetric::fromString($this->resolveCollectionMetric($definition));
 
             if ($dimensions < 1) {
                 throw new VectorQueryException("Collection [{$definition->name}] dimensions must be at least 1.");
@@ -315,10 +317,7 @@ final class PgVectorStore implements VectorStoreContract
         );
 
         if ($indexType === 'ivfflat') {
-            $lists = (int) ($this->config['ivfflat_lists'] ?? 100);
-            $this->connection()->statement(
-                "CREATE INDEX IF NOT EXISTS {$storage}_embedding_idx ON {$storage} USING ivfflat (embedding {$ops}) WITH (lists = {$lists})",
-            );
+            $this->createIvfflatIndex($storage, $metric);
 
             return;
         }
@@ -391,6 +390,13 @@ final class PgVectorStore implements VectorStoreContract
                 if ($onProgress !== null) {
                     $onProgress($processed, $total);
                 }
+            }
+
+            if ($this->indexType() === 'ivfflat') {
+                $this->createIvfflatIndex(
+                    $this->registry->qualifiedStorageName($resolved['storage_identifier']),
+                    $resolved['metric'],
+                );
             }
         });
     }
@@ -579,6 +585,41 @@ final class PgVectorStore implements VectorStoreContract
     {
         $this->extensionGuard->ensureAvailable();
         $this->registry->ensureRegistryTable();
+    }
+
+    private function resolveCollectionMetric(CollectionDefinition $definition): string
+    {
+        if ($definition->metric !== null) {
+            return $definition->metric;
+        }
+
+        return (string) ($this->config['metric'] ?? 'cosine');
+    }
+
+    private function indexType(): string
+    {
+        return (string) ($this->config['index'] ?? 'hnsw');
+    }
+
+    private function createIvfflatIndex(string $storage, PgVectorMetric $metric): void
+    {
+        $rowCount = (int) $this->connection()->scalar("SELECT COUNT(*) FROM {$storage}");
+        $lists = $this->resolveIvfflatLists($rowCount);
+        $ops = $metric->indexOps();
+        $indexName = "{$storage}_embedding_idx";
+
+        $this->connection()->statement("DROP INDEX IF EXISTS {$indexName}");
+        $this->connection()->statement(
+            "CREATE INDEX {$indexName} ON {$storage} USING ivfflat (embedding {$ops}) WITH (lists = {$lists})",
+        );
+    }
+
+    private function resolveIvfflatLists(int $rowCount): int
+    {
+        $configured = (int) ($this->config['ivfflat_lists'] ?? 100);
+        $effectiveRows = max(1, $rowCount);
+
+        return max(1, min($configured, $effectiveRows));
     }
 
     private function connection(): Connection

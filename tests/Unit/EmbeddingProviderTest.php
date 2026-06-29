@@ -49,6 +49,33 @@ it('uses Prism embeddings API with native batch support', function () {
         ->and($provider->dimensions())->toBe(3);
 });
 
+it('forwards configured dimensions to Prism provider options', function () {
+    $dimensions = 1024;
+    $vector = array_fill(0, $dimensions, 0.01);
+
+    $fake = Prism::fake([
+        EmbeddingsResponseFake::make()->withEmbeddings([
+            Embedding::fromArray($vector),
+        ]),
+    ]);
+
+    $provider = new PrismEmbeddingProvider([
+        'provider' => 'openai',
+        'model' => 'text-embedding-3-small',
+        'dimensions' => $dimensions,
+    ]);
+
+    $embedding = $provider->embed('dimension probe');
+
+    expect($embedding)->toHaveCount($dimensions)
+        ->and($provider->dimensions())->toBe($dimensions);
+
+    $fake->assertRequest(function (array $recorded) use ($dimensions): void {
+        expect($recorded)->toHaveCount(1)
+            ->and($recorded[0]->providerOptions('dimensions'))->toBe($dimensions);
+    });
+});
+
 it('wraps Prism failures in VectorEmbeddingException', function () {
     Prism::fake([]);
 
