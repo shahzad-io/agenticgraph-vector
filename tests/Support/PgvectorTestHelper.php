@@ -54,6 +54,55 @@ final class PgvectorTestHelper
         }
     }
 
+    /**
+     * Collection names in the vector registry; [] when pgvector or the registry is not there.
+     *
+     * @return list<string>
+     */
+    public static function collectionNames(): array
+    {
+        try {
+            return self::pdo()->query('SELECT name FROM vector_collection_registry')->fetchAll(PDO::FETCH_COLUMN);
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * Drops every collection not in $keep: its table and its registry row. Used after each test
+     * so a failing test cannot leave collections behind.
+     *
+     * @param  list<string>  $keep
+     */
+    public static function dropCollectionsNotIn(array $keep): void
+    {
+        try {
+            $pdo = self::pdo();
+            $rows = $pdo->query('SELECT name, storage_identifier FROM vector_collection_registry')->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($rows as $row) {
+                if (in_array($row['name'], $keep, true)) {
+                    continue;
+                }
+                $pdo->exec('DROP TABLE IF EXISTS "'.str_replace('"', '""', (string) $row['storage_identifier']).'"');
+                $pdo->prepare('DELETE FROM vector_collection_registry WHERE name = ?')->execute([$row['name']]);
+            }
+        } catch (Throwable) {
+            // Best-effort cleanup: never fail a test from here.
+        }
+    }
+
+    private static function pdo(): PDO
+    {
+        $config = self::connectionConfig();
+
+        return new PDO(
+            sprintf('pgsql:host=%s;port=%s;dbname=%s', $config['host'], $config['port'], $config['database']),
+            (string) $config['username'],
+            (string) $config['password'],
+            [PDO::ATTR_TIMEOUT => 2, PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
+        );
+    }
+
     public static function skipReason(): string
     {
         if (self::env('VECTOR_PGVECTOR_INTEGRATION', 'true') === 'false') {

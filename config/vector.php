@@ -40,9 +40,9 @@ return [
 
             'index' => 'hnsw',
             'metric' => 'cosine',
-            'batch_size' => 100,
+            'batch_size' => (int) env('VECTOR_PGVECTOR_BATCH_SIZE', 100),
             'registry_table' => 'vector_collection_registry',
-            'install_extension' => true,
+            'install_extension' => (bool) env('VECTOR_PGVECTOR_INSTALL_EXTENSION', true),
             'ivfflat_lists' => 100,
         ],
 
@@ -59,16 +59,17 @@ return [
 
     'embeddings' => [
 
-        'default' => 'prism',
+        'default' => env('VECTOR_EMBEDDINGS_PROVIDER', 'prism'),
 
         'providers' => [
 
             'prism' => [
                 'driver' => 'prism',
-                'provider' => 'openai',
-                'model' => 'text-embedding-3-small',
-                'dimensions' => 1536,
-                'api_key' => null,
+                'provider' => env('VECTOR_EMBEDDINGS_PRISM_PROVIDER', 'openai'),
+                'model' => env('VECTOR_EMBEDDINGS_MODEL', 'text-embedding-3-small'),
+                'dimensions' => (int) env('VECTOR_EMBEDDINGS_DIMENSIONS', 1536),
+                // null when unset or empty: Prism then uses its own provider key (e.g. OPENAI_API_KEY).
+                'api_key' => env('VECTOR_EMBEDDINGS_API_KEY') ?: null,
             ],
 
             'deterministic' => [
@@ -106,7 +107,7 @@ return [
 
     'events' => [
 
-        'enabled' => true,
+        'enabled' => (bool) env('VECTOR_EVENTS_ENABLED', true),
 
     ],
 

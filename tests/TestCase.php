@@ -9,6 +9,25 @@ use Prism\Prism\PrismServiceProvider;
 
 class TestCase extends Orchestra
 {
+    /** @var list<string>|null registry names before the test; null when pgvector is not used */
+    private ?array $collectionsBefore = null;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->collectionsBefore = PgvectorTestHelper::isAvailable() ? PgvectorTestHelper::collectionNames() : null;
+    }
+
+    protected function tearDown(): void
+    {
+        if ($this->collectionsBefore !== null) {
+            PgvectorTestHelper::dropCollectionsNotIn($this->collectionsBefore);
+        }
+
+        parent::tearDown();
+    }
+
     protected function getPackageProviders($app): array
     {
         return [
