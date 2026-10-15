@@ -8,7 +8,7 @@ Laravel-native **vector retrieval** — store documents, embed text, run similar
 
 **Repository:** [github.com/shahzad-io/agenticgraph-vector](https://github.com/shahzad-io/agenticgraph-vector)
 
-**Full documentation:** [agenticgraph.dev/docs/vector/overview](https://agenticgraph.dev/docs/vector/overview)
+**Full documentation:** [agenticgraph.dev/docs/vector-overview](https://agenticgraph.dev/docs/vector-overview)
 
 ## Requirements
 
@@ -29,7 +29,7 @@ VECTOR_DB_CONNECTION=pgvector
 OPENAI_API_KEY=your-key
 ```
 
-See the [installation guide](https://agenticgraph.dev/docs/vector/installation) for details.
+See the [installation guide](https://agenticgraph.dev/docs/vector-installation) for details.
 
 ## Quick example
 

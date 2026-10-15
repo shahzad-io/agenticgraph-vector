@@ -31,7 +31,7 @@ return [
             /*
             | The database connection (defined in config/database.php) that backs
             | the vector store. This can be a SEPARATE, dedicated pgvector-enabled
-            | Postgres connection — distinct from your app's primary database.
+            | Postgres connection, distinct from your app's primary database.
             | For example, if your app runs on MySQL, define a separate "pgvector"
             | connection in config/database.php and point this at it. The vector
             | store uses ONLY this connection; your primary database is untouched.
