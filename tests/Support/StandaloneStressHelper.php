@@ -33,8 +33,7 @@ final class StandaloneStressHelper
             throw new \RuntimeException('OPENAI_API_KEY is required for standalone RAG stress tests.');
         }
 
-        config()->set('vector.embeddings.default', 'prism');
-        config()->set('vector.embeddings.providers.prism.api_key', $apiKey);
+        PrismIntegrationHelper::useOpenAi();
 
         $app->forgetInstance(EmbeddingsManager::class);
 

@@ -53,10 +53,7 @@ final class PrismIntegrationHelper
                 return false;
             }
 
-            config([
-                'vector.embeddings.default' => 'prism',
-                'vector.embeddings.providers.prism.api_key' => self::env('OPENAI_API_KEY', ''),
-            ]);
+            self::useOpenAi();
 
             app()->forgetInstance(EmbeddingsManager::class);
 
@@ -68,6 +65,20 @@ final class PrismIntegrationHelper
         }
 
         return self::$probeSucceeded;
+    }
+
+    /**
+     * Real-Prism test config. The package has no vendor default, so the tests pick OpenAI here.
+     */
+    public static function useOpenAi(): void
+    {
+        config([
+            'vector.embeddings.default' => 'prism',
+            'vector.embeddings.providers.prism.provider' => 'openai',
+            'vector.embeddings.providers.prism.model' => 'text-embedding-3-small',
+            'vector.embeddings.providers.prism.dimensions' => 1536,
+            'vector.embeddings.providers.prism.api_key' => self::env('OPENAI_API_KEY', ''),
+        ]);
     }
 
     private static function env(string $key, string $default): string

@@ -123,8 +123,7 @@ it('runs a gated real Prism embedding round-trip when configured', function () {
     }
 
     app()->forgetInstance(EmbeddingsManager::class);
-    config()->set('vector.embeddings.default', 'prism');
-    config()->set('vector.embeddings.providers.prism.api_key', getenv('OPENAI_API_KEY'));
+    PrismIntegrationHelper::useOpenAi();
 
     $collection = 'prism_'.$this->collection;
     $store = Vector::store('pgvector');

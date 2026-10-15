@@ -76,6 +76,39 @@ it('forwards configured dimensions to Prism provider options', function () {
     });
 });
 
+it('asks the provider once for dimensions when none are configured', function () {
+    $fake = Prism::fake([EmbeddingsResponseFake::make()->withEmbeddings([Embedding::fromArray([0.1, 0.2, 0.3, 0.4])])]);
+
+    $provider = new PrismEmbeddingProvider(['provider' => 'openai', 'model' => 'text-embedding-3-small', 'dimensions' => null]);
+
+    expect($provider->dimensions())->toBe(4)
+        ->and($provider->dimensions())->toBe(4);
+    $fake->assertCallCount(1);
+    $fake->assertRequest(fn (array $recorded) => expect($recorded[0]->providerOptions('dimensions'))->toBeNull());
+});
+
+it('throws a clear error when no model is configured', function (array $config, string $message) {
+    $fake = Prism::fake([]);
+
+    expect(fn () => (new PrismEmbeddingProvider($config))->embed('hello'))
+        ->toThrow(VectorEmbeddingException::class, $message);
+    $fake->assertCallCount(0);
+})->with([
+    'nothing set' => [[], 'Set VECTOR_EMBEDDINGS_MODEL'],
+    'provider only' => [['provider' => 'openai'], 'Set VECTOR_EMBEDDINGS_MODEL'],
+    'model without provider' => [['model' => 'text-embedding-3-small'], 'Set VECTOR_EMBEDDINGS_PRISM_PROVIDER'],
+    'empty provider prefix' => [['model' => ':text-embedding-3-small'], 'Set VECTOR_EMBEDDINGS_PRISM_PROVIDER'],
+]);
+
+it('reads provider:model from the model key', function () {
+    $fake = Prism::fake([EmbeddingsResponseFake::make()->withEmbeddings([Embedding::fromArray([0.1])])]);
+
+    (new PrismEmbeddingProvider(['model' => 'mistral:mistral-embed']))->embed('hello');
+
+    $fake->assertRequest(fn (array $recorded) => expect($recorded[0]->provider())->toBe('mistral')
+        ->and($recorded[0]->model())->toBe('mistral-embed'));
+});
+
 it('wraps Prism failures in VectorEmbeddingException', function () {
     Prism::fake([]);
 

@@ -65,9 +65,13 @@ return [
 
             'prism' => [
                 'driver' => 'prism',
-                'provider' => env('VECTOR_EMBEDDINGS_PRISM_PROVIDER', 'openai'),
-                'model' => env('VECTOR_EMBEDDINGS_MODEL', 'text-embedding-3-small'),
-                'dimensions' => (int) env('VECTOR_EMBEDDINGS_DIMENSIONS', 1536),
+                // No vendor default: set both (example: openai, text-embedding-3-small), or provider:model in VECTOR_EMBEDDINGS_MODEL.
+                'provider' => env('VECTOR_EMBEDDINGS_PRISM_PROVIDER'),
+                'model' => env('VECTOR_EMBEDDINGS_MODEL'),
+                // null when unset or empty: the width comes from the provider. createCollection() without
+                // dimensions then costs one extra embed call (a short probe text) per process, unless this
+                // provider already embedded something. Set it to skip that call and send a fixed size.
+                'dimensions' => env('VECTOR_EMBEDDINGS_DIMENSIONS') ? (int) env('VECTOR_EMBEDDINGS_DIMENSIONS') : null,
                 // null when unset or empty: Prism then uses its own provider key (e.g. OPENAI_API_KEY).
                 'api_key' => env('VECTOR_EMBEDDINGS_API_KEY') ?: null,
             ],

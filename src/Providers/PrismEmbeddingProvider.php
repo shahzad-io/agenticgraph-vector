@@ -151,19 +151,29 @@ final class PrismEmbeddingProvider implements EmbeddingProviderContract
     private function parseProviderAndModel(): array
     {
         $provider = $this->config['provider'] ?? null;
-        $model = (string) ($this->config['model'] ?? 'text-embedding-3-small');
+        $model = (string) ($this->config['model'] ?? '');
+
+        if ($model === '') {
+            throw new VectorEmbeddingException(
+                'No embedding model configured. Set VECTOR_EMBEDDINGS_MODEL (vector.embeddings.providers.prism.model), '.
+                'for example text-embedding-3-small, or switch VECTOR_EMBEDDINGS_PROVIDER to deterministic for tests.',
+            );
+        }
 
         if (is_string($provider) && $provider !== '') {
             return [$provider, $model];
         }
 
-        if (str_contains($model, ':')) {
-            [$parsedProvider, $parsedModel] = explode(':', $model, 2);
+        [$parsedProvider, $parsedModel] = array_pad(explode(':', $model, 2), 2, '');
 
-            return [$parsedProvider, $parsedModel];
+        if ($parsedProvider === '' || $parsedModel === '') {
+            throw new VectorEmbeddingException(
+                "Embedding model [{$model}] has no provider. Set VECTOR_EMBEDDINGS_PRISM_PROVIDER ".
+                '(vector.embeddings.providers.prism.provider), for example openai, or use provider:model in VECTOR_EMBEDDINGS_MODEL.',
+            );
         }
 
-        return ['openai', $model];
+        return [$parsedProvider, $parsedModel];
     }
 
     /**

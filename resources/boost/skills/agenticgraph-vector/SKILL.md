@@ -51,7 +51,7 @@ Docs: `/docs/vector-installation`
 | `stores.pgvector.metric` | `cosine` | Or `l2`, `inner_product`. Frozen at create. |
 | `stores.pgvector.batch_size` | `100` | Wins over `batch.size` |
 | `stores.pgvector.registry_table` | `vector_collection_registry` | Name, dimensions, metric per collection |
-| `embeddings.default` | `prism` | Prism, `openai`, `text-embedding-3-small`, 1536 dims. `api_key` null means Prism's `OPENAI_API_KEY`. |
+| `embeddings.default` | `prism` | Prism. No vendor default: set `VECTOR_EMBEDDINGS_PRISM_PROVIDER` and `VECTOR_EMBEDDINGS_MODEL` (example: `openai`, `text-embedding-3-small`), or the first embedding call throws. `dimensions` null (unset) asks the provider: one extra embed call per process when a collection is created without dimensions. Set `VECTOR_EMBEDDINGS_DIMENSIONS` to skip it. `api_key` null means Prism's provider key (e.g. `OPENAI_API_KEY`). |
 | `embeddings.providers.deterministic` | 8 dims | Local hashes for tests. Never tune scores on it. |
 | `events.enabled` | `true` | `VectorOperationCompleted` / `VectorOperationFailed` |
 
@@ -74,7 +74,7 @@ Vector::store('pgvector')->listCollections();
 Vector::store('pgvector')->deleteCollection('articles');
 ```
 
-- Omit `dimensions` to use the embedding provider's width.
+- Omit `dimensions` to use the embedding provider's width. With `VECTOR_EMBEDDINGS_DIMENSIONS` unset, that width costs one extra embed call per process.
 - Dimensions and metric are frozen. Creating the same name with a different definition throws `VectorQueryException`. To change them: new collection, re-upsert, swap callers, drop the old one.
 
 Docs: `/docs/vector-quick-start`, `/docs/vector-reference-facades-and-builder`
