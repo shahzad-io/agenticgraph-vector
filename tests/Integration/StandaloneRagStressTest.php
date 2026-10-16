@@ -24,7 +24,7 @@ use AgenticGraph\Vector\ValueObjects\SearchResult;
 use AgenticGraph\Vector\ValueObjects\StoreCapabilities;
 
 /**
- * Stress Test #1 — standalone RAG E2E with real pgvector + real Prism embeddings.
+ * Stress Test #1: standalone RAG E2E with real pgvector + real Prism embeddings.
  *
  * Requires: VECTOR_PGVECTOR_INTEGRATION, VECTOR_PRISM_INTEGRATION=true, OPENAI_API_KEY.
  */
@@ -78,7 +78,7 @@ describe('Standalone RAG Stress Test #1', function (): void {
 
         $capabilities = $this->store->capabilities();
         expect($capabilities->supports(StoreCapability::DeleteByFilter))->toBeTrue()
-            ->and($capabilities->supports(StoreCapability::Keyword))->toBeFalse()
+            ->and($capabilities->supports(StoreCapability::Keyword))->toBeTrue()
             ->and($capabilities->supports(StoreCapability::Aliases))->toBeTrue();
 
         expect($this->store->batchSize())->toBeGreaterThan(0);

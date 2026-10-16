@@ -445,6 +445,287 @@ trait StoreConformanceTests
         $this->assertSame(1, $this->countingEmbeddings()->embedCallCount);
     }
 
+    // Hybrid search
+
+    public function test_conformance_websearch_keyword_match_reads_words_phrases_exclusions_and_alternatives(): void
+    {
+        $builder = $this->keywordFixture();
+
+        $this->assertSame(['a', 'b', 'c', 'e'], $this->keywordMatches($builder, 'print', 'websearch'));
+        $this->assertSame(['b', 'c'], $this->keywordMatches($builder, 'PRINT Certification', 'websearch'));
+        $this->assertSame(['b'], $this->keywordMatches($builder, '"print certification"', 'websearch'));
+        $this->assertSame(['a', 'e'], $this->keywordMatches($builder, 'print -certification', 'websearch'));
+        $this->assertSame(['d', 'e'], $this->keywordMatches($builder, 'password or invoice', 'websearch'));
+        $this->assertSame(['a', 'd'], $this->keywordMatches($builder, 'password -billing or certificate', 'websearch'));
+        $this->assertSame([], $this->keywordMatches($builder, 'unknownword', 'websearch'));
+    }
+
+    public function test_conformance_any_keyword_match_finds_documents_with_any_query_word_and_ignores_operators(): void
+    {
+        $builder = $this->keywordFixture();
+
+        $this->assertSame(['a', 'b', 'c', 'e'], $this->keywordMatches($builder, 'print', 'any'));
+        $this->assertSame(['a', 'b', 'c', 'e'], $this->keywordMatches($builder, 'PRINT Certification', 'any'));
+        $this->assertSame(['a', 'b', 'c', 'e'], $this->keywordMatches($builder, '"print certification"', 'any'));
+        $this->assertSame(['a', 'b', 'c', 'e'], $this->keywordMatches($builder, 'print -certification', 'any'));
+        $this->assertSame(['d', 'e'], $this->keywordMatches($builder, 'password or invoice', 'any'));
+        $this->assertSame(['a', 'e'], $this->keywordMatches($builder, 'certificate billing', 'any'));
+        $this->assertSame([], $this->keywordMatches($builder, 'unknownword', 'any'));
+    }
+
+    public function test_conformance_a_natural_language_question_gets_keyword_hits_in_any_mode_only(): void
+    {
+        $builder = $this->keywordFixture();
+        $question = 'How do I reset my forgotten password?';
+
+        // No document holds every word: websearch (AND) matches none, any (the default) matches each one with a query word.
+        $this->assertSame([], $this->keywordMatches($builder, $question, 'websearch'));
+        $this->assertSame(['d', 'e'], $this->keywordMatches($builder, $question));
+        $this->assertSame(['d', 'e'], $this->keywordMatches($builder, $question, 'any'));
+
+        // Loose: d holds two query words (reset, password), e one.
+        $scores = [];
+        foreach ($builder->usingVector([1.0, 0.0, 0.0])->keywords($question)->hybrid()->take(10)->get()->hits as $hit) {
+            $scores[(string) $hit->id] = $hit->scores['keyword'] ?? null;
+        }
+        $this->assertGreaterThan($scores['e'] ?? 0.0, $scores['d'] ?? 0.0);
+    }
+
+    public function test_conformance_keyword_match_mode_is_validated_and_defaults_from_config(): void
+    {
+        $builder = $this->keywordFixture();
+
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $builder->usingVector([1.0, 0.0, 0.0])->keywords('print')->hybrid(match: 'all')->get(), 'match must be one of: any, websearch');
+
+        config()->set('vector.hybrid.match', 'websearch');
+
+        $this->assertSame([], $this->keywordMatches($builder, 'How do I reset my forgotten password?'));
+        $this->assertSame(['d', 'e'], $this->keywordMatches($builder, 'How do I reset my forgotten password?', 'any'));
+    }
+
+    public function test_conformance_hybrid_puts_an_exact_phrase_document_in_the_top_results(): void
+    {
+        $builder = $this->keywordFixture();
+
+        $dense = $builder->usingVector([1.0, 0.0, 0.0])->take(3)->get();
+        $hybrid = $builder->usingVector([1.0, 0.0, 0.0])->keywords('"print certification"')->hybrid(match: 'websearch')->take(3)->get();
+
+        $this->assertNotContains('b', $dense->pluck('id'));
+        $this->assertSame('b', $hybrid->hits[0]->id);
+    }
+
+    public function test_conformance_fused_scores_follow_reciprocal_rank_fusion(): void
+    {
+        $builder = $this->keywordFixture();
+
+        $hits = $builder->usingVector([1.0, 0.0, 0.0])->keywords('"print certification"')->hybrid(k: 10, match: 'websearch', keywordWeight: 1.0)->take(3)->get()->hits;
+
+        // Dense order a, d, c, b, ...; b is the only keyword match.
+        $this->assertSame(['b', 'a', 'd'], array_map(static fn ($hit): string => (string) $hit->id, $hits));
+        $this->assertEqualsWithDelta(1 / 11 + 1 / 14, $hits[0]->scores['fused'] ?? null, 1e-9);
+        $this->assertEqualsWithDelta(1 / 11, $hits[1]->scores['fused'] ?? null, 1e-9);
+        $this->assertEqualsWithDelta(1 / 12, $hits[2]->scores['fused'] ?? null, 1e-9);
+        $this->assertNotNull($hits[0]->scores['keyword'] ?? null);
+        $this->assertGreaterThan(0.0, $hits[0]->scores['keyword'] ?? 0.0);
+        $this->assertNull($hits[1]->scores['keyword'] ?? null);
+    }
+
+    public function test_conformance_keyword_weight_zero_returns_exactly_the_dense_results(): void
+    {
+        $builder = $this->keywordFixture();
+        $searches = [
+            'take 3' => fn (Builder $b): Builder => $b->take(3),
+            'take 10' => fn (Builder $b): Builder => $b->take(10),
+            'filter' => fn (Builder $b): Builder => $b->where('group', 'one')->take(10),
+            'min score' => fn (Builder $b): Builder => $b->minScore(0.5)->take(10),
+        ];
+
+        foreach ($searches as $name => $search) {
+            $dense = array_map(static fn ($hit): array => [$hit->id, $hit->score], $search($builder->usingVector([1.0, 0.0, 0.0]))->get()->hits);
+
+            foreach (['any', 'websearch'] as $match) {
+                // "print" matches a, b, c and e: at any weight above 0, b and e would join or move up.
+                $hits = $search($builder->usingVector([1.0, 0.0, 0.0]))->keywords('print')->hybrid(match: $match, keywordWeight: 0.0)->get()->hits;
+
+                $this->assertSame($dense, array_map(static fn ($hit): array => [$hit->id, $hit->score], $hits), "{$name}, {$match}");
+
+                foreach ($hits as $rank => $hit) {
+                    $this->assertEqualsWithDelta(1 / (61 + $rank), $hit->scores['fused'] ?? null, 1e-12, "{$name}, {$match}, rank {$rank}");
+                }
+            }
+        }
+    }
+
+    public function test_conformance_keyword_weight_scales_the_keyword_term_exactly(): void
+    {
+        $builder = $this->keywordFixture();
+        $search = fn (float $weight): array => $builder->usingVector([1.0, 0.0, 0.0])->keywords('"print certification"')->hybrid(k: 10, match: 'websearch', keywordWeight: $weight)->take(4)->get()->hits;
+
+        // Dense order a, d, c, b; b is the only keyword match (keyword rank 1, dense rank 4).
+        foreach ([[0.1, ['a', 'd', 'b', 'c']], [0.5, ['b', 'a', 'd', 'c']], [2.0, ['b', 'a', 'd', 'c']]] as [$weight, $order]) {
+            $hits = $search($weight);
+            $fused = [];
+            foreach ($hits as $hit) {
+                $fused[(string) $hit->id] = $hit->scores['fused'] ?? null;
+            }
+
+            $this->assertSame($order, array_keys($fused), (string) $weight);
+            $this->assertEqualsWithDelta(1 / 14 + $weight / 11, $fused['b'], 1e-12, (string) $weight);
+            $this->assertEqualsWithDelta(1 / 11, $fused['a'], 1e-12, (string) $weight);
+            $this->assertEqualsWithDelta(1 / 12, $fused['d'], 1e-12, (string) $weight);
+            $this->assertEqualsWithDelta(1 / 13, $fused['c'], 1e-12, (string) $weight);
+        }
+
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $builder->usingVector([1.0, 0.0, 0.0])->keywords('print')->hybrid(keywordWeight: -0.1)->get(), 'keywordWeight must be a finite number of at least 0');
+
+        config()->set('vector.hybrid.keyword_weight', 0.5);
+        $this->assertEqualsWithDelta(1 / 14 + 0.5 / 11, $builder->usingVector([1.0, 0.0, 0.0])->keywords('"print certification"')->hybrid(k: 10, match: 'websearch')->take(1)->get()->hits[0]->scores['fused'] ?? null, 1e-12);
+    }
+
+    public function test_conformance_hybrid_score_stays_the_vector_similarity(): void
+    {
+        $builder = $this->keywordFixture();
+        $dense = [];
+
+        foreach ($builder->usingVector([1.0, 0.0, 0.0])->take(10)->get()->hits as $hit) {
+            $dense[(string) $hit->id] = $hit->score;
+        }
+
+        $hybrid = $builder->usingVector([1.0, 0.0, 0.0])->keywords('password')->hybrid()->take(10)->get()->hits;
+
+        $this->assertCount(6, $hybrid);
+
+        foreach ($hybrid as $hit) {
+            $this->assertEqualsWithDelta($dense[(string) $hit->id], $hit->score, 1e-6, (string) $hit->id);
+            $this->assertEqualsWithDelta($hit->score, $hit->scores['vector'] ?? null, 1e-9, (string) $hit->id);
+        }
+
+        $this->assertNull($builder->usingVector([1.0, 0.0, 0.0])->take(1)->get()->hits[0]->scores);
+    }
+
+    public function test_conformance_a_query_without_lexemes_gives_the_dense_ranking(): void
+    {
+        $builder = $this->keywordFixture();
+        $dense = $builder->usingVector([1.0, 0.0, 0.0])->take(6)->get()->pluck('id');
+
+        foreach (['any', 'websearch'] as $match) {
+            foreach (['', '{}', '!!! ??', '""'] as $keywords) {
+                $hits = $builder->usingVector([1.0, 0.0, 0.0])->keywords($keywords)->hybrid(match: $match)->take(6)->get()->hits;
+
+                $this->assertSame($dense, array_map(static fn ($hit): string|int => $hit->id, $hits), "{$match}: {$keywords}");
+                $this->assertSame([null], array_values(array_unique(array_map(static fn ($hit): ?float => $hit->scores['keyword'] ?? null, $hits))), "{$match}: {$keywords}");
+                $this->assertEqualsWithDelta(1 / 61, $hits[0]->scores['fused'] ?? null, 1e-9, "{$match}: {$keywords}");
+            }
+        }
+    }
+
+    public function test_conformance_hybrid_applies_the_filter_to_both_sides(): void
+    {
+        $builder = $this->keywordFixture();
+
+        $ids = $builder->where('group', 'one')->usingVector([1.0, 0.0, 0.0])->keywords('print')->hybrid()->take(10)->get()->pluck('id');
+
+        $this->assertSame(['a', 'c', 'e'], $this->sortedIds(array_map(strval(...), $ids)));
+    }
+
+    public function test_conformance_min_score_applies_to_keyword_only_hits(): void
+    {
+        $builder = $this->keywordFixture();
+
+        // e matches the keywords but has vector similarity 0.
+        $hybrid = $builder->usingVector([1.0, 0.0, 0.0])->keywords('invoice')->hybrid()->minScore(0.5)->take(10)->get();
+
+        $this->assertSame(['a', 'd', 'c', 'b'], $hybrid->pluck('id'));
+        $this->assertContains('e', $builder->usingVector([1.0, 0.0, 0.0])->keywords('invoice')->hybrid()->take(10)->get()->pluck('id'));
+    }
+
+    public function test_conformance_hybrid_needs_keywords_and_a_keyword_collection(): void
+    {
+        $plain = $this->vectorBuilder();
+        $plain->upsert([Document::make('a', 'print', vector: [1.0, 0.0, 0.0])]);
+        $name = $this->lastVectorCollection();
+
+        if (! $this->vectorStore()->capabilities()->supports(StoreCapability::Keyword)) {
+            $this->markTestSkipped('The store does not support keyword search.');
+        }
+
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $plain->usingVector([1.0, 0.0, 0.0])->hybrid()->get(), 'needs keywords(text)');
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $plain->usingVector([1.0, 0.0, 0.0])->keywords('print')->get(), 'needs hybrid()');
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $plain->usingVector([1.0, 0.0, 0.0])->keywords('print')->hybrid()->get(), "Collection [{$name}] has no keyword index");
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $plain->usingVector([1.0, 0.0, 0.0])->keywords('print')->hybrid(candidates: 0)->get(), 'at least 1');
+    }
+
+    public function test_conformance_similar_to_text_is_the_default_keyword_query(): void
+    {
+        $builder = $this->vectorBuilder(dimensions: 8, keyword: true);
+        $builder->upsert([
+            Document::make('z-match', 'print certification', vector: $this->vectorFor('something else')),
+            Document::make('a-other', 'something else', vector: $this->vectorFor('something else')),
+        ]);
+
+        $hits = $builder->similarTo('print certification')->hybrid()->take(2)->get()->hits;
+
+        // Same vector for both, so only the keyword match puts z-match first.
+        $this->assertSame('z-match', $hits[0]->id);
+        $this->assertNotNull($hits[0]->scores['keyword'] ?? null);
+        $this->assertSame(1, $this->countingEmbeddings()->embedCallCount);
+    }
+
+    public function test_conformance_create_collection_rejects_a_different_keyword_setting(): void
+    {
+        $store = $this->vectorStore();
+        $plain = $this->vectorCollection();
+        $keyword = $this->vectorCollection(keyword: true);
+
+        $store->createCollection(new CollectionDefinition($plain, dimensions: 3, metric: 'cosine', keyword: false));
+        $store->createCollection(new CollectionDefinition($keyword, dimensions: 3, metric: 'cosine', keyword: true));
+        $store->createCollection(new CollectionDefinition($keyword, dimensions: 3, metric: 'cosine'));
+
+        foreach ([
+            new CollectionDefinition($plain, dimensions: 3, metric: 'cosine', keyword: true),
+            new CollectionDefinition($keyword, dimensions: 3, metric: 'cosine', keyword: false),
+            new CollectionDefinition($keyword, dimensions: 3, metric: 'cosine', keyword: true, languages: ['es' => 'spanish']),
+            new CollectionDefinition($keyword, dimensions: 3, metric: 'cosine', keyword: true, languageField: 'locale'),
+        ] as $definition) {
+            $this->assertConformanceThrows(VectorQueryException::class, fn () => $store->createCollection($definition), 'vector:migrate');
+        }
+
+        $this->assertNull($store->describeCollection($plain)['keyword'] ?? null);
+        $this->assertSame(
+            ['languages' => ['en' => 'english', 'english' => 'english', 'es' => 'spanish', 'spanish' => 'spanish'], 'language_field' => 'lang'],
+            $store->describeCollection($keyword)['keyword'] ?? null,
+        );
+        $this->assertConformanceThrows(
+            VectorQueryException::class,
+            fn () => $store->createCollection(new CollectionDefinition($this->vectorCollectionName(), dimensions: 3, keyword: true, languages: ["en'" => 'english'])),
+            'Invalid language map entry',
+        );
+    }
+
+    public function test_conformance_migration_adds_keyword_search_and_later_migrations_keep_it(): void
+    {
+        $store = $this->aliasStore();
+        $builder = $this->vectorBuilder(dimensions: 8);
+        $name = $this->lastVectorCollection();
+        $builder->upsert($this->contentDocuments(3));
+
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $builder->similarTo('document 1')->hybrid()->get(), 'no keyword index');
+
+        $added = $this->migrator()->migrate($name, new CollectionDefinition($name, keyword: true));
+
+        $this->assertSame(['copy', true], [$added->mode, $added->definition['keyword'] ?? null]);
+        $this->assertSame('doc-2', $builder->usingVector($this->vectorFor('unrelated'))->keywords('"document 2"')->hybrid(match: 'websearch')->take(1)->get()->hits[0]->id);
+
+        $kept = $this->migrator()->migrate($name, new CollectionDefinition($name, embeddings: 'conformance_b'));
+
+        $this->assertSame(['reembed', 'lang'], [$kept->mode, $kept->definition['language_field'] ?? null]);
+
+        $dropped = $this->migrator()->migrate($name, new CollectionDefinition($name, keyword: false));
+
+        $this->assertArrayNotHasKey('keyword', $dropped->definition);
+        $this->assertNull($store->describeCollection($name)['keyword'] ?? null);
+    }
+
     // Delete
 
     public function test_conformance_deletes_by_ids_and_by_filter(): void
@@ -724,7 +1005,7 @@ trait StoreConformanceTests
 
     public function test_conformance_builder_gates_every_unsupported_capability(): void
     {
-        $builder = $this->vectorBuilder();
+        $builder = $this->vectorBuilder(keyword: $this->vectorStore()->capabilities()->supports(StoreCapability::Keyword));
         $builder->upsert([Document::make('a', 'a', ['tags' => ['x'], 'n' => 1], [1.0, 0.0, 0.0])]);
         $capabilities = $this->vectorStore()->capabilities();
 
@@ -736,6 +1017,7 @@ trait StoreConformanceTests
             StoreCapability::FilterNot->value => fn () => $builder->where('n', '!=', 1)->usingVector([1.0, 0.0, 0.0])->get(),
             StoreCapability::FilterContains->value => fn () => $builder->whereContains('tags', 'x')->usingVector([1.0, 0.0, 0.0])->get(),
             StoreCapability::FilterRange->value => fn () => $builder->where('n', '>', 0)->usingVector([1.0, 0.0, 0.0])->get(),
+            StoreCapability::Keyword->value => fn () => $builder->usingVector([1.0, 0.0, 0.0])->keywords('a')->hybrid()->get(),
             StoreCapability::Aliases->value => fn () => $this->conformanceAliasCall(),
         ];
 
@@ -1107,10 +1389,10 @@ trait StoreConformanceTests
         return $name;
     }
 
-    private function vectorCollection(int $dimensions = 3, string $metric = 'cosine'): string
+    private function vectorCollection(int $dimensions = 3, string $metric = 'cosine', bool $keyword = false): string
     {
         $name = $this->vectorCollectionName();
-        $this->vectorStore()->createCollection(new CollectionDefinition($name, dimensions: $dimensions, metric: $metric));
+        $this->vectorStore()->createCollection(new CollectionDefinition($name, dimensions: $dimensions, metric: $metric, keyword: $keyword ?: null));
 
         return $name;
     }
@@ -1120,12 +1402,49 @@ trait StoreConformanceTests
         return $this->conformanceCollections[array_key_last($this->conformanceCollections)];
     }
 
-    private function vectorBuilder(int $dimensions = 3, string $metric = 'cosine'): Builder
+    private function vectorBuilder(int $dimensions = 3, string $metric = 'cosine', bool $keyword = false): Builder
     {
-        $builder = $this->vectorStore()->collection($this->vectorCollection($dimensions, $metric));
+        $builder = $this->vectorStore()->collection($this->vectorCollection($dimensions, $metric, $keyword));
         $this->countingEmbeddings()->reset();
 
         return $builder;
+    }
+
+    /**
+     * Six documents without a language and with plain words. Dense order for [1, 0, 0]: a, d, c, b, then e, f.
+     */
+    private function keywordFixture(): Builder
+    {
+        if (! $this->vectorStore()->capabilities()->supports(StoreCapability::Keyword)) {
+            $this->markTestSkipped('The store does not support keyword search.');
+        }
+
+        $builder = $this->vectorBuilder(keyword: true);
+        $builder->upsert([
+            Document::make('a', 'print the certificate today', ['group' => 'one'], [1.0, 0.0, 0.0]),
+            Document::make('b', 'print certification button', ['group' => 'two'], [0.6, 0.8, 0.0]),
+            Document::make('c', 'certification print order', ['group' => 'one'], [0.8, 0.6, 0.0]),
+            Document::make('d', 'reset your password', ['group' => 'two'], [0.9, 0.43589, 0.0]),
+            Document::make('e', 'billing invoice and password print', ['group' => 'one'], [0.0, 1.0, 0.0]),
+            Document::make('f', 'nothing relevant here', ['group' => 'two'], [0.0, 0.0, 1.0]),
+        ]);
+
+        return $builder;
+    }
+
+    /**
+     * The ids that matched the keywords, sorted.
+     *
+     * @return list<string>
+     */
+    private function keywordMatches(Builder $builder, string $keywords, ?string $match = null): array
+    {
+        $hits = $builder->usingVector([1.0, 0.0, 0.0])->keywords($keywords)->hybrid(candidates: 100, match: $match)->take(100)->get()->hits;
+
+        return $this->sortedIds(array_values(array_map(
+            static fn ($hit): string => (string) $hit->id,
+            array_filter($hits, static fn ($hit): bool => ($hit->scores['keyword'] ?? null) !== null),
+        )));
     }
 
     /**

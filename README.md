@@ -4,7 +4,7 @@
 [![Total Downloads](https://img.shields.io/packagist/dt/shahzad/agenticgraph-vector.svg?style=flat-square)](https://packagist.org/packages/shahzad/agenticgraph-vector)
 [![License](https://img.shields.io/packagist/l/shahzad/agenticgraph-vector.svg?style=flat-square)](https://packagist.org/packages/shahzad/agenticgraph-vector)
 
-Laravel-native **vector retrieval** — store documents, embed text, run similarity search, and work with structured results. Standalone-first with optional soft integration into [AgenticGraph](https://github.com/shahzad-io/agenticgraph) tracing when retrieval runs inside graph nodes. This is **not** a RAG framework; RAG is a pattern you build on the primitives.
+Laravel-native **vector retrieval**: store documents, embed text, run similarity search, and work with structured results. Standalone-first with optional soft integration into [AgenticGraph](https://github.com/shahzad-io/agenticgraph) tracing when retrieval runs inside graph nodes. This is **not** a RAG framework; RAG is a pattern you build on the primitives.
 
 **Repository:** [github.com/shahzad-io/agenticgraph-vector](https://github.com/shahzad-io/agenticgraph-vector)
 

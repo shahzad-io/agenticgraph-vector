@@ -20,5 +20,6 @@ final class VectorOperationCompleted
         public readonly ?int $resultCount = null,
         public readonly ?int $documentCount = null,
         public readonly ?int $embeddingMs = null,
+        public readonly ?string $searchMode = null,
     ) {}
 }

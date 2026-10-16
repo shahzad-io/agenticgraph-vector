@@ -11,16 +11,17 @@ use AgenticGraph\Vector\ValueObjects\SearchResult;
 use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
 
 /**
- * Frozen vector span attribute contract (v2).
+ * Frozen vector span attribute contract (v3).
  *
  * v2 (pre-release amendment of v1): adds `vector.embedding_ms`, and `vector.store` is the
  * name of the store actually used, not `vector.default`.
+ * v3 (pre-release amendment of v2): adds `vector.search_mode` (`dense` or `hybrid`) on search spans.
  *
  * @see docs/PRD.md Section 6
  */
 final class VectorSpanSchema
 {
-    public const VERSION = 'v2';
+    public const VERSION = 'v3';
 
     /** @var list<string> */
     public const FROZEN_ATTRIBUTE_KEYS = [
@@ -34,6 +35,7 @@ final class VectorSpanSchema
         'vector.score_max',
         'vector.filter_count',
         'vector.embedding_ms',
+        'vector.search_mode',
     ];
 
     /**
@@ -53,6 +55,10 @@ final class VectorSpanSchema
 
         if ($context->filterCount > 0) {
             $attributes['vector.filter_count'] = $context->filterCount;
+        }
+
+        if ($context->searchMode !== null) {
+            $attributes['vector.search_mode'] = $context->searchMode;
         }
 
         self::assertOnlyFrozenKeys($attributes);
@@ -111,7 +117,7 @@ final class VectorSpanSchema
     {
         foreach (array_keys($attributes) as $key) {
             if (! in_array($key, self::FROZEN_ATTRIBUTE_KEYS, true)) {
-                throw new \InvalidArgumentException("Vector span attribute [{$key}] is not part of the frozen v2 schema.");
+                throw new \InvalidArgumentException("Vector span attribute [{$key}] is not part of the frozen v3 schema.");
             }
         }
     }

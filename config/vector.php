@@ -48,6 +48,11 @@ return [
             // Check once per process that the vector extension exists. false skips the check.
             'verify_extension' => (bool) env('VECTOR_PGVECTOR_VERIFY_EXTENSION', true),
             'ivfflat_lists' => 100,
+            // Searches with a filter keep scanning the HNSW index until they have take() hits (pgvector 0.8+):
+            // off, relaxed_order or strict_order. Searches without a filter do not use it.
+            'iterative_scan' => env('VECTOR_PGVECTOR_ITERATIVE_SCAN', 'relaxed_order'),
+            // The most rows one iterative scan visits (pgvector's default).
+            'max_scan_tuples' => (int) env('VECTOR_PGVECTOR_MAX_SCAN_TUPLES', 20000),
         ],
 
         // In-process reference store (exact search, no index). Data lives as long as the
@@ -134,6 +139,31 @@ return [
         'catch_up_threshold' => (int) env('VECTOR_MIGRATION_CATCH_UP_THRESHOLD', 500),
 
         'catch_up_max_passes' => (int) env('VECTOR_MIGRATION_CATCH_UP_MAX_PASSES', 10),
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Hybrid search
+    |--------------------------------------------------------------------------
+    |
+    | The keyword match mode of hybrid() when the call gives none: "any"
+    | (documents with any of the query's words, ranked by how many and how
+    | close; for natural-language questions) or "websearch" (every word,
+    | "quoted phrases", -exclusions, or; for search-box input).
+    |
+    | keyword_weight multiplies the keyword side's fusion term (dense 1; 0
+    | gives the dense results). 0.25 is the B6 benchmark value: it adds
+    | relevant candidates at the same budget, but lowers top-10 quality, so
+    | use hybrid as candidates for a reranker. Dense is the recommended baseline.
+    |
+    */
+
+    'hybrid' => [
+
+        'match' => env('VECTOR_HYBRID_MATCH', 'any'),
+
+        'keyword_weight' => (float) env('VECTOR_HYBRID_KEYWORD_WEIGHT', 0.25),
 
     ],
 

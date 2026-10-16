@@ -149,6 +149,6 @@ final class StandaloneRagCorpus
             'sports' => 'Swimming interval workouts for triathlon preparation',
         };
 
-        return "[{$lang}] {$topic} — reference note {$index} with varied vocabulary to reduce accidental semantic overlap.";
+        return "[{$lang}] {$topic}: reference note {$index} with varied vocabulary to reduce accidental semantic overlap.";
     }
 }

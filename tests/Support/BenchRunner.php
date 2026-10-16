@@ -9,8 +9,11 @@ use AgenticGraph\Vector\Events\VectorEmbeddingCompleted;
 use AgenticGraph\Vector\Events\VectorOperationCompleted;
 use AgenticGraph\Vector\Facades\Embeddings;
 use AgenticGraph\Vector\Facades\Vector;
+use AgenticGraph\Vector\Stores\PgVector\PgVectorSearchOptions;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
+use AgenticGraph\Vector\ValueObjects\SearchHit;
+use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use AgenticGraph\Vector\VectorServiceProvider;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -31,18 +34,35 @@ final class BenchRunner
 
     public const TOP_K = 10;
 
-    public const MODES = ['dense'];
+    public const MODES = ['dense', 'hybrid'];
+
+    /** Same-budget candidate recall: dense top K against hybrid fused top K (30 is the B7 reranker's candidate count). */
+    public const CANDIDATE_KS = [30, 50, 100];
+
+    /**
+     * A keyword weight that puts every keyword candidate above every dense-only one, so a hybrid search's fused
+     * top K is the keyword list (needs weight * (1/(k+K) - 1/(k+K+1)) > 1/(k+1): above 420 for k 60, K 100).
+     */
+    private const KEYWORD_LIST_WEIGHT = 1e6;
 
     public const OPTIONS = [
         'dataset:', 'model:', 'dimensions:', 'mode:', 'concurrency:', 'warmup:', 'queries:', 'docs:',
         'truncate:', 'out:', 'compare::', 'tolerance:', 'price-per-1m-tokens:', 'report:', 'help',
-        'collection:', 'child:', 'slice:', 'results:',
+        'collection:', 'child:', 'slice:', 'results:', 'filtered', 'iterative-scan:', 'match:', 'keyword-weight:', 'keep',
     ];
 
     public const USAGE = <<<'TXT'
     Usage: bin/vector-bench --dataset=<scifact|wixqa-expert|wixqa-simulated> --model=<provider:model|deterministic> [options]
       --dimensions=N             embedding dimensions (sent to the provider)
-      --mode=dense               retrieval mode (dense only until B6)
+      --mode=dense,hybrid        retrieval modes, comma separated (hybrid: vector and keyword search, RRF)
+      --filtered                 filtered query set: each query searches only the documents whose derived
+                                 field (WixQA product, SciFact bucket) equals its relevant documents' value
+      --iterative-scan=off,relaxed_order  run every mode once per HNSW iterative scan setting
+                                 (report keys mode@setting; default: the store config, key mode)
+      --match=any,websearch      hybrid keyword match modes to sweep (default: vector.hybrid.match)
+      --keyword-weight=0,0.5,1   hybrid keyword weights to sweep (default: vector.hybrid.keyword_weight);
+                                 with --match or --keyword-weight, hybrid keys are hybrid:<match>:<weight>
+      --keep                     keep the ingested collection (and its ingest numbers) for later --collection runs
       --concurrency=1,4,8        client processes per throughput run
       --warmup=20                untimed queries before the timed runs
       --queries=N --docs=N       fixed smaller run (default: the whole dataset)
@@ -115,15 +135,12 @@ final class BenchRunner
      */
     public static function child(string $jobFile, string $slice, string $resultsFile): void
     {
-        /** @var array{collection: string, top_k: int, queries: list<array{id: string, vector: list<float>}>} $job */
+        /** @var array{collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, queries: list<array{id: string, text: string, vector: list<float>, filter: string|int|null}>} $job */
         $job = self::readJson($jobFile);
         [$index, $of] = array_map('intval', explode('/', $slice));
         self::boot('deterministic', []);
-        $ids = static fn (array $vector): array => Vector::store('pgvector')->collection($job['collection'])
-            ->usingVector($vector)->take($job['top_k'])->get()->pluck('id');
-        $search = static fn (array $vector): array => array_map('strval', $ids($vector));
         $mine = array_values(array_filter($job['queries'], static fn (int $i): bool => $i % $of === $index, ARRAY_FILTER_USE_KEY));
-        $search($job['queries'][0]['vector']);
+        self::searchIds($job, $job['queries'][0]);
 
         fwrite(STDOUT, "ready\n");
         fgets(STDIN);
@@ -132,12 +149,188 @@ final class BenchRunner
 
         foreach ($mine as $query) {
             $started = hrtime(true);
-            $ids = $search($query['vector']);
+            $ids = self::searchIds($job, $query);
             $elapsed = (hrtime(true) - $started) / 1_000_000;
             fwrite($out, json_encode(['id' => $query['id'], 'ms' => round($elapsed, 3), 'at' => microtime(true), 'ids' => $ids], JSON_THROW_ON_ERROR)."\n");
         }
 
         fclose($out);
+    }
+
+    /**
+     * One query of a job: dense, or hybrid (the job's match mode and keyword weight; default any and 1) with the query
+     * text as keywords; filtered by the derived field when set.
+     *
+     * @param  array{collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, match?: string, keyword_weight?: float}  $job
+     * @param  array{text: string, vector: list<float>, filter: string|int|null}  $query
+     * @return list<string>
+     */
+    public static function searchIds(array $job, array $query): array
+    {
+        return array_map(static fn (SearchHit $hit): string => (string) $hit->id, self::searchHits($job, $query));
+    }
+
+    /**
+     * The keyword candidate list of a hybrid job at its top_k: the hits that matched the keywords, in keyword order.
+     *
+     * @param  array{collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, match?: string, keyword_weight?: float}  $job
+     * @param  array{text: string, vector: list<float>, filter: string|int|null}  $query
+     * @return list<string>
+     */
+    public static function keywordIds(array $job, array $query): array
+    {
+        $hits = self::searchHits(['mode' => 'hybrid', 'keyword_weight' => self::KEYWORD_LIST_WEIGHT] + $job, $query);
+
+        return array_values(array_map(static fn (SearchHit $hit): string => (string) $hit->id, array_filter($hits, static fn (SearchHit $hit): bool => ($hit->scores['keyword'] ?? null) !== null)));
+    }
+
+    /**
+     * @param  array{collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, match?: string, keyword_weight?: float}  $job
+     * @param  array{text: string, vector: list<float>, filter: string|int|null}  $query
+     * @return list<SearchHit>
+     */
+    private static function searchHits(array $job, array $query): array
+    {
+        $builder = Vector::store('pgvector')->collection($job['collection'])->usingVector($query['vector'])->options($job['options'])->take($job['top_k']);
+        $builder = $job['field'] !== null ? $builder->where($job['field'], $query['filter']) : $builder;
+        $builder = $job['mode'] === 'hybrid' ? $builder->keywords($query['text'])->hybrid(match: $job['match'] ?? 'any', keywordWeight: $job['keyword_weight'] ?? 1.0) : $builder;
+
+        return $builder->get()->hits;
+    }
+
+    /**
+     * Metadata of a benchmark document: `lang: en` (the datasets are English, so keyword search stems and drops
+     * stop words as it would for a real app's documents), plus the derived filter field when it has a value.
+     *
+     * @return array<string, string|int>
+     */
+    public static function documentMetadata(?string $field, string|int|null $value): array
+    {
+        return ['lang' => 'en', ...($field !== null && $value !== null ? [$field => $value] : [])];
+    }
+
+    /**
+     * The modes of a run, keyed by report key: dense, and hybrid once per match mode and keyword weight (null takes
+     * the package default). Sweep keys are hybrid:<match>:<weight>; a run without a sweep keeps the key hybrid.
+     *
+     * @param  list<string>  $modes
+     * @param  list<string|null>  $matches
+     * @param  list<string|null>  $weights
+     * @return array<string, array{mode: string, match: string|null, keyword_weight: float|null}>
+     */
+    public static function variants(array $modes, array $matches, array $weights, bool $sweep): array
+    {
+        $variants = [];
+
+        foreach ($modes as $mode) {
+            if ($mode !== 'hybrid') {
+                $variants[$mode] = ['mode' => $mode, 'match' => null, 'keyword_weight' => null];
+
+                continue;
+            }
+
+            foreach ($matches as $match) {
+                foreach ($weights as $weight) {
+                    $match ??= (string) config('vector.hybrid.match', SearchQuery::KEYWORD_MATCH_ANY);
+                    $weight = $weight === null ? (float) config('vector.hybrid.keyword_weight', 1.0) : (float) $weight;
+                    $variants[$sweep ? "hybrid:{$match}:{$weight}" : 'hybrid'] = ['mode' => 'hybrid', 'match' => $match, 'keyword_weight' => $weight];
+                }
+            }
+        }
+
+        return $variants;
+    }
+
+    /**
+     * The raw union of the dense top K and the keyword top K, per match mode: recall and document count. Not a
+     * same-budget comparison (the union holds up to 2K documents).
+     *
+     * @param  array<string, array{mode: string, match: string|null, keyword_weight: float|null}>  $variants
+     * @param  list<array{id: string, text: string, vector: list<float>, filter: string|int|null}>  $queries
+     * @param  array<string, list<string>>  $qrels
+     * @param  array<string, array<int, array<string, list<string>>>>  $candidateRanked  key => K => query id => ids
+     * @return array<string, array<string, array{recall: float, documents_mean: float, documents_max: int}>>|null
+     */
+    private function rawUnion(array $variants, ?string $scan, string $collection, ?string $field, array $queries, array $qrels, array $candidateRanked): ?array
+    {
+        $dense = $candidateRanked[$scan === null ? 'dense' : "dense@{$scan}"] ?? null;
+        $matches = array_values(array_unique(array_filter(array_column($variants, 'match'))));
+
+        if ($dense === null || $matches === []) {
+            return null;
+        }
+
+        $union = [];
+
+        foreach ($matches as $match) {
+            self::say("raw union, match {$match}");
+
+            foreach (self::CANDIDATE_KS as $k) {
+                $ranked = [];
+                $sizes = [];
+
+                foreach ($queries as $query) {
+                    $job = ['collection' => $collection, 'top_k' => $k, 'mode' => 'hybrid', 'field' => $field, 'match' => $match,
+                        'options' => ($scan === null ? [] : [PgVectorSearchOptions::HNSW_ITERATIVE_SCAN => $scan]) + [PgVectorSearchOptions::HNSW_EF_SEARCH => max(40, $k)]];
+                    $ranked[$query['id']] = array_values(array_unique([...$dense[$k][$query['id']], ...self::keywordIds($job, $query)]));
+                    $sizes[] = count($ranked[$query['id']]);
+                }
+
+                $union[$match]["k_{$k}"] = [
+                    'recall' => RetrievalMetrics::recallAtK($qrels, $ranked, 2 * $k),
+                    'documents_mean' => round(array_sum($sizes) / max(count($sizes), 1), 1),
+                    'documents_max' => $sizes === [] ? 0 : max($sizes),
+                ];
+            }
+        }
+
+        return $union;
+    }
+
+    /**
+     * The derived field of a filtered run: WixQA articles by product, SciFact documents by a hash bucket.
+     */
+    public static function filterField(string $dataset): string
+    {
+        return str_starts_with($dataset, 'wixqa') ? 'product' : 'bucket';
+    }
+
+    /**
+     * WixQA product: the title (first line) before its first `:`, null without one. SciFact bucket: crc32 of the id modulo 20.
+     *
+     * @param  array{id: string, text: string}  $document
+     */
+    public static function filterValue(string $field, array $document): string|int|null
+    {
+        if ($field === 'bucket') {
+            return crc32($document['id']) % 20;
+        }
+
+        $title = strtok($document['text'], "\n") ?: '';
+
+        return str_contains($title, ':') ? trim(strstr($title, ':', true)) : null;
+    }
+
+    /**
+     * The filter value of each query whose relevant documents all share one non-null value; other queries are left out.
+     *
+     * @param  array<string, list<string>>  $qrels
+     * @param  array<string, string|int|null>  $values  document id => value
+     * @return array<string, string|int>
+     */
+    public static function queryFilters(array $qrels, array $values): array
+    {
+        $filters = [];
+
+        foreach ($qrels as $queryId => $relevant) {
+            $shared = array_values(array_unique(array_map(static fn (string $id): string|int|null => $values[$id] ?? null, $relevant), SORT_REGULAR));
+
+            if (count($shared) === 1 && $shared[0] !== null) {
+                $filters[(string) $queryId] = $shared[0];
+            }
+        }
+
+        return $filters;
     }
 
     /**
@@ -148,7 +341,12 @@ final class BenchRunner
         $runStarted = hrtime(true);
         $model = (string) $options['model'];
         $dimensions = isset($options['dimensions']) ? (int) $options['dimensions'] : null;
-        $mode = (string) ($options['mode'] ?? 'dense');
+        $modes = array_values(array_unique(explode(',', (string) ($options['mode'] ?? 'dense'))));
+        $iterative = isset($options['iterative-scan']) ? explode(',', (string) $options['iterative-scan']) : [null];
+        $filtered = isset($options['filtered']);
+        $sweep = isset($options['match']) || isset($options['keyword-weight']);
+        $matches = isset($options['match']) ? array_values(array_unique(explode(',', (string) $options['match']))) : [null];
+        $weights = isset($options['keyword-weight']) ? array_values(array_unique(explode(',', (string) $options['keyword-weight']))) : [null];
         $levels = array_map('intval', explode(',', (string) ($options['concurrency'] ?? '1,4,8')));
         $warmup = (int) ($options['warmup'] ?? 20);
         $truncate = (int) ($options['truncate'] ?? 0);
@@ -156,8 +354,30 @@ final class BenchRunner
         $slug = trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower($model)), '-');
         $out = rtrim((string) ($options['out'] ?? '/tmp/ag2/bench'), '/');
 
-        if (! in_array($mode, self::MODES, true)) {
-            throw new RuntimeException("Unknown --mode={$mode}. Available: ".implode(', ', self::MODES).'.');
+        if (array_diff($modes, self::MODES) !== []) {
+            throw new RuntimeException('Unknown --mode='.implode(',', array_diff($modes, self::MODES)).'. Available: '.implode(', ', self::MODES).'.');
+        }
+
+        if (array_diff($iterative, [null, ...PgVectorSearchOptions::ITERATIVE_SCAN_MODES]) !== []) {
+            throw new RuntimeException('--iterative-scan takes '.implode(', ', PgVectorSearchOptions::ITERATIVE_SCAN_MODES).'.');
+        }
+
+        if (array_diff($matches, [null, ...SearchQuery::KEYWORD_MATCH_MODES]) !== []) {
+            throw new RuntimeException('--match takes '.implode(', ', SearchQuery::KEYWORD_MATCH_MODES).'.');
+        }
+
+        foreach ($weights as $weight) {
+            if ($weight !== null && (! is_numeric($weight) || (float) $weight < 0.0)) {
+                throw new RuntimeException('--keyword-weight takes numbers of at least 0, for example 0,0.25,1.');
+            }
+        }
+
+        if ($sweep && ! in_array('hybrid', $modes, true)) {
+            throw new RuntimeException('--match and --keyword-weight sweep the hybrid mode; add hybrid to --mode.');
+        }
+
+        if ($filtered && isset($options['collection'])) {
+            throw new RuntimeException('--filtered derives document metadata at ingest, so it cannot reuse --collection.');
         }
 
         if (in_array(0, $levels, true)) {
@@ -197,16 +417,42 @@ final class BenchRunner
             isset($options['queries']) ? (int) $options['queries'] : null,
         );
 
+        $field = $filtered ? self::filterField($dataset['name']) : null;
+        $values = [];
+        $queryFilters = [];
+        $unfiltered = null;
+
+        if ($field !== null) {
+            foreach ($dataset['corpus'] as $document) {
+                $values[$document['id']] = self::filterValue($field, $document);
+            }
+
+            $unfiltered = count($dataset['queries']);
+            $queryFilters = self::queryFilters($dataset['qrels'], $values);
+            $dataset['queries'] = array_values(array_filter($dataset['queries'], static fn (array $query): bool => isset($queryFilters[$query['id']])));
+            $dataset['qrels'] = array_intersect_key($dataset['qrels'], $queryFilters);
+            self::say("Filtered set: {$field}, ".count($dataset['queries'])." of {$unfiltered} queries have relevant documents with one value");
+        }
+
         if ($dataset['queries'] === []) {
             throw new RuntimeException('No queries left in this run size; raise --docs or --queries.');
         }
 
         self::boot($driver, $embedding);
 
+        // Embed a preflight probe only when this run embeds something: an ingest, or queries missing from the cache.
+        $reused = isset($options['collection']) ? (string) $options['collection'] : null;
+
         try {
             $provider = Embeddings::using();
-            $provider->embed('vector-bench preflight');
             $dimensions = $provider->dimensions();
+            $cacheFile = "{$out}/cache/{$dataset['name']}.{$slug}.{$dimensions}.json";
+            /** @var array<string, array{vector: list<float>, ms: int, tokens: ?int}> $cache */
+            $cache = is_file($cacheFile) ? self::readJson($cacheFile) : [];
+
+            if ($reused === null || array_diff(array_column($dataset['queries'], 'id'), array_keys($cache)) !== []) {
+                $provider->embed('vector-bench preflight');
+            }
         } catch (Throwable $exception) {
             throw new RuntimeException('Embedding endpoint preflight failed: '.$exception->getMessage(), previous: $exception);
         }
@@ -222,16 +468,19 @@ final class BenchRunner
         });
 
         // Ingest once, or search an existing collection (for example one a migration built).
-        $reused = isset($options['collection']) ? (string) $options['collection'] : null;
         $collection = $reused ?? 'bench_'.substr(hash('sha256', $dataset['name'].$slug.getmypid().microtime()), 0, 12);
         $store = Vector::store('pgvector');
         $db = DB::connection('pgvector');
         $this->sample(true);
 
+        $hybrid = in_array('hybrid', $modes, true);
+
         if ($reused === null) {
-            $store->createCollection(new CollectionDefinition(name: $collection, dimensions: $dimensions));
+            $store->createCollection(new CollectionDefinition(name: $collection, dimensions: $dimensions, keyword: $hybrid ?: null));
         } elseif (! $store instanceof AliasStoreContract || ($count = $store->countDocuments($reused)) !== count($dataset['corpus'])) {
             throw new RuntimeException("--collection={$reused} must hold exactly the corpus (".count($dataset['corpus']).' documents), it holds '.($count ?? 'an unknown number of').'.');
+        } elseif ($hybrid && $store->describeCollection($reused)['keyword'] === null) {
+            throw new RuntimeException("--collection={$reused} has no keyword search, so --mode=hybrid cannot run. Migrate it with --keyword first.");
         }
 
         try {
@@ -247,7 +496,11 @@ final class BenchRunner
                     }
                 })
                 ->upsert(array_map(
-                    static fn (array $row): Document => Document::make($row['id'], BenchDataset::truncate($row['text'], $truncate)),
+                    static fn (array $row): Document => Document::make(
+                        $row['id'],
+                        BenchDataset::truncate($row['text'], $truncate),
+                        self::documentMetadata($field, $field !== null ? $values[$row['id']] : null),
+                    ),
                     $dataset['corpus'],
                 ));
             $ingestMs = self::ms($started);
@@ -264,10 +517,7 @@ final class BenchRunner
             $indexDef = (string) $db->scalar('SELECT pg_get_indexdef(?::regclass)', ["{$storage}_embedding_idx"]);
             $this->sample(true);
 
-            // Query embeddings, one call per query, cached per dataset, model and dimensions.
-            $cacheFile = "{$out}/cache/{$dataset['name']}.{$slug}.{$dimensions}.json";
-            /** @var array<string, array{vector: list<float>, ms: int, tokens: ?int}> $cache */
-            $cache = is_file($cacheFile) ? self::readJson($cacheFile) : [];
+            // Query embeddings, one call per query, cached per dataset, model and dimensions (loaded at preflight).
             $cached = true;
 
             foreach ($dataset['queries'] as $query) {
@@ -283,45 +533,114 @@ final class BenchRunner
             }
 
             file_put_contents($cacheFile, json_encode($cache, JSON_THROW_ON_ERROR));
-            $queries = array_map(static fn (array $query): array => ['id' => $query['id'], 'vector' => $cache[$query['id']]['vector']], $dataset['queries']);
+            $queries = array_map(static fn (array $query): array => [
+                'id' => $query['id'],
+                'text' => $query['text'],
+                'vector' => $cache[$query['id']]['vector'],
+                'filter' => $queryFilters[$query['id']] ?? null,
+            ], $dataset['queries']);
             $queryEmbedding = array_map(static fn (array $query): array => $cache[$query['id']], $dataset['queries']);
+            $results = [];
+            $perQuery = [];
+            $candidateRanked = [];
+            $variants = self::variants($modes, $matches, $weights, $sweep);
 
-            // Warmup in the parent, then the timed runs in separate processes.
-            self::say("Warmup: {$warmup} queries");
-            for ($i = 0; $i < $warmup; $i++) {
-                $store->collection($collection)->usingVector($queries[$i % count($queries)]['vector'])->take(self::TOP_K)->get();
-            }
+            foreach ($variants as $variant => $settings) {
+                foreach ($iterative as $scan) {
+                    $key = $scan === null ? $variant : "{$variant}@{$scan}";
+                    $job = [
+                        'collection' => $collection,
+                        'top_k' => self::TOP_K,
+                        'mode' => $settings['mode'],
+                        'field' => $field,
+                        'options' => $scan === null ? [] : [PgVectorSearchOptions::HNSW_ITERATIVE_SCAN => $scan],
+                        'queries' => $queries,
+                        ...($settings['mode'] === 'hybrid' ? ['match' => $settings['match'], 'keyword_weight' => $settings['keyword_weight']] : []),
+                    ];
 
-            $jobFile = "{$out}/cache/job-{$collection}.json";
-            file_put_contents($jobFile, json_encode(['collection' => $collection, 'top_k' => self::TOP_K, 'queries' => $queries], JSON_THROW_ON_ERROR));
-            $runs = [];
-            $ranked = [];
+                    // Warmup in the parent, then the timed runs in separate processes.
+                    self::say("{$key}: warmup {$warmup} queries");
+                    for ($i = 0; $i < $warmup; $i++) {
+                        self::searchIds($job, $queries[$i % count($queries)]);
+                    }
 
-            foreach ($levels as $level) {
-                self::say("Concurrency {$level}: ".count($queries).' queries');
-                $lines = $this->runLevel($jobFile, "{$out}/cache/results-{$collection}-{$level}", $level);
+                    $jobFile = "{$out}/cache/job-{$collection}.json";
+                    file_put_contents($jobFile, json_encode($job, JSON_THROW_ON_ERROR));
+                    $runs = [];
+                    $ranked = [];
 
-                if (count($lines) !== count($queries)) {
-                    throw new RuntimeException("Concurrency {$level}: ".count($lines).' of '.count($queries).' queries returned.');
+                    foreach ($levels as $level) {
+                        self::say("{$key}, concurrency {$level}: ".count($queries).' queries');
+                        $lines = $this->runLevel($jobFile, "{$out}/cache/results-{$collection}-{$level}", $level);
+
+                        if (count($lines) !== count($queries)) {
+                            throw new RuntimeException("{$key}, concurrency {$level}: ".count($lines).' of '.count($queries).' queries returned.');
+                        }
+
+                        $latencies = array_column($lines, 'ms');
+                        $first = min(array_map(static fn (array $line): float => $line['at'] - $line['ms'] / 1000, $lines));
+                        $wall = max(array_column($lines, 'at')) - $first;
+                        $runs[$level] = [
+                            'queries' => count($lines),
+                            'wall_ms' => (int) round($wall * 1000),
+                            'qps' => round(count($lines) / max($wall, 1e-9), 1),
+                            'p50_ms' => BenchReport::percentile($latencies, 50),
+                            'p95_ms' => BenchReport::percentile($latencies, 95),
+                            'p99_ms' => BenchReport::percentile($latencies, 99),
+                        ];
+                        $ranked = $ranked ?: array_column($lines, 'ids', 'id');
+                    }
+
+                    unlink($jobFile);
+
+                    // Same-budget candidate recall: the top K of this mode, with ef_search raised so HNSW can return K.
+                    self::say("{$key}: candidate recall at ".implode(', ', self::CANDIDATE_KS));
+                    $candidates = [];
+                    $perQuery[$key] = ['ndcg_at_10' => RetrievalMetrics::ndcgPerQuery($dataset['qrels'], $ranked, self::TOP_K)];
+
+                    foreach (self::CANDIDATE_KS as $k) {
+                        $kJob = ['top_k' => $k, 'options' => $job['options'] + [PgVectorSearchOptions::HNSW_EF_SEARCH => max(40, $k)]] + $job;
+                        $kRanked = [];
+
+                        foreach ($queries as $query) {
+                            $kRanked[$query['id']] = self::searchIds($kJob, $query);
+                        }
+
+                        $candidateRanked[$key][$k] = $kRanked;
+                        $candidates["recall_at_{$k}"] = RetrievalMetrics::recallAtK($dataset['qrels'], $kRanked, $k);
+                        $perQuery[$key]["candidate_recall_at_{$k}"] = RetrievalMetrics::recallPerQuery($dataset['qrels'], $kRanked, $k);
+                    }
+
+                    $results[$key] = [
+                        ...($settings['mode'] === 'hybrid' ? ['settings' => ['match' => $settings['match'], 'keyword_weight' => $settings['keyword_weight']]] : []),
+                        'quality' => BenchReport::quality($dataset['qrels'], $ranked),
+                        'candidates' => $candidates,
+                        'below_take' => count(array_filter($ranked, static fn (array $ids): bool => count($ids) < self::TOP_K)),
+                        'concurrency' => $runs,
+                    ];
                 }
-
-                $latencies = array_column($lines, 'ms');
-                $first = min(array_map(static fn (array $line): float => $line['at'] - $line['ms'] / 1000, $lines));
-                $wall = max(array_column($lines, 'at')) - $first;
-                $runs[$level] = [
-                    'queries' => count($lines),
-                    'wall_ms' => (int) round($wall * 1000),
-                    'qps' => round(count($lines) / max($wall, 1e-9), 1),
-                    'p50_ms' => BenchReport::percentile($latencies, 50),
-                    'p95_ms' => BenchReport::percentile($latencies, 95),
-                    'p99_ms' => BenchReport::percentile($latencies, 99),
-                ];
-                $ranked = $ranked ?: array_column($lines, 'ids', 'id');
             }
 
-            unlink($jobFile);
+            // Paired per-query differences against dense at the same iterative scan setting.
+            foreach (array_keys($results) as $key) {
+                $dense = str_contains($key, '@') ? 'dense@'.explode('@', $key, 2)[1] : 'dense';
+
+                if ($key !== $dense && isset($perQuery[$dense])) {
+                    $results[$key]['paired'] = [
+                        'reference' => $dense,
+                        'ndcg_at_10' => BenchReport::pairedBootstrap($perQuery[$key]['ndcg_at_10'], $perQuery[$dense]['ndcg_at_10']),
+                        'candidate_recall_at_30' => BenchReport::pairedBootstrap($perQuery[$key]['candidate_recall_at_30'], $perQuery[$dense]['candidate_recall_at_30']),
+                    ];
+                }
+            }
+
+            $union = $this->rawUnion($variants, $iterative[0], $collection, $field, $queries, $dataset['qrels'], $candidateRanked);
         } finally {
-            $reused !== null || $store->deleteCollection($collection);
+            if ($reused === null && isset($options['keep'])) {
+                self::say("Kept collection {$collection} (search it again with --collection={$collection})");
+            } elseif ($reused === null) {
+                $store->deleteCollection($collection);
+            }
         }
 
         $ingestTokens = self::tokens($ingestCalls);
@@ -368,7 +687,9 @@ final class BenchRunner
                 'p95_ms' => BenchReport::percentile($embeddingMs, 95),
                 'p99_ms' => BenchReport::percentile($embeddingMs, 99),
             ],
-            'modes' => [$mode => ['quality' => BenchReport::quality($dataset['qrels'], $ranked), 'concurrency' => $runs]],
+            'filter' => $field === null ? null : ['field' => $field, 'queries' => count($dataset['queries']), 'unfiltered_queries' => $unfiltered],
+            'modes' => $results,
+            'union' => $union,
             'resources' => [
                 'table_bytes' => (int) $sizes->t,
                 'index_bytes' => (int) $sizes->i,
@@ -391,6 +712,18 @@ final class BenchRunner
             ],
             'runtime_ms' => self::ms($runStarted),
         ];
+
+        // A kept collection records its ingest, so a later --collection run reports the run that built it.
+        $ingestFile = "{$out}/cache/{$collection}.ingest.json";
+
+        if ($reused === null && isset($options['keep'])) {
+            file_put_contents($ingestFile, json_encode(['ingest' => $report['ingest'], 'cost_ingest' => $report['cost']['ingest']], JSON_THROW_ON_ERROR));
+        } elseif ($reused !== null && is_file($ingestFile)) {
+            /** @var array{ingest: array<string, mixed>, cost_ingest: float|null} $built */
+            $built = self::readJson($ingestFile);
+            $report['ingest'] = ['measured_by' => 'the run that built the collection'] + $built['ingest'];
+            $report['cost']['ingest'] = $built['cost_ingest'];
+        }
 
         $base = "{$out}/{$dataset['name']}.{$slug}.".date('Ymd-His');
         file_put_contents("{$base}.json", json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");

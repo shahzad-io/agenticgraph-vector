@@ -1,6 +1,6 @@
 {
     "schema": 1,
-    "created_at": "2026-10-16T11:41:22+00:00",
+    "created_at": "2026-10-16T19:19:18+00:00",
     "dataset": {
         "name": "wixqa-expert",
         "description": "WixQA ExpertWritten (200 queries) over the Wix KB corpus",
@@ -28,72 +28,165 @@
     },
     "store": {
         "name": "pgvector",
-        "index": "CREATE INDEX vcol_cb600486bb02d3abd7f3221252a02a9e_embedding_idx ON public.vcol_cb600486bb02d3abd7f3221252a02a9e USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')"
+        "index": "CREATE INDEX vcol_e03c7ea8e6b844b9ebd738e66f4b675b_embedding_idx ON public.vcol_e03c7ea8e6b844b9ebd738e66f4b675b USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')",
+        "collection": "bench_cdd0e6d587dd"
     },
     "ingest": {
+        "measured_by": "the run that built the collection",
         "documents": 6221,
-        "wall_ms": 256550,
-        "docs_per_second": 24.2,
-        "embedding_ms": 169133,
+        "wall_ms": 249000,
+        "docs_per_second": 25,
+        "embedding_ms": 161041,
         "embedding_calls": 63,
         "embedding_tokens": 2953324,
-        "index_rebuild_ms": 2863
+        "index_rebuild_ms": 2794
     },
     "query_embedding": {
         "calls": 200,
         "tokens": 4546,
-        "cached": false,
-        "p50_ms": 589,
-        "p95_ms": 818,
-        "p99_ms": 958
+        "cached": true,
+        "p50_ms": 500,
+        "p95_ms": 754,
+        "p99_ms": 991
     },
+    "filter": null,
     "modes": {
         "dense": {
             "quality": {
-                "ndcg_at_10": 0.5747854828862691,
+                "ndcg_at_10": 0.5749387109869017,
                 "recall_at_1": 0.31583333333333335,
-                "recall_at_5": 0.6491666666666666,
+                "recall_at_5": 0.6541666666666666,
                 "recall_at_10": 0.7941666666666667,
                 "hit_at_1": 0.365,
-                "hit_at_5": 0.715,
+                "hit_at_5": 0.72,
                 "hit_at_10": 0.855,
-                "mrr_at_10": 0.5278511904761906
+                "mrr_at_10": 0.5280178571428572
             },
+            "candidates": {
+                "recall_at_30": 0.9375,
+                "recall_at_50": 0.9616666666666667,
+                "recall_at_100": 0.9716666666666667
+            },
+            "below_take": 0,
             "concurrency": {
                 "1": {
                     "queries": 200,
-                    "wall_ms": 4905,
-                    "qps": 40.8,
-                    "p50_ms": 24.24,
-                    "p95_ms": 27.466,
-                    "p99_ms": 29.479
+                    "wall_ms": 5283,
+                    "qps": 37.9,
+                    "p50_ms": 26.177,
+                    "p95_ms": 27.578,
+                    "p99_ms": 28.879
                 },
                 "4": {
                     "queries": 200,
-                    "wall_ms": 1695,
-                    "qps": 118,
-                    "p50_ms": 32.986,
-                    "p95_ms": 40.049,
-                    "p99_ms": 43.922
+                    "wall_ms": 1712,
+                    "qps": 116.9,
+                    "p50_ms": 33.357,
+                    "p95_ms": 39.628,
+                    "p99_ms": 45.652
                 },
                 "8": {
                     "queries": 200,
-                    "wall_ms": 953,
-                    "qps": 209.9,
-                    "p50_ms": 36.342,
-                    "p95_ms": 44.998,
-                    "p99_ms": 47.967
+                    "wall_ms": 961,
+                    "qps": 208.2,
+                    "p50_ms": 36.937,
+                    "p95_ms": 44.57,
+                    "p99_ms": 48.914
+                }
+            }
+        },
+        "hybrid": {
+            "settings": {
+                "match": "any",
+                "keyword_weight": 0.25
+            },
+            "quality": {
+                "ndcg_at_10": 0.6005606455474208,
+                "recall_at_1": 0.34583333333333327,
+                "recall_at_5": 0.6933333333333332,
+                "recall_at_10": 0.8158333333333334,
+                "hit_at_1": 0.405,
+                "hit_at_5": 0.755,
+                "hit_at_10": 0.86,
+                "mrr_at_10": 0.5544583333333332
+            },
+            "candidates": {
+                "recall_at_30": 0.9416666666666668,
+                "recall_at_50": 0.9616666666666667,
+                "recall_at_100": 0.9716666666666667
+            },
+            "below_take": 0,
+            "concurrency": {
+                "1": {
+                    "queries": 200,
+                    "wall_ms": 15407,
+                    "qps": 13,
+                    "p50_ms": 69.363,
+                    "p95_ms": 128.671,
+                    "p99_ms": 162.692
+                },
+                "4": {
+                    "queries": 200,
+                    "wall_ms": 4617,
+                    "qps": 43.3,
+                    "p50_ms": 82.806,
+                    "p95_ms": 147.047,
+                    "p99_ms": 186.532
+                },
+                "8": {
+                    "queries": 200,
+                    "wall_ms": 2603,
+                    "qps": 76.8,
+                    "p50_ms": 88.202,
+                    "p95_ms": 163.498,
+                    "p99_ms": 204.438
+                }
+            },
+            "paired": {
+                "reference": "dense",
+                "ndcg_at_10": {
+                    "mean": 0.025621934560518846,
+                    "low": -0.018951576092854652,
+                    "high": 0.06911731248969077,
+                    "queries": 200,
+                    "resamples": 10000
+                },
+                "candidate_recall_at_30": {
+                    "mean": 0.0041666666666666675,
+                    "low": -0.016666666666666666,
+                    "high": 0.025,
+                    "queries": 200,
+                    "resamples": 10000
                 }
             }
         }
     },
+    "union": {
+        "any": {
+            "k_30": {
+                "recall": 0.9666666666666667,
+                "documents_mean": 56.3,
+                "documents_max": 60
+            },
+            "k_50": {
+                "recall": 0.9791666666666667,
+                "documents_mean": 92.7,
+                "documents_max": 100
+            },
+            "k_100": {
+                "recall": 0.9841666666666667,
+                "documents_mean": 182,
+                "documents_max": 200
+            }
+        }
+    },
     "resources": {
-        "table_bytes": 60555264,
-        "index_bytes": 51716096,
-        "total_bytes": 112271360,
+        "table_bytes": 68886528,
+        "index_bytes": 58646528,
+        "total_bytes": 127533056,
         "container": "agenticgraph-vector-postgres-1",
-        "memory_mib_max": 162.6,
-        "memory_samples": 71,
+        "memory_mib_max": 198.1,
+        "memory_samples": 20,
         "memory_note": null
     },
     "cost": {
@@ -107,5 +200,5 @@
         "pgvector": "0.8.3",
         "os": "Darwin 24.6.0"
     },
-    "runtime_ms": 396636
+    "runtime_ms": 154716
 }

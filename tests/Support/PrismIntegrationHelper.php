@@ -34,7 +34,7 @@ final class PrismIntegrationHelper
         }
 
         if (! self::probeEmbeddingApi()) {
-            return 'Skipping: Prism embedding API unreachable (probe failed — check OPENAI_API_KEY).';
+            return 'Skipping: Prism embedding API unreachable (probe failed: check OPENAI_API_KEY).';
         }
 
         return 'Skipping: real Prism integration is not configured.';

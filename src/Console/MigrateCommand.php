@@ -21,6 +21,10 @@ final class MigrateCommand extends Command
         {--index= : hnsw or ivfflat; the source index when omitted}
         {--index-option=* : Index option as key=value, for example m=16; merged over the source options for the same index type}
         {--embeddings= : Embedding provider name (vector.embeddings.providers); the source provider when omitted}
+        {--keyword : Add keyword search (hybrid()); the source setting when neither --keyword nor --no-keyword is given}
+        {--no-keyword : Remove keyword search}
+        {--language=* : Language map entry as value=configuration, for example es=spanish; replaces the source map}
+        {--language-field= : Metadata field holding the language; the source field (or lang) when omitted}
         {--batch= : Documents per batch; the store batch size when omitted}
         {--copy : Copy vectors as they are (needed when the source has no recorded embedding model)}
         {--reembed : Re-embed every document with the new provider}
@@ -57,6 +61,10 @@ final class MigrateCommand extends Command
 
             if ($this->option('copy') && $this->option('reembed')) {
                 throw new InvalidArgumentException('Pass --copy or --reembed, not both.');
+            }
+
+            if ($this->option('keyword') && $this->option('no-keyword')) {
+                throw new InvalidArgumentException('Pass --keyword or --no-keyword, not both.');
             }
 
             $batch = $this->option('batch') !== null ? (int) $this->option('batch') : null;
@@ -100,12 +108,15 @@ final class MigrateCommand extends Command
                 $state->estimatedEmbeddingCalls($batch ?? $vector->store($store)->batchSize()),
                 $state->phase,
             ]]);
-            $this->table(['dimensions', 'metric', 'index', 'index options', 'embeddings'], [[
+            $this->table(['dimensions', 'metric', 'index', 'index options', 'embeddings', 'keyword'], [[
                 $state->definition['dimensions'],
                 $state->definition['metric'],
                 $state->definition['index'] ?? 'store default',
                 http_build_query((array) $state->definition['index_options'], arg_separator: ', ') ?: '-',
                 $state->definition['embeddings'] ?? 'default (unrecorded)',
+                isset($state->definition['keyword'])
+                    ? (string) $state->definition['language_field'].': '.(http_build_query((array) $state->definition['languages'], arg_separator: ', ') ?: '-').', else simple'
+                    : 'no',
             ]]);
 
             return self::SUCCESS;
@@ -130,6 +141,18 @@ final class MigrateCommand extends Command
             $options[$key] = is_numeric($value) ? (int) $value : $value;
         }
 
+        $languages = null;
+
+        foreach ((array) $this->option('language') as $entry) {
+            [$value, $configuration] = array_pad(explode('=', (string) $entry, 2), 2, null);
+
+            if ($value === '' || $configuration === null) {
+                throw new InvalidArgumentException("Language map entry [{$entry}] must be value=configuration.");
+            }
+
+            $languages[$value] = $configuration;
+        }
+
         return new CollectionDefinition(
             name: $alias,
             dimensions: $this->option('dimensions') !== null ? (int) $this->option('dimensions') : null,
@@ -137,6 +160,9 @@ final class MigrateCommand extends Command
             index: $this->option('index') !== null ? (string) $this->option('index') : null,
             indexOptions: $options,
             embeddings: $this->option('embeddings') !== null ? (string) $this->option('embeddings') : null,
+            keyword: $this->option('keyword') ? true : ($this->option('no-keyword') ? false : null),
+            languages: $languages,
+            languageField: $this->option('language-field') !== null ? (string) $this->option('language-field') : null,
         );
     }
 }

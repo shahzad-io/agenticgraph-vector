@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
- * Scenario 2 — primary DB (sqlite) + separate pgvector connection.
+ * Scenario 2: primary DB (sqlite) + separate pgvector connection.
  *
  * Proves vector operations stay on the configured vector connection and never
  * leak onto database.default (guards against a future default-connection fallback).

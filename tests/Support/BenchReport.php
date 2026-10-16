@@ -13,7 +13,7 @@ final class BenchReport
     public const QUALITY_KEYS = ['ndcg_at_10', 'recall_at_1', 'recall_at_5', 'recall_at_10', 'hit_at_1', 'hit_at_5', 'hit_at_10', 'mrr_at_10'];
 
     /** Run settings that must match for two reports to be compared. */
-    public const COMPARABLE_KEYS = ['dataset.name', 'dataset.revision', 'model.name', 'model.dimensions', 'truncate', 'sizes.documents', 'sizes.queries', 'sizes.top_k'];
+    public const COMPARABLE_KEYS = ['dataset.name', 'dataset.revision', 'model.name', 'model.dimensions', 'truncate', 'sizes.documents', 'sizes.queries', 'sizes.top_k', 'filter.field'];
 
     /**
      * @param  array<string, list<string>>  $qrels
@@ -31,6 +31,47 @@ final class BenchReport
             'hit_at_5' => RetrievalMetrics::hitAtK($qrels, $ranked, 5),
             'hit_at_10' => RetrievalMetrics::hitAtK($qrels, $ranked, 10),
             'mrr_at_10' => RetrievalMetrics::mrrAtK($qrels, $ranked, 10),
+        ];
+    }
+
+    /**
+     * Paired difference of two per-query metrics (same queries, same order): the mean of $candidate - $reference
+     * and a percentile bootstrap 95% interval over queries. Seeded, so a report is reproducible.
+     *
+     * @param  array<string, float>  $candidate
+     * @param  array<string, float>  $reference
+     * @return array{mean: float, low: float, high: float, queries: int, resamples: int}
+     */
+    public static function pairedBootstrap(array $candidate, array $reference, int $resamples = 10000, int $seed = 6): array
+    {
+        if (array_keys($candidate) !== array_keys($reference) || $candidate === []) {
+            throw new \InvalidArgumentException('A paired comparison needs the same non-empty query set on both sides.');
+        }
+
+        $differences = array_map(static fn (float $a, float $b): float => $a - $b, $candidate, $reference);
+        $n = count($differences);
+        mt_srand($seed);
+        $means = [];
+
+        for ($i = 0; $i < $resamples; $i++) {
+            $sum = 0.0;
+
+            for ($j = 0; $j < $n; $j++) {
+                $sum += $differences[mt_rand(0, $n - 1)];
+            }
+
+            $means[] = $sum / $n;
+        }
+
+        sort($means);
+        mt_srand();
+
+        return [
+            'mean' => array_sum($differences) / $n,
+            'low' => $means[(int) floor(0.025 * ($resamples - 1))],
+            'high' => $means[(int) ceil(0.975 * ($resamples - 1))],
+            'queries' => $n,
+            'resamples' => $resamples,
         ];
     }
 
@@ -123,14 +164,17 @@ final class BenchReport
             '- Truncation: '.($report['truncate'] > 0 ? "{$report['truncate']} characters" : 'none'),
             "- Sizes: {$report['sizes']['documents']} documents, {$report['sizes']['queries']} queries, top {$report['sizes']['top_k']}, warmup {$report['sizes']['warmup']}".($report['sizes']['subset'] ? ' (subset)' : ''),
             "- Store: {$report['store']['name']}, `{$report['store']['index']}`",
+            ...(isset($report['filter']) ? ["- Filtered set: field `{$report['filter']['field']}`, {$report['filter']['queries']} of {$report['filter']['unfiltered_queries']} queries (relevant documents share one value)"] : []),
             '',
             '## Quality',
             '',
         ];
 
+        // The first mode (dense when it ran) is the reference for the deltas.
         $modes = $report['modes'];
-        $dense = $modes['dense']['quality'];
-        $lines[] = '| Metric | '.implode(' | ', array_map(static fn (string $mode): string => $mode === 'dense' ? 'dense' : "{$mode} (delta vs dense)", array_keys($modes))).' |';
+        $reference = (string) array_key_first($modes);
+        $base = $modes[$reference]['quality'];
+        $lines[] = '| Metric | '.implode(' | ', array_map(static fn (string $mode): string => $mode === $reference ? $mode : "{$mode} (delta vs {$reference})", array_keys($modes))).' |';
         $lines[] = '|---|'.str_repeat('---|', count($modes));
 
         foreach (self::QUALITY_KEYS as $metric) {
@@ -138,10 +182,51 @@ final class BenchReport
 
             foreach ($modes as $mode => $data) {
                 $value = $data['quality'][$metric];
-                $cells[] = $mode === 'dense' ? sprintf('%.4f', $value) : sprintf('%.4f (%+.4f)', $value, $value - $dense[$metric]);
+                $cells[] = $mode === $reference ? sprintf('%.4f', $value) : sprintf('%.4f (%+.4f)', $value, $value - $base[$metric]);
             }
 
             $lines[] = "| {$metric} | ".implode(' | ', $cells).' |';
+        }
+
+        $belowTake = array_map(static fn (string $mode, array $data): string => "{$mode} ".($data['below_take'] ?? 'n/a'), array_keys($modes), $modes);
+        $lines = [...$lines, '', "Queries with fewer than {$report['sizes']['top_k']} hits: ".implode(', ', $belowTake).'.'];
+        $settings = array_filter(array_map(static fn (array $data): ?array => $data['settings'] ?? null, $modes));
+
+        if ($settings !== []) {
+            $lines = [...$lines, '', 'Hybrid settings: '.implode('; ', array_map(static fn (string $mode, array $s): string => sprintf('%s match %s, keyword weight %s', $mode, $s['match'], $s['keyword_weight']), array_keys($settings), $settings)).'.'];
+        }
+
+        if (isset($modes[$reference]['candidates'])) {
+            $ks = array_keys($modes[$reference]['candidates']);
+            $lines = [...$lines, '', '## Candidate recall (same budget: top K of each mode)', '', '| Mode | '.implode(' | ', $ks).' |', '|---|'.str_repeat('---|', count($ks))];
+
+            foreach ($modes as $mode => $data) {
+                $cells = array_map(static fn (string $k): string => $mode === $reference
+                    ? sprintf('%.4f', $data['candidates'][$k])
+                    : sprintf('%.4f (%+.4f)', $data['candidates'][$k], $data['candidates'][$k] - $modes[$reference]['candidates'][$k]), $ks);
+                $lines[] = "| {$mode} | ".implode(' | ', $cells).' |';
+            }
+        }
+
+        $paired = array_filter(array_map(static fn (array $data): ?array => $data['paired'] ?? null, $modes));
+
+        if ($paired !== []) {
+            $interval = static fn (array $d): string => sprintf('%+.4f [%+.4f, %+.4f]', $d['mean'], $d['low'], $d['high']);
+            $lines = [...$lines, '', '## Paired differences against dense (per query, bootstrap 95% interval)', '', '| Mode | nDCG@10 | candidate recall@30 |', '|---|---|---|'];
+
+            foreach ($paired as $mode => $p) {
+                $lines[] = "| {$mode} | {$interval($p['ndcg_at_10'])} | {$interval($p['candidate_recall_at_30'])} |";
+            }
+        }
+
+        if (! empty($report['union'])) {
+            $lines = [...$lines, '', '## Raw union (dense top K plus keyword top K: up to 2K documents, not a same-budget comparison)', '', '| Match | K | Recall | Documents (mean, max) |', '|---|---|---|---|'];
+
+            foreach ($report['union'] as $match => $byK) {
+                foreach ($byK as $k => $u) {
+                    $lines[] = sprintf('| %s | %s | %.4f | %.1f, %d |', $match, substr((string) $k, 2), $u['recall'], $u['documents_mean'], $u['documents_max']);
+                }
+            }
         }
 
         $lines = [...$lines, '', '## Query performance (store time, pre-embedded queries)', '', '| Mode | Concurrency | QPS | p50 ms | p95 ms | p99 ms |', '|---|---|---|---|---|---|'];

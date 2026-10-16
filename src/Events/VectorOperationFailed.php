@@ -21,5 +21,6 @@ final class VectorOperationFailed
         public readonly Throwable $exception,
         public readonly ?int $documentCount = null,
         public readonly ?int $embeddingMs = null,
+        public readonly ?string $searchMode = null,
     ) {}
 }

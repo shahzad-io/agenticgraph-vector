@@ -22,6 +22,7 @@ use AgenticGraph\Vector\Stores\PgVector\PgVectorIndex;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorSearchOptions;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorVectorFormatter;
 use AgenticGraph\Vector\Support\MetadataValidator;
+use AgenticGraph\Vector\Support\ReciprocalRankFusion;
 use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
@@ -81,46 +82,14 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
             $this->preparePgVector();
 
             return $this->connection()->transaction(function () use ($query): SearchResult {
-                PgVectorSearchOptions::apply($this->connection(), $query->options);
+                PgVectorSearchOptions::apply($this->connection(), PgVectorSearchOptions::forSearch($this->config, $query->options, $query->filter !== null && $query->filter->conditions !== []));
 
                 $collection = $this->registry->resolve($query->collection);
                 $this->assertVectorDimensions($query->vector, $collection['dimensions'], $query->collection);
 
-                $metric = $collection['metric'];
-                $storage = $this->registry->qualifiedStorageName($collection['storage_identifier']);
-                $operator = $metric->distanceOperator();
-                $vector = PgVectorVectorFormatter::format($query->vector);
-                $filter = $this->filterTranslator->translate($query->filter);
-
-                $distanceExpression = "embedding {$operator} ?::vector";
-                $scoreExpression = $metric->scoreSqlExpression($distanceExpression);
-
-                $sql = "SELECT id, content, metadata, {$scoreExpression} AS score FROM {$storage} WHERE {$filter['sql']}";
-                $bindings = [$vector, ...$filter['bindings']];
-
-                if ($query->minScore !== null) {
-                    $sql .= " AND ({$distanceExpression}) <= ?";
-                    $bindings[] = $vector;
-                    $bindings[] = $metric->maxDistanceForMinScore($query->minScore);
-                }
-
-                $sql .= " ORDER BY {$distanceExpression} LIMIT ?";
-                $bindings[] = $vector;
-                $bindings[] = $query->topK;
-
-                $rows = $this->connection()->select($sql, $bindings);
-
-                $hits = array_map(
-                    fn (object $row): SearchHit => new SearchHit(
-                        id: $row->id,
-                        score: (float) $row->score,
-                        content: (string) $row->content,
-                        metadata: $this->decodeMetadata($row->metadata),
-                    ),
-                    $rows,
-                );
-
-                return new SearchResult(hits: $hits, count: count($hits));
+                return $query->keywords === null
+                    ? $this->denseSearch($query, $collection)
+                    : $this->hybridSearch($query, $collection);
             });
         });
     }
@@ -134,8 +103,148 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
             StoreCapability::FilterNot,
             StoreCapability::FilterContains,
             StoreCapability::FilterRange,
+            StoreCapability::Keyword,
             StoreCapability::Aliases,
         );
+    }
+
+    /**
+     * The candidates come from the index in distance order (relaxed with an iterative scan), then are sorted by
+     * distance and id.
+     *
+     * @param  array{metric: PgVectorMetric, storage_identifier: string}  $collection
+     */
+    private function denseSearch(SearchQuery $query, array $collection): SearchResult
+    {
+        $metric = $collection['metric'];
+        $distance = "embedding {$metric->distanceOperator()} ?::vector";
+        $vector = PgVectorVectorFormatter::format($query->vector);
+        $filter = $this->filterTranslator->translate($query->filter);
+        $bindings = [$vector, ...$filter['bindings']];
+        $minScore = '';
+
+        if ($query->minScore !== null) {
+            $minScore = " AND ({$distance}) <= ?";
+            array_push($bindings, $vector, $metric->maxDistanceForMinScore($query->minScore));
+        }
+
+        array_push($bindings, $vector, $query->topK);
+
+        $rows = $this->connection()->select(
+            "WITH candidates AS MATERIALIZED (
+                SELECT id, content, metadata, {$distance} AS distance FROM {$this->storage($collection)}
+                WHERE {$filter['sql']}{$minScore} ORDER BY {$distance} LIMIT ?
+             )
+             SELECT id, content, metadata, {$metric->scoreSqlExpression('distance')} AS score FROM candidates ORDER BY distance, id COLLATE \"C\"",
+            $bindings,
+        );
+
+        $hits = array_map(
+            fn (object $row): SearchHit => new SearchHit(
+                id: $row->id,
+                score: (float) $row->score,
+                content: (string) $row->content,
+                metadata: $this->decodeMetadata($row->metadata),
+            ),
+            $rows,
+        );
+
+        return new SearchResult(hits: $hits, count: count($hits));
+    }
+
+    /**
+     * One statement: up to max(candidates, topK) dense and keyword candidates under the same filter, with the
+     * vector distance of every candidate. Fusion, minScore and topK follow in PHP.
+     *
+     * @param  array{name: string, metric: PgVectorMetric, storage_identifier: string, keyword: array{languages: array<string, string>, language_field: string}|null}  $collection
+     */
+    private function hybridSearch(SearchQuery $query, array $collection): SearchResult
+    {
+        $keyword = $collection['keyword'] ?? throw new VectorQueryException(
+            "Collection [{$query->collection}] has no keyword index, so it cannot run a hybrid search. Migrate it with keyword search: Vector::migrate('{$query->collection}', new CollectionDefinition('{$query->collection}', keyword: true)) or php artisan vector:migrate {$query->collection} --keyword.",
+        );
+
+        $this->connection()->statement('SET LOCAL client_min_messages = warning');
+
+        $metric = $collection['metric'];
+        $storage = $this->storage($collection);
+        $distance = "embedding {$metric->distanceOperator()} ?::vector";
+        $vector = PgVectorVectorFormatter::format($query->vector);
+        $filter = $this->filterTranslator->translate($query->filter);
+        $limit = max($query->candidates, $query->topK);
+        $configurations = array_values(array_unique([...array_values($keyword['languages']), 'simple']));
+        $parse = match ($query->keywordMatch) {
+            // Any of the words: the AND of plainto_tsquery turned into an OR (lexemes are quoted, so only operators change).
+            SearchQuery::KEYWORD_MATCH_ANY => static fn (string $configuration): string => "replace(plainto_tsquery('{$configuration}', input.text)::text, '&', '|')::tsquery",
+            SearchQuery::KEYWORD_MATCH_WEBSEARCH => static fn (string $configuration): string => "websearch_to_tsquery('{$configuration}', input.text)",
+            default => throw new VectorQueryException('Keyword match must be one of: '.implode(', ', SearchQuery::KEYWORD_MATCH_MODES).". Got [{$query->keywordMatch}]."),
+        };
+        $parsed = implode(', ', array_map(static fn (string $configuration): string => $parse($configuration)." AS q_{$configuration}", $configurations));
+        $any = implode(' || ', array_map(static fn (string $configuration): string => "q_{$configuration}", $configurations));
+        // Each document matches the query parsed in its own configuration; the OR of all of them lets the GIN index prefilter.
+        $own = self::languageCase($keyword, static fn (string $configuration): string => "keyword_query.q_{$configuration}");
+
+        $rows = $this->connection()->select(
+            "WITH input AS MATERIALIZED (SELECT ?::text AS text),
+             keyword_query AS MATERIALIZED (SELECT parsed.*, {$any} AS q_any FROM (SELECT {$parsed} FROM input) parsed),
+             dense AS MATERIALIZED (SELECT id, {$distance} AS distance FROM {$storage} WHERE {$filter['sql']} ORDER BY {$distance} LIMIT ?),
+             dense_ranked AS (SELECT id, row_number() OVER (ORDER BY distance, id COLLATE \"C\") AS dense_rank FROM dense),
+             keyword AS MATERIALIZED (
+                SELECT id, ts_rank_cd(keywords, {$own}) AS keyword_score FROM {$storage}, keyword_query
+                WHERE keywords @@ keyword_query.q_any AND keywords @@ {$own} AND {$filter['sql']} ORDER BY keyword_score DESC, id COLLATE \"C\" LIMIT ?
+             ),
+             keyword_ranked AS (SELECT id, keyword_score, row_number() OVER (ORDER BY keyword_score DESC, id COLLATE \"C\") AS keyword_rank FROM keyword),
+             candidates AS (SELECT id FROM dense UNION SELECT id FROM keyword)
+             SELECT s.id, s.content, s.metadata, s.{$distance} AS distance, d.dense_rank, k.keyword_score, k.keyword_rank
+             FROM candidates c JOIN {$storage} s ON s.id = c.id
+             LEFT JOIN dense_ranked d ON d.id = c.id LEFT JOIN keyword_ranked k ON k.id = c.id",
+            [$query->keywords, $vector, ...$filter['bindings'], $vector, $limit, ...$filter['bindings'], $limit, $vector],
+        );
+
+        $byId = [];
+        $dense = [];
+        $keywordRanks = [];
+
+        foreach ($rows as $row) {
+            $id = (string) $row->id;
+            $byId[$id] = $row;
+
+            if ($row->dense_rank !== null) {
+                $dense[(int) $row->dense_rank] = $id;
+            }
+
+            if ($row->keyword_rank !== null) {
+                $keywordRanks[(int) $row->keyword_rank] = $id;
+            }
+        }
+
+        ksort($dense);
+        ksort($keywordRanks);
+        $maxDistance = $query->minScore !== null ? $metric->maxDistanceForMinScore($query->minScore) : null;
+        $hits = [];
+
+        foreach (ReciprocalRankFusion::fuse(array_values($dense), array_values($keywordRanks), $query->fusionK, $query->keywordWeight) as $id => $fused) {
+            $row = $byId[(string) $id];
+
+            if ($maxDistance !== null && (float) $row->distance > $maxDistance) {
+                continue;
+            }
+
+            $score = $metric->distanceToSimilarity((float) $row->distance);
+            $hits[] = new SearchHit(
+                id: $row->id,
+                score: $score,
+                content: (string) $row->content,
+                metadata: $this->decodeMetadata($row->metadata),
+                scores: ['vector' => $score, 'keyword' => $row->keyword_score !== null ? (float) $row->keyword_score : null, 'fused' => $fused],
+            );
+
+            if (count($hits) === $query->topK) {
+                break;
+            }
+        }
+
+        return new SearchResult(hits: $hits, count: count($hits));
     }
 
     public function fetch(string $collection, array $ids): SearchResult
@@ -322,6 +431,7 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
             $index = PgVectorIndex::fromDefinition($definition, $this->indexType(), $this->configuredIvfflatLists());
             $dimensions = $definition->dimensions ?? $this->embeddings->using($definition->embeddings)->dimensions();
             $metric = PgVectorMetric::fromString($this->resolveCollectionMetric($definition));
+            $keyword = $definition->keywordSettings();
 
             if ($dimensions < 1) {
                 throw new VectorQueryException("Collection [{$definition->name}] dimensions must be at least 1.");
@@ -334,7 +444,8 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
                 if ($existing['dimensions'] === $dimensions
                     && $existing['metric'] === $metric
                     && ($existingIndex === null || $existingIndex->equals($index))
-                    && ($definition->embeddings === null || $definition->embeddings === ($existing['embedding']['provider'] ?? null))) {
+                    && ($definition->embeddings === null || $definition->embeddings === ($existing['embedding']['provider'] ?? null))
+                    && ($definition->keyword === null || $keyword === $existing['keyword'])) {
                     return;
                 }
 
@@ -343,11 +454,15 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
                 );
             }
 
+            if ($keyword !== null) {
+                $this->assertTextSearchConfigurations($keyword['languages']);
+            }
+
             $embedding = $this->embeddings->record($definition->embeddings, $dimensions);
 
-            $this->connection()->transaction(function () use ($definition, $dimensions, $metric, $index, $embedding): void {
-                $storageIdentifier = $this->registry->register($definition, $dimensions, $metric, $index->toArray(), $embedding);
-                $this->createStorage($storageIdentifier, $dimensions, $metric, $index);
+            $this->connection()->transaction(function () use ($definition, $dimensions, $metric, $index, $embedding, $keyword): void {
+                $storageIdentifier = $this->registry->register($definition, $dimensions, $metric, $index->toArray(), $embedding, $keyword);
+                $this->createStorage($storageIdentifier, $dimensions, $metric, $index, $keyword);
             });
         });
     }
@@ -409,6 +524,7 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
                 'metric' => $resolved['metric']->value,
                 'index' => $this->existingIndex($this->registry->qualifiedStorageName($resolved['storage_identifier']), $resolved['index_options'])?->toArray(),
                 'embedding' => $resolved['embedding'],
+                'keyword' => $resolved['keyword'],
             ];
         });
     }
@@ -483,6 +599,11 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
             $after = $state->lastId !== null ? ' WHERE id > ?' : '';
             $bindings = $state->lastId !== null ? [$state->lastId, $limit] : [$limit];
 
+            // The keyword index is built once at catch-up, not row by row during the copy.
+            if ($state->lastId === null && $target['keyword'] !== null) {
+                $this->connection()->statement("DROP INDEX IF EXISTS {$to}_keyword_idx");
+            }
+
             $next = $this->connection()->transaction(function () use ($state, $limit, $target, $from, $to, $after, $bindings): MigrationState {
                 if ($state->mode === 'copy') {
                     /** @var object{count: int|string, last_id: string|null} $page */
@@ -523,6 +644,11 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
     {
         return $this->run(function () use ($state): int {
             $this->preparePgVector();
+            $target = $this->registry->resolve($state->target);
+
+            if ($target['keyword'] !== null) {
+                $this->connection()->statement("CREATE INDEX IF NOT EXISTS {$this->storage($target)}_keyword_idx ON {$this->storage($target)} USING gin (keywords)");
+            }
 
             return $this->catchUpPass($state, null);
         });
@@ -677,20 +803,76 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
         }
     }
 
-    private function createStorage(string $storageIdentifier, int $dimensions, PgVectorMetric $metric, PgVectorIndex $index): void
+    /**
+     * @param  array{languages: array<string, string>, language_field: string}|null  $keyword
+     */
+    private function createStorage(string $storageIdentifier, int $dimensions, PgVectorMetric $metric, PgVectorIndex $index, ?array $keyword = null): void
     {
         $storage = $this->registry->qualifiedStorageName($storageIdentifier);
+        $keywords = '';
+
+        // A generated column cannot cast metadata to a text search configuration, so the map is a CASE.
+        if ($keyword !== null) {
+            $configuration = self::languageCase($keyword, static fn (string $configuration): string => "'{$configuration}'::regconfig");
+            $keywords = ",\n                keywords tsvector GENERATED ALWAYS AS (to_tsvector({$configuration}, content)) STORED";
+        }
 
         $this->connection()->statement(
             "CREATE TABLE {$storage} (
                 id TEXT PRIMARY KEY,
                 content TEXT NOT NULL,
                 embedding vector({$dimensions}) NOT NULL,
-                metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb{$keywords}
             )",
         );
 
         $this->connection()->statement($index->createSql($storage, $metric->indexOps()));
+
+        if ($keyword !== null) {
+            $this->connection()->statement("CREATE INDEX {$storage}_keyword_idx ON {$storage} USING gin (keywords)");
+        }
+    }
+
+    /**
+     * CASE over the language field: the map's configuration for its values, `simple` for any other value.
+     * Values, configurations and the field are validated by CollectionDefinition::keywordSettings().
+     *
+     * @param  array{languages: array<string, string>, language_field: string}  $keyword
+     * @param  callable(string): string  $then  SQL for one configuration
+     */
+    private static function languageCase(array $keyword, callable $then): string
+    {
+        $cases = '';
+
+        foreach ($keyword['languages'] as $value => $configuration) {
+            $cases .= "WHEN '{$value}' THEN {$then($configuration)} ";
+        }
+
+        return $cases === '' ? $then('simple') : "(CASE metadata->>'{$keyword['language_field']}' {$cases}ELSE {$then('simple')} END)";
+    }
+
+    /**
+     * Every configuration of a language map must exist in Postgres before it goes into a table definition.
+     *
+     * @param  array<string, string>  $languages
+     */
+    private function assertTextSearchConfigurations(array $languages): void
+    {
+        $wanted = array_values(array_unique($languages));
+
+        if ($wanted === []) {
+            return;
+        }
+
+        $known = array_column($this->connection()->select(
+            'SELECT cfgname FROM pg_catalog.pg_ts_config WHERE cfgname IN ('.implode(', ', array_fill(0, count($wanted), '?')).')',
+            $wanted,
+        ), 'cfgname');
+        $missing = array_values(array_diff($wanted, $known));
+
+        if ($missing !== []) {
+            throw new VectorQueryException('Unknown Postgres text search configuration(s) in the language map: '.implode(', ', $missing).'.');
+        }
     }
 
     /**

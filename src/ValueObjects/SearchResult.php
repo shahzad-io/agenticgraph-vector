@@ -70,6 +70,7 @@ final readonly class SearchResult
                     'content' => $hit->content,
                     'metadata' => $hit->metadata,
                     'vector' => $hit->vector,
+                    'scores' => $hit->scores,
                 ],
                 $this->hits,
             ),

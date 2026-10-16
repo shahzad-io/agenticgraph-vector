@@ -1,6 +1,6 @@
 ---
 name: agenticgraph-vector
-description: "Use AgenticGraph vector search: named stores and configuration, the memory store for tests, ingestion and batch ingestion, metadata updates, retrieval, filters and SearchQuery, listing ids, building RAG nodes, score handling, capability discovery, the store conformance suite, aliases and zero-downtime collection migration (vector:migrate), vector span attributes, and vector exceptions."
+description: "Use AgenticGraph vector search: named stores and configuration, the memory store for tests, ingestion and batch ingestion, metadata updates, retrieval, filters and SearchQuery, listing ids, building RAG nodes, score handling, capability discovery, the store conformance suite, aliases and zero-downtime collection migration (vector:migrate), hybrid search (keyword plus vector, hybrid(), keywords()), HNSW iterative scan, vector span attributes, and vector exceptions."
 ---
 
 # AgenticGraph Vector
@@ -160,6 +160,36 @@ $ids = $results->pluck('id');
 
 Docs: `/docs/vector-reference-facades-and-builder`, `/docs/vector-reference-value-objects`, `/docs/vector-quick-start`
 
+## Hybrid search
+
+```php
+use AgenticGraph\Vector\Facades\Vector;
+use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
+
+Vector::store('pgvector')->createCollection(new CollectionDefinition(name: 'help_center', keyword: true));
+
+$results = Vector::store('pgvector')
+    ->collection('help_center')
+    ->similarTo('Where is the Print Certification button?')
+    ->hybrid()                    // candidates: 50, k: 60, match: 'any', keywordWeight: 0.25
+    ->minScore(0.3)
+    ->take(5)
+    ->get();
+
+$results->first()?->scores;       // ['vector' => float, 'keyword' => ?float, 'fused' => float]
+```
+
+- Needs the `Keyword` capability (pgvector, memory) and a collection with `keyword: true`. An existing collection gets it with `php artisan vector:migrate {name} --keyword` (a copy, no embedding calls). Hybrid on a collection without it throws `VectorQueryException`.
+- Vector and Postgres full text candidates (up to `max(candidates, take)` each, same filter) are fused by weighted reciprocal rank fusion: `1 / (k + dense rank) + keywordWeight / (k + keyword rank)`. `keywordWeight` defaults to `vector.hybrid.keyword_weight` (0.25); 0 gives exactly the dense results.
+- Measured (B6): hybrid did not beat dense on top-10 quality across benchmarks; it adds relevant candidates at the same budget (recall@30). Recommend dense as the baseline and hybrid as candidates for a reranker; never switch an app to hybrid without its golden set showing a gain.
+- `score` stays the vector similarity; `minScore()` applies to it for every hit. Hits come in fused order, not by `score`. Never threshold `scores['fused']` (at most about 0.033) or `scores['keyword']`.
+- Match mode: `hybrid(match: 'any')` (default, `vector.hybrid.match`) matches documents with any of the query's words, ranked by `ts_rank_cd`; use it for questions. `hybrid(match: 'websearch')` needs every word and reads `"phrases"`, `-excluded`, `or`; use it for search-box input. Questions in `websearch` mode rarely match anything.
+- `keywords('...')` sets the keyword query; it defaults to the `similarTo()` text and is required with `usingVector()`.
+- Languages: set `lang` metadata on documents. `en`/`english`, `es`/`spanish` (by default) pick the text search configuration; other values and none use `simple`, which keeps stop words ("how", "the"), so `any` mode matches on them. `languages:` and `languageField:` change the map; changing it is a migration. No accent folding.
+- The memory store matches with `simple` semantics for every document, in both modes.
+
+Docs: `/docs/vector-guide-hybrid-search`
+
 ## Scores
 
 | Metric | Score | Range |
@@ -200,7 +230,7 @@ if ($capabilities->supports(StoreCapability::DeleteByFilter)) {
 ```
 
 - `capabilities()` and `healthCheck()` are on the store, not on the `collection()` builder. `capabilities()` returns `StoreCapabilities`; ask it with `supports(StoreCapability::...)`.
-- pgvector and memory support `ListIds`, `UpdateMetadata`, `DeleteByFilter`, `FilterNot` (`ne`, `not_in`), `FilterContains`, `FilterRange` and `Aliases`. `Keyword` is not built. An unsupported capability is not a roadmap.
+- pgvector and memory support `ListIds`, `UpdateMetadata`, `DeleteByFilter`, `FilterNot` (`ne`, `not_in`), `FilterContains`, `FilterRange`, `Keyword` (`hybrid()`) and `Aliases`. An unsupported capability is not a roadmap.
 - The builder checks the capability before each operation and throws `VectorUnsupportedOperationException`.
 - `healthCheck()` is connectivity, not feature detection.
 
@@ -283,8 +313,8 @@ Docs: `/docs/vector-reference-exceptions`
 ## Limitations
 
 - No in-place collection change. Dimensions, metric, index and model change through `Vector::migrate()` / `vector:migrate`.
-- No hybrid search, reranking or tenant isolation yet. Named stores exist; there is no routing between them.
-- No metadata index: a selective filter can return fewer than `take()` hits.
+- No reranking or tenant isolation yet. Named stores exist; there is no routing between them.
+- No metadata index. pgvector searches with a filter use HNSW iterative scan (`iterative_scan`, default `relaxed_order`, pgvector 0.8+) up to `max_scan_tuples` rows; a filter matching very few documents can still return fewer than `take()` hits.
 - Scores are not probabilities.
 - Runtime config needs the manager reset (see Configuration).
 

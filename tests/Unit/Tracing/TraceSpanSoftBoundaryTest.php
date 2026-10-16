@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * Architectural invariant: Vector production code must never hard-import agenticgraph.
  *
- * @see src/Tracing/TraceSpan.php — resolves Tracer via TRACER_CLASS string + app()->make() only.
+ * @see src/Tracing/TraceSpan.php: resolves Tracer via TRACER_CLASS string + app()->make() only.
  */
 test('production src must not contain hard agenticgraph imports or ::class references', function (): void {
     $srcPath = realpath(__DIR__.'/../../../src');
@@ -49,7 +49,7 @@ test('production src must not contain hard agenticgraph imports or ::class refer
 
     $message = <<<'MSG'
 TraceSpan must resolve agenticgraph's Tracer via the string constant + app()->make() only.
-A hard `use` import or `::class` reference (likely added by Pint or an IDE) breaks the standalone boundary — revert to string-based resolution.
+A hard `use` import or `::class` reference (likely added by Pint or an IDE) breaks the standalone boundary: revert to string-based resolution.
 MSG;
 
     if ($violations !== []) {

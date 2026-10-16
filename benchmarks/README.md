@@ -36,7 +36,12 @@ PRISM_REQUEST_TIMEOUT=120 bin/vector-bench --dataset=scifact --model=openai:text
 | `--dataset` | required | A name from `datasets.json` |
 | `--model` | required | `provider:model` through Prism, or `deterministic` (plumbing checks only) |
 | `--dimensions` | provider | Sent to the provider |
-| `--mode` | `dense` | Hybrid and rerank modes arrive with B6 and B7 |
+| `--mode` | `dense` | Comma separated: `dense`, `hybrid` (vector plus keyword search, the query text as keywords in match mode `any`, RRF). With `hybrid` the collection is created with keyword search. Rerank arrives with B7 |
+| `--filtered` | off | Filtered query set: documents get a derived field at ingest (WixQA `product`, the title before its first `:`; SciFact `bucket`, crc32 of the id modulo 20) and each query searches only its relevant documents' value. Queries whose relevant documents have more than one value, or none, are left out. The dataset files and pins are unchanged |
+| `--iterative-scan` | store config | Comma separated `off`, `relaxed_order`, `strict_order`: every mode runs once per setting (report key `mode@setting`) |
+| `--match` | `vector.hybrid.match` | Comma separated `any`, `websearch`: hybrid match modes to sweep |
+| `--keyword-weight` | `vector.hybrid.keyword_weight` | Comma separated weights (at least 0) to sweep. With `--match` or `--keyword-weight`, hybrid report keys are `hybrid:<match>:<weight>` |
+| `--keep` | off | Keep the ingested collection; a later `--collection` run reuses it with no embedding calls when the query vectors are cached, and reports the ingest that built it |
 | `--concurrency` | `1,4,8` | Client processes per throughput run |
 | `--warmup` | `20` | Untimed queries before the timed runs |
 | `--queries`, `--docs` | whole dataset | A fixed smaller run; the corpus keeps the relevant documents of the kept queries |
@@ -46,13 +51,13 @@ PRISM_REQUEST_TIMEOUT=120 bin/vector-bench --dataset=scifact --model=openai:text
 | `--tolerance` | `0.01` | Absolute drop allowed per quality metric |
 | `--price-per-1m-tokens` | none | Embedding price for the cost section; never built in |
 | `--report=<file>` | none | With `--compare`: compare an existing report, no run |
-| `--collection=<name>` | none | Search an existing collection or alias that holds exactly the corpus (for example after `vector:migrate`): no ingest, no `REINDEX`, not dropped. The ingest section reads 0 |
+| `--collection=<name>` | none | Search an existing collection or alias that holds exactly the corpus (for example after `vector:migrate`): no ingest, no `REINDEX`, not dropped. The ingest section reads 0. `hybrid` needs it migrated with `--keyword`; `--filtered` cannot reuse one |
 
 Preflight checks the env keys, pgvector, the dataset checksums and one embedding call, and stops with exit 2 naming what is missing.
 
 ## What a run does
 
-1. Ingests the corpus once into a fresh collection (HNSW, cosine), timing the upsert and the embedding part of it (`embeddingMs` on the upsert events), and counting embedding calls and tokens from `VectorEmbeddingCompleted`.
+1. Ingests the corpus once into a fresh collection (HNSW, cosine), every document with `lang: en` metadata (the datasets are English, so keyword search stems and drops stop words), timing the upsert and the embedding part of it (`embeddingMs` on the upsert events), and counting embedding calls and tokens from `VectorEmbeddingCompleted`.
 2. Index build time is a timed `REINDEX` of the embedding index (HNSW grows during inserts, so it has no separate build step). Storage is `pg_table_size` and `pg_indexes_size`.
 3. Embeds each query once (one call per query, timed) and caches the vectors in `<out>/cache/` per dataset, model and dimensions.
 4. Runs the warmup, then for each concurrency level starts N processes that wait at a ready/go barrier and search with the cached vectors (`usingVector`), so the latency is store time only. Children write one JSON line per query; the parent merges them.
@@ -62,7 +67,9 @@ Preflight checks the env keys, pgvector, the dataset checksums and one embedding
 
 `<out>/<dataset>.<model-slug>.<timestamp>.json` and `.md`:
 
-- Quality (from the run's rankings, top 10): nDCG@10, recall@1/5/10 (BEIR: relevant found in the top k divided by all relevant), hit@1/5/10 (any relevant in the top k), MRR@10. Every mode is shown, each as a delta against `dense`.
+- Quality (from the run's rankings, top 10): nDCG@10, recall@1/5/10 (BEIR: relevant found in the top k divided by all relevant), hit@1/5/10 (any relevant in the top k), MRR@10. Every mode is shown, each as a delta against the first one (`dense` when it ran), and the number of queries that returned fewer than 10 hits per mode. A filtered run names its field and query count, and is compared only with a filtered baseline.
+- Candidate recall at the same budget: recall@30 (the reranker's default candidate count), @50 and @100 of each mode's own top K (`hnsw.ef_search` raised to K). The raw union of the dense and keyword top K is reported separately with its document count (up to 2K); it is not a same-budget comparison.
+- Paired differences against dense: per-query nDCG@10 and candidate recall@30, mean and a seeded bootstrap 95% interval (10,000 resamples).
 - Query performance: QPS and p50/p95/p99 store latency per concurrency level; query embedding latency separately.
 - Ingestion: documents per second, embedding time, index rebuild time.
 - Resources, cost (calls, tokens, and the price you give), infrastructure versions.

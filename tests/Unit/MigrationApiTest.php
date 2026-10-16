@@ -54,6 +54,7 @@ it('records the named provider on the collection', function () {
         'metric' => 'cosine',
         'index' => null,
         'embedding' => ['provider' => 'large', 'model' => 'large-model', 'dimensions' => 4],
+        'keyword' => null,
     ]);
 });
 
@@ -164,7 +165,7 @@ it('inherits options left out of the definition from the source collection', fun
 
     try {
         $this->artisan('vector:migrate', ['alias' => $name, '--store' => $store, '--dry-run' => true, '--index-option' => ['ef_construction=40']])
-            ->expectsTable(['dimensions', 'metric', 'index', 'index options', 'embeddings'], [[3, 'l2', 'hnsw', 'm=8, ef_construction=40', 'small3']])
+            ->expectsTable(['dimensions', 'metric', 'index', 'index options', 'embeddings', 'keyword'], [[3, 'l2', 'hnsw', 'm=8, ef_construction=40', 'small3', 'no']])
             ->assertSuccessful();
 
         $state = Vector::migrate($name, new CollectionDefinition($name, indexOptions: ['ef_construction' => 40]), store: $store);
@@ -217,4 +218,22 @@ it('refuses to re-embed into a width the provider does not produce, before writi
         ->toThrow(VectorQueryException::class, 'embeds at 8')
         ->and(Vector::store('memory')->listCollections())->toBe(['narrow'])
         ->and(Vector::store('memory')->listAliases())->toBe([]);
+});
+
+it('adds and removes keyword search with vector:migrate --keyword, --language, --language-field and --no-keyword', function () {
+    memoryWithDocuments('kw', 3);
+
+    $this->artisan('vector:migrate', ['alias' => 'kw', '--keyword' => true, '--no-keyword' => true])->expectsOutputToContain('not both')->assertFailed();
+    $this->artisan('vector:migrate', ['alias' => 'kw', '--keyword' => true, '--language' => ['es']])->expectsOutputToContain('must be value=configuration')->assertFailed();
+    $this->artisan('vector:migrate', ['alias' => 'kw', '--keyword' => true, '--language' => ['de=german', 'es=spanish'], '--language-field' => 'locale', '--dry-run' => true])
+        ->expectsTable(['dimensions', 'metric', 'index', 'index options', 'embeddings', 'keyword'], [[3, 'cosine', 'store default', '-', 'deterministic', 'locale: de=german, es=spanish, else simple']])
+        ->assertSuccessful();
+    $this->artisan('vector:migrate', ['alias' => 'kw', '--keyword' => true])->assertSuccessful();
+
+    expect(Vector::store('memory')->describeCollection('kw')['keyword'])->toBe(['languages' => CollectionDefinition::DEFAULT_LANGUAGES, 'language_field' => 'lang'])
+        ->and(Vector::store('memory')->collection('kw')->usingVector([1.0, 0.0, 0.0])->keywords('"document 2"')->hybrid(match: 'websearch')->take(1)->get()->hits[0]->id)->toBe('d2');
+
+    $this->artisan('vector:migrate', ['alias' => 'kw', '--no-keyword' => true])->assertSuccessful();
+
+    expect(Vector::store('memory')->describeCollection('kw')['keyword'])->toBeNull();
 });

@@ -15,7 +15,9 @@ use AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException;
 use AgenticGraph\Vector\Exceptions\VectorDuplicateDocumentException;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Stores\Memory\MemoryFilterMatcher;
+use AgenticGraph\Vector\Stores\Memory\MemoryKeywordMatcher;
 use AgenticGraph\Vector\Support\MetadataValidator;
+use AgenticGraph\Vector\Support\ReciprocalRankFusion;
 use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
@@ -33,13 +35,14 @@ use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
  * Reference store in plain PHP: exact similarity with pgvector's score math, no index, data kept
  * for the life of the store instance (one process). For app tests without Postgres. Index options
  * in a CollectionDefinition are accepted and ignored. Aliases and migrations follow pgvector's rules;
- * there are no concurrent writers, so nothing locks.
+ * there are no concurrent writers, so nothing locks. Keyword search uses `simple` semantics for every document
+ * (MemoryKeywordMatcher); the language map is recorded, not applied.
  */
 final class MemoryStore implements AliasStoreContract, VectorStoreContract
 {
     use InteractsWithBuilder;
 
-    /** @var array<string, array{dimensions: int, metric: PgVectorMetric, index: array{type: string, options: array<string, int>}|null, embedding: array{provider: string, model: string, dimensions: int}|null, documents: array<string, array{content: string, metadata: array<string, mixed>, vector: list<float>}>}> */
+    /** @var array<string, array{dimensions: int, metric: PgVectorMetric, index: array{type: string, options: array<string, int>}|null, embedding: array{provider: string, model: string, dimensions: int}|null, keyword: array{languages: array<string, string>, language_field: string}|null, documents: array<string, array{content: string, metadata: array<string, mixed>, vector: list<float>}>}> */
     private array $collections = [];
 
     /** @var array<string, string> alias => collection */
@@ -69,6 +72,7 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
             StoreCapability::FilterNot,
             StoreCapability::FilterContains,
             StoreCapability::FilterRange,
+            StoreCapability::Keyword,
             StoreCapability::Aliases,
         );
         $this->filterMatcher = new MemoryFilterMatcher;
@@ -79,28 +83,68 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
         $collection = $this->resolve($query->collection);
         $this->assertVectorDimensions($query->vector, $collection['dimensions'], $query->collection);
 
+        if ($query->keywords !== null && $collection['keyword'] === null) {
+            throw new VectorQueryException(
+                "Collection [{$query->collection}] has no keyword index, so it cannot run a hybrid search. Migrate it with keyword search: Vector::migrate('{$query->collection}', new CollectionDefinition('{$query->collection}', keyword: true)) or php artisan vector:migrate {$query->collection} --keyword.",
+            );
+        }
+
+        if ($query->keywords !== null && ! in_array($query->keywordMatch, SearchQuery::KEYWORD_MATCH_MODES, true)) {
+            throw new VectorQueryException('Keyword match must be one of: '.implode(', ', SearchQuery::KEYWORD_MATCH_MODES).". Got [{$query->keywordMatch}].");
+        }
+
         $metric = $collection['metric'];
         $maxDistance = $query->minScore !== null ? $metric->maxDistanceForMinScore($query->minScore) : null;
-        $scored = [];
+        $keywords = $query->keywords !== null ? new MemoryKeywordMatcher($query->keywords, $query->keywordMatch) : null;
+        $distances = [];
+        $keywordScores = [];
 
         foreach ($collection['documents'] as $id => $document) {
             if (! $this->filterMatcher->matches($query->filter, $document['metadata'])) {
                 continue;
             }
 
-            $distance = $this->distance($metric, $query->vector, $document['vector']);
+            $id = (string) $id;
+            $distances[$id] = $this->distance($metric, $query->vector, $document['vector']);
+            $keywordScore = $keywords?->score($document['content']);
 
-            if ($maxDistance === null || $distance <= $maxDistance) {
-                $scored[] = [(string) $id, $distance];
+            if ($keywordScore !== null) {
+                $keywordScores[$id] = $keywordScore;
             }
         }
 
-        usort($scored, static fn (array $a, array $b): int => [$a[1], $a[0]] <=> [$b[1], $b[0]]);
+        $dense = array_map(strval(...), array_keys($distances));
+        usort($dense, static fn (string $a, string $b): int => $distances[$a] <=> $distances[$b] ?: strcmp($a, $b));
+        $passes = static fn (string $id): bool => $maxDistance === null || $distances[$id] <= $maxDistance;
 
-        $hits = array_map(
-            fn (array $entry): SearchHit => $this->hit($collection, $entry[0], $metric->distanceToSimilarity($entry[1])),
-            array_slice($scored, 0, max(0, $query->topK)),
-        );
+        if ($keywords === null) {
+            $hits = array_map(
+                fn (string $id): SearchHit => $this->hit($collection, $id, $metric->distanceToSimilarity($distances[$id])),
+                array_slice(array_values(array_filter($dense, $passes)), 0, max(0, $query->topK)),
+            );
+
+            return new SearchResult(hits: $hits, count: count($hits));
+        }
+
+        $limit = max($query->candidates, $query->topK);
+        $keywordIds = array_map(strval(...), array_keys($keywordScores));
+        usort($keywordIds, static fn (string $a, string $b): int => $keywordScores[$b] <=> $keywordScores[$a] ?: strcmp($a, $b));
+        $hits = [];
+
+        foreach (ReciprocalRankFusion::fuse(array_slice($dense, 0, $limit), array_slice($keywordIds, 0, $limit), $query->fusionK, $query->keywordWeight) as $id => $fused) {
+            $id = (string) $id;
+
+            if (! $passes($id)) {
+                continue;
+            }
+
+            $score = $metric->distanceToSimilarity($distances[$id]);
+            $hits[] = $this->hit($collection, $id, $score, ['vector' => $score, 'keyword' => $keywordScores[$id] ?? null, 'fused' => $fused]);
+
+            if (count($hits) === $query->topK) {
+                break;
+            }
+        }
 
         return new SearchResult(hits: $hits, count: count($hits));
     }
@@ -215,6 +259,7 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
     {
         $dimensions = $definition->dimensions ?? $this->embeddings->using($definition->embeddings)->dimensions();
         $metric = PgVectorMetric::fromString($definition->metric ?? (string) ($this->config['metric'] ?? 'cosine'));
+        $keyword = $definition->keywordSettings();
 
         if ($dimensions < 1) {
             throw new VectorQueryException("Collection [{$definition->name}] dimensions must be at least 1.");
@@ -225,7 +270,8 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
         if ($existing !== null) {
             if ($existing['dimensions'] === $dimensions
                 && $existing['metric'] === $metric
-                && ($definition->embeddings === null || $definition->embeddings === ($existing['embedding']['provider'] ?? null))) {
+                && ($definition->embeddings === null || $definition->embeddings === ($existing['embedding']['provider'] ?? null))
+                && ($definition->keyword === null || $keyword === $existing['keyword'])) {
                 return;
             }
 
@@ -239,6 +285,7 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
             'metric' => $metric,
             'index' => $definition->index !== null ? ['type' => $definition->index, 'options' => $definition->indexOptions] : null,
             'embedding' => $this->embeddings->record($definition->embeddings, $dimensions),
+            'keyword' => $keyword,
             'documents' => [],
         ];
     }
@@ -288,6 +335,7 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
             'metric' => $resolved['metric']->value,
             'index' => $resolved['index'],
             'embedding' => $resolved['embedding'],
+            'keyword' => $resolved['keyword'],
         ];
     }
 
@@ -571,12 +619,13 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
 
     /**
      * @param  array{dimensions: int, metric: PgVectorMetric, embedding: array{provider: string, model: string, dimensions: int}|null, documents: array<string, array{content: string, metadata: array<string, mixed>, vector: list<float>}>}  $collection
+     * @param  array{vector: float, keyword: float|null, fused: float}|null  $scores
      */
-    private function hit(array $collection, string $id, float $score): SearchHit
+    private function hit(array $collection, string $id, float $score, ?array $scores = null): SearchHit
     {
         $document = $collection['documents'][$id];
 
-        return new SearchHit(id: $id, score: $score, content: $document['content'], metadata: $document['metadata']);
+        return new SearchHit(id: $id, score: $score, content: $document['content'], metadata: $document['metadata'], scores: $scores);
     }
 
     /**
@@ -607,7 +656,7 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
     }
 
     /**
-     * @return array{dimensions: int, metric: PgVectorMetric, embedding: array{provider: string, model: string, dimensions: int}|null, documents: array<string, array{content: string, metadata: array<string, mixed>, vector: list<float>}>}
+     * @return array{dimensions: int, metric: PgVectorMetric, index: array{type: string, options: array<string, int>}|null, embedding: array{provider: string, model: string, dimensions: int}|null, keyword: array{languages: array<string, string>, language_field: string}|null, documents: array<string, array{content: string, metadata: array<string, mixed>, vector: list<float>}>}
      */
     private function resolve(string $collection): array
     {

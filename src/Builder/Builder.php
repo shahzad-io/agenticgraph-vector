@@ -25,7 +25,7 @@ use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
 
 /**
  * Fluent, immutable query and document builder. Collection context is owned here
- * and injected into store calls — callers use ->collection('articles'), never
+ * and injected into store calls; callers use ->collection('articles'), never
  * positional collection arguments on the golden path.
  *
  * Every operation checks the store's capabilities first and throws
@@ -47,6 +47,11 @@ final class Builder
 
     /** @var array<string, mixed> */
     private array $options = [];
+
+    private ?string $keywords = null;
+
+    /** @var array{candidates: int, k: int, match: string, keyword_weight: float}|null */
+    private ?array $hybrid = null;
 
     /** @var (callable(int, int): void)|null */
     private $onProgress = null;
@@ -152,6 +157,54 @@ final class Builder
     {
         $clone = clone $this;
         $clone->options = $options;
+
+        return $clone;
+    }
+
+    /**
+     * Hybrid search (capability Keyword): up to max($candidates, take()) vector and keyword candidates each, fused
+     * by reciprocal rank fusion with $k. Hits come in fused order; their `score` stays the vector similarity, and
+     * minScore() applies to it for every hit. The keyword query is the similarTo() text unless keywords() sets one.
+     *
+     * $match: `any` matches documents with any of the query's words, ranked by how many and how close (for
+     * natural-language questions); `websearch` needs every word and reads "quoted phrases", -exclusions and or.
+     * Null takes `vector.hybrid.match` (default `any`).
+     *
+     * $keywordWeight multiplies the keyword side's fusion term (dense weight 1). At 0 the hits are exactly the
+     * dense results. Null takes `vector.hybrid.keyword_weight`.
+     */
+    public function hybrid(int $candidates = 50, int $k = 60, ?string $match = null, ?float $keywordWeight = null): self
+    {
+        if ($candidates < 1 || $k < 1) {
+            throw new VectorQueryException('hybrid() candidates and k must be at least 1.');
+        }
+
+        $match ??= (string) config('vector.hybrid.match', SearchQuery::KEYWORD_MATCH_ANY);
+
+        if (! in_array($match, SearchQuery::KEYWORD_MATCH_MODES, true)) {
+            throw new VectorQueryException('hybrid() match must be one of: '.implode(', ', SearchQuery::KEYWORD_MATCH_MODES).". Got [{$match}].");
+        }
+
+        $keywordWeight ??= (float) config('vector.hybrid.keyword_weight', 0.25);
+
+        if (! is_finite($keywordWeight) || $keywordWeight < 0.0) {
+            throw new VectorQueryException("hybrid() keywordWeight must be a finite number of at least 0. Got [{$keywordWeight}].");
+        }
+
+        $clone = clone $this;
+        $clone->hybrid = ['candidates' => $candidates, 'k' => $k, 'match' => $match, 'keyword_weight' => $keywordWeight];
+
+        return $clone;
+    }
+
+    /**
+     * The keyword query of a hybrid() search. In `websearch` match mode it is web search syntax: words (all must
+     * match), "quoted phrases", -excluded words, or; in `any` mode operators are ignored. Required with usingVector().
+     */
+    public function keywords(string $keywords): self
+    {
+        $clone = clone $this;
+        $clone->keywords = $keywords;
 
         return $clone;
     }
@@ -307,6 +360,11 @@ final class Builder
             topK: $this->topK,
             minScore: $this->minScore,
             options: $this->options,
+            keywords: $this->hybrid === null ? null : ($this->keywords ?? $this->similarToText),
+            candidates: $this->hybrid['candidates'] ?? 50,
+            fusionK: $this->hybrid['k'] ?? 60,
+            keywordMatch: $this->hybrid['match'] ?? SearchQuery::KEYWORD_MATCH_ANY,
+            keywordWeight: $this->hybrid['keyword_weight'] ?? 0.25,
         );
     }
 
@@ -318,12 +376,14 @@ final class Builder
     {
         $this->assertQueryVectorIsSet();
         $this->assertFilterSupported($this->filter());
+        $this->assertHybridIsComplete();
 
         $context = new VectorTraceContext(
             store: $this->store instanceof InstrumentedStore ? $this->store->name() : (string) config('vector.default', 'pgvector'),
             collection: $this->collection,
             topK: $this->topK,
             filterCount: count($this->filterConditions),
+            searchMode: $this->hybrid !== null ? 'hybrid' : 'dense',
         );
 
         return TraceSpan::operation(
@@ -369,6 +429,23 @@ final class Builder
             throw new VectorQueryException(
                 'A query is required: call similarTo(text) or usingVector(vector) before get().',
             );
+        }
+    }
+
+    private function assertHybridIsComplete(): void
+    {
+        if ($this->hybrid === null) {
+            if ($this->keywords !== null) {
+                throw new VectorQueryException('keywords() needs hybrid(): call hybrid() to run a keyword search.');
+            }
+
+            return;
+        }
+
+        $this->assertSupported(StoreCapability::Keyword, 'Hybrid search');
+
+        if ($this->keywords === null && $this->similarToText === null) {
+            throw new VectorQueryException('A hybrid search with usingVector() needs keywords(text).');
         }
     }
 

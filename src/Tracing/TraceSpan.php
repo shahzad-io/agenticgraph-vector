@@ -184,7 +184,7 @@ final class TraceSpan
             return $execute();
         }
 
-        // Deliberate string-based resolution — never add a hard Tracer import (breaks standalone).
+        // Deliberate string-based resolution: never add a hard Tracer import (breaks standalone).
         // See tests/Unit/Tracing/TraceSpanSoftBoundaryTest.php.
         $tracer = app()->make(self::TRACER_CLASS);
 
@@ -226,6 +226,7 @@ final class TraceSpan
             resultCount: VectorSpanSchema::resultCount($result),
             documentCount: self::documentCount($operation, $context),
             embeddingMs: self::$embeddingMs,
+            searchMode: $context->searchMode,
         ));
     }
 
@@ -247,6 +248,7 @@ final class TraceSpan
             exception: $exception,
             documentCount: self::documentCount($operation, $context),
             embeddingMs: self::$embeddingMs,
+            searchMode: $context->searchMode,
         ));
     }
 

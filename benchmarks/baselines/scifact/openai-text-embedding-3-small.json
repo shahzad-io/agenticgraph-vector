@@ -1,6 +1,6 @@
 {
     "schema": 1,
-    "created_at": "2026-10-16T11:34:45+00:00",
+    "created_at": "2026-10-16T19:16:44+00:00",
     "dataset": {
         "name": "scifact",
         "description": "BEIR SciFact, test split (300 queries)",
@@ -28,25 +28,28 @@
     },
     "store": {
         "name": "pgvector",
-        "index": "CREATE INDEX vcol_4ba684dcad9f5237403b23ece41f03ef_embedding_idx ON public.vcol_4ba684dcad9f5237403b23ece41f03ef USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')"
+        "index": "CREATE INDEX vcol_6ed714e8cd8f6e889eb557f24b8afade_embedding_idx ON public.vcol_6ed714e8cd8f6e889eb557f24b8afade USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')",
+        "collection": "bench_354ce2923aa1"
     },
     "ingest": {
+        "measured_by": "the run that built the collection",
         "documents": 5183,
-        "wall_ms": 204860,
-        "docs_per_second": 25.3,
-        "embedding_ms": 131261,
+        "wall_ms": 199380,
+        "docs_per_second": 26,
+        "embedding_ms": 125281,
         "embedding_calls": 52,
         "embedding_tokens": 1657884,
-        "index_rebuild_ms": 2876
+        "index_rebuild_ms": 2848
     },
     "query_embedding": {
         "calls": 300,
         "tokens": 5898,
-        "cached": false,
-        "p50_ms": 543,
-        "p95_ms": 774,
-        "p99_ms": 925
+        "cached": true,
+        "p50_ms": 526,
+        "p95_ms": 792,
+        "p99_ms": 886
     },
+    "filter": null,
     "modes": {
         "dense": {
             "quality": {
@@ -59,41 +62,131 @@
                 "hit_at_10": 0.8666666666666667,
                 "mrr_at_10": 0.6991044973544972
             },
+            "candidates": {
+                "recall_at_30": 0.9116666666666666,
+                "recall_at_50": 0.945,
+                "recall_at_100": 0.9733333333333334
+            },
+            "below_take": 0,
             "concurrency": {
                 "1": {
                     "queries": 300,
-                    "wall_ms": 6199,
-                    "qps": 48.4,
-                    "p50_ms": 20.425,
-                    "p95_ms": 21.565,
-                    "p99_ms": 25.73
+                    "wall_ms": 7495,
+                    "qps": 40,
+                    "p50_ms": 24.86,
+                    "p95_ms": 26.911,
+                    "p99_ms": 29.687
                 },
                 "4": {
                     "queries": 300,
-                    "wall_ms": 2065,
-                    "qps": 145.3,
-                    "p50_ms": 26.905,
-                    "p95_ms": 32.752,
-                    "p99_ms": 35.171
+                    "wall_ms": 2359,
+                    "qps": 127.2,
+                    "p50_ms": 30.81,
+                    "p95_ms": 36.816,
+                    "p99_ms": 41.654
                 },
                 "8": {
                     "queries": 300,
-                    "wall_ms": 1197,
-                    "qps": 250.7,
-                    "p50_ms": 30.833,
-                    "p95_ms": 36.992,
-                    "p99_ms": 39.377
+                    "wall_ms": 1322,
+                    "qps": 226.9,
+                    "p50_ms": 33.544,
+                    "p95_ms": 40.754,
+                    "p99_ms": 42.113
+                }
+            }
+        },
+        "hybrid": {
+            "settings": {
+                "match": "any",
+                "keyword_weight": 0.25
+            },
+            "quality": {
+                "ndcg_at_10": 0.6926529453552838,
+                "recall_at_1": 0.5209444444444444,
+                "recall_at_5": 0.7811111111111111,
+                "recall_at_10": 0.8524444444444444,
+                "hit_at_1": 0.55,
+                "hit_at_5": 0.8066666666666666,
+                "hit_at_10": 0.8633333333333333,
+                "mrr_at_10": 0.6513743386243385
+            },
+            "candidates": {
+                "recall_at_30": 0.925,
+                "recall_at_50": 0.945,
+                "recall_at_100": 0.9733333333333334
+            },
+            "below_take": 0,
+            "concurrency": {
+                "1": {
+                    "queries": 300,
+                    "wall_ms": 13161,
+                    "qps": 22.8,
+                    "p50_ms": 41.831,
+                    "p95_ms": 66.222,
+                    "p99_ms": 81.879
+                },
+                "4": {
+                    "queries": 300,
+                    "wall_ms": 4067,
+                    "qps": 73.8,
+                    "p50_ms": 49.969,
+                    "p95_ms": 78.777,
+                    "p99_ms": 94.909
+                },
+                "8": {
+                    "queries": 300,
+                    "wall_ms": 2275,
+                    "qps": 131.9,
+                    "p50_ms": 55.947,
+                    "p95_ms": 86.815,
+                    "p99_ms": 103.485
+                }
+            },
+            "paired": {
+                "reference": "dense",
+                "ndcg_at_10": {
+                    "mean": -0.03918533754332354,
+                    "low": -0.06215597385261395,
+                    "high": -0.016807610198623816,
+                    "queries": 300,
+                    "resamples": 10000
+                },
+                "candidate_recall_at_30": {
+                    "mean": 0.013333333333333334,
+                    "low": 0.0033333333333333335,
+                    "high": 0.02666666666666667,
+                    "queries": 300,
+                    "resamples": 10000
                 }
             }
         }
     },
+    "union": {
+        "any": {
+            "k_30": {
+                "recall": 0.9316666666666666,
+                "documents_mean": 54.4,
+                "documents_max": 60
+            },
+            "k_50": {
+                "recall": 0.9583333333333334,
+                "documents_mean": 90.4,
+                "documents_max": 100
+            },
+            "k_100": {
+                "recall": 0.9866666666666667,
+                "documents_mean": 178.2,
+                "documents_max": 199
+            }
+        }
+    },
     "resources": {
-        "table_bytes": 50774016,
-        "index_bytes": 42721280,
-        "total_bytes": 93495296,
+        "table_bytes": 53067776,
+        "index_bytes": 49987584,
+        "total_bytes": 103055360,
         "container": "agenticgraph-vector-postgres-1",
-        "memory_mib_max": 162.6,
-        "memory_samples": 61,
+        "memory_mib_max": 191.9,
+        "memory_samples": 19,
         "memory_note": null
     },
     "cost": {
@@ -107,5 +200,5 @@
         "pgvector": "0.8.3",
         "os": "Darwin 24.6.0"
     },
-    "runtime_ms": 401087
+    "runtime_ms": 143557
 }

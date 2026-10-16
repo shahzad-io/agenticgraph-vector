@@ -21,8 +21,8 @@ use AgenticGraph\Vector\ValueObjects\SearchResult;
 use Illuminate\Support\Facades\Event;
 use Shahzad\AgenticGraph\Tracing\Tracer;
 
-test('contract freeze guard: vector span schema v2 attribute keys are frozen', function () {
-    expect(VectorSpanSchema::VERSION)->toBe('v2')
+test('contract freeze guard: vector span schema v3 attribute keys are frozen', function () {
+    expect(VectorSpanSchema::VERSION)->toBe('v3')
         ->and(VectorSpanSchema::FROZEN_ATTRIBUTE_KEYS)->toBe([
             'vector.store',
             'vector.collection',
@@ -34,6 +34,7 @@ test('contract freeze guard: vector span schema v2 attribute keys are frozen', f
             'vector.score_max',
             'vector.filter_count',
             'vector.embedding_ms',
+            'vector.search_mode',
         ]);
 });
 
@@ -51,6 +52,7 @@ test('contract freeze guard: built search attributes only use frozen keys', func
         'vector.collection',
         'vector.operation',
         'vector.top_k',
+        'vector.search_mode',
     ]);
 
     VectorSpanSchema::enrichFromResult(
@@ -68,6 +70,7 @@ test('contract freeze guard: built search attributes only use frozen keys', func
         'vector.collection',
         'vector.operation',
         'vector.top_k',
+        'vector.search_mode',
         'vector.latency_ms',
         'vector.result_count',
         'vector.score_min',
@@ -276,6 +279,33 @@ it('reports the name of the store actually used on spans and events', function (
 
     expect($stores)->toBe(['secondary'])
         ->and($spanStores)->toBe(['secondary']);
+});
+
+it('records the search mode on search spans and events, and on no other operation', function () {
+    app()->singleton(Tracer::class);
+    config()->set('vector.stores.memory', ['driver' => 'memory']);
+    $store = Vector::store('memory');
+    $store->createCollection(new CollectionDefinition('articles', dimensions: 8, keyword: true));
+    $store->createCollection(new CollectionDefinition('plain', dimensions: 8));
+    $store->collection('articles')->upsert([Document::make('doc', 'observability search probe', vector: array_fill(0, 8, 0.5))]);
+    Event::fake([VectorOperationCompleted::class, VectorOperationFailed::class]);
+    $lastSpan = fn (): array => app(Tracer::class)->spans[array_key_last(app(Tracer::class)->spans)][1];
+
+    $store->collection('articles')->usingVector(array_fill(0, 8, 0.5))->get();
+    $dense = $lastSpan();
+    $store->collection('articles')->usingVector(array_fill(0, 8, 0.5))->keywords('probe')->hybrid()->get();
+    $hybrid = $lastSpan();
+    $store->collection('articles')->fetch(['doc']);
+    $fetch = $lastSpan();
+    $searches = Event::dispatched(VectorOperationCompleted::class)->map(fn (array $args): array => [$args[0]->operation, $args[0]->searchMode])->values()->all();
+
+    expect($dense['vector.search_mode'])->toBe('dense')
+        ->and($hybrid['vector.search_mode'])->toBe('hybrid')
+        ->and($fetch)->not->toHaveKey('vector.search_mode')
+        ->and(array_slice($searches, -3))->toBe([['search', 'dense'], ['search', 'hybrid'], ['fetch', null]]);
+
+    expect(fn () => $store->collection('plain')->usingVector(array_fill(0, 8, 0.5))->keywords('probe')->hybrid()->get())->toThrow(VectorQueryException::class)
+        ->and(Event::dispatched(VectorOperationFailed::class)->last()[0]->searchMode)->toBe('hybrid');
 });
 
 it('puts the query embedding time on the search span and event', function () {

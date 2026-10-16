@@ -15,6 +15,7 @@ final readonly class VectorTraceContext
         public int $documentCount = 0,
         public ?int $topK = null,
         public int $filterCount = 0,
+        public ?string $searchMode = null,
     ) {}
 
     public static function forSearch(SearchQuery $query, ?string $store = null): self
@@ -24,6 +25,7 @@ final readonly class VectorTraceContext
             collection: $query->collection,
             topK: $query->topK,
             filterCount: self::filterCount($query->filter),
+            searchMode: $query->keywords !== null ? 'hybrid' : 'dense',
         );
     }
 

@@ -63,17 +63,50 @@ final class RetrievalMetrics
      */
     private static function average(array $qrels, array $ranked, Closure $score): float
     {
-        if ($qrels === []) {
-            return 0.0;
-        }
+        return $qrels === [] ? 0.0 : array_sum(self::perQuery($qrels, $ranked, $score)) / count($qrels);
+    }
 
-        $total = 0.0;
+    /**
+     * nDCG@k of each query, in qrels order (for paired comparisons).
+     *
+     * @param  array<string, list<string>>  $qrels
+     * @param  array<string, list<string>>  $ranked
+     * @return array<string, float>
+     */
+    public static function ndcgPerQuery(array $qrels, array $ranked, int $k): array
+    {
+        return self::perQuery($qrels, $ranked, static fn (array $relevant, array $rankedIds): float => self::ndcgForQuery(array_slice($rankedIds, 0, $k), $relevant, $k));
+    }
+
+    /**
+     * recall@k of each query, in qrels order (for paired comparisons).
+     *
+     * @param  array<string, list<string>>  $qrels
+     * @param  array<string, list<string>>  $ranked
+     * @return array<string, float>
+     */
+    public static function recallPerQuery(array $qrels, array $ranked, int $k): array
+    {
+        return self::perQuery($qrels, $ranked, static fn (array $relevant, array $rankedIds): float => $relevant === []
+            ? 0.0
+            : count(array_intersect($relevant, array_slice($rankedIds, 0, $k))) / count($relevant));
+    }
+
+    /**
+     * @param  array<string, list<string>>  $qrels
+     * @param  array<string, list<string>>  $ranked
+     * @param  Closure(list<string>, list<string>): float  $score
+     * @return array<string, float>
+     */
+    private static function perQuery(array $qrels, array $ranked, Closure $score): array
+    {
+        $scores = [];
 
         foreach ($qrels as $queryId => $relevant) {
-            $total += $score($relevant, $ranked[$queryId] ?? []);
+            $scores[(string) $queryId] = $score($relevant, $ranked[$queryId] ?? []);
         }
 
-        return $total / count($qrels);
+        return $scores;
     }
 
     /**

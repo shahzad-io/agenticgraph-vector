@@ -129,7 +129,8 @@ final class CollectionMigrator
 
     /**
      * Fill what the definition leaves out from the source collection. A new provider brings its own width,
-     * and a new index type its own options; given index options are merged over the source's.
+     * and a new index type its own options; given index options are merged over the source's. Keyword search,
+     * its language map and field are kept unless given.
      */
     private function inherit(string $alias, CollectionDefinition $definition): CollectionDefinition
     {
@@ -146,6 +147,9 @@ final class CollectionMigrator
             index: $index,
             indexOptions: $sameIndex ? array_merge($source['index']['options'] ?? [], $definition->indexOptions) : $definition->indexOptions,
             embeddings: $embeddings,
+            keyword: $definition->keyword ?? (($source['keyword'] ?? null) !== null),
+            languages: $definition->languages ?? $source['keyword']['languages'] ?? null,
+            languageField: $definition->languageField ?? $source['keyword']['language_field'] ?? null,
         );
     }
 
@@ -253,9 +257,15 @@ final class CollectionMigrator
      */
     private static function canonical(array $definition): string
     {
-        $options = (array) ($definition['index_options'] ?? []);
-        ksort($options);
-        $definition['index_options'] = $options;
+        foreach (['index_options', 'languages'] as $key) {
+            if (isset($definition[$key])) {
+                $sorted = (array) $definition[$key];
+                ksort($sorted);
+                $definition[$key] = $sorted;
+            }
+        }
+
+        $definition['index_options'] ??= [];
         ksort($definition);
 
         return json_encode($definition, JSON_THROW_ON_ERROR);

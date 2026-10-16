@@ -51,16 +51,21 @@ final readonly class MigrationState
     }
 
     /**
+     * Keyword keys are present only with keyword search, so a migration recorded before B6 resumes unchanged.
+     *
      * @return array<string, mixed>
      */
     public static function definitionOf(CollectionDefinition $definition): array
     {
+        $keyword = $definition->keywordSettings();
+
         return [
             'dimensions' => $definition->dimensions,
             'metric' => $definition->metric,
             'index' => $definition->index,
             'index_options' => $definition->indexOptions,
             'embeddings' => $definition->embeddings,
+            ...($keyword === null ? [] : ['keyword' => true, 'languages' => $keyword['languages'], 'language_field' => $keyword['language_field']]),
         ];
     }
 
@@ -68,6 +73,8 @@ final readonly class MigrationState
     {
         /** @var array<string, mixed> $indexOptions */
         $indexOptions = $this->definition['index_options'] ?? [];
+        /** @var array<string, string>|null $languages */
+        $languages = $this->definition['languages'] ?? null;
 
         return new CollectionDefinition(
             name: $this->target,
@@ -76,6 +83,9 @@ final readonly class MigrationState
             index: isset($this->definition['index']) ? (string) $this->definition['index'] : null,
             indexOptions: $indexOptions,
             embeddings: isset($this->definition['embeddings']) ? (string) $this->definition['embeddings'] : null,
+            keyword: isset($this->definition['keyword']) ? (bool) $this->definition['keyword'] : null,
+            languages: $languages,
+            languageField: isset($this->definition['language_field']) ? (string) $this->definition['language_field'] : null,
         );
     }
 }

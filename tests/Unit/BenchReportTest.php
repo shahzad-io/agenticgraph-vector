@@ -1,7 +1,12 @@
 <?php
 
+use AgenticGraph\Vector\Facades\Vector;
 use AgenticGraph\Vector\Tests\Support\BenchDataset;
 use AgenticGraph\Vector\Tests\Support\BenchReport;
+use AgenticGraph\Vector\Tests\Support\BenchRunner;
+use AgenticGraph\Vector\Tests\Support\RetrievalMetrics;
+use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
+use AgenticGraph\Vector\ValueObjects\Document;
 
 function benchReport(array $quality = [], array $overrides = []): array
 {
@@ -100,4 +105,124 @@ it('builds a fixed-size subset that keeps the relevant documents of the kept que
         ->and(array_column($subset['queries'], 'id'))->toBe(['q1', 'q3'])
         ->and($subset['qrels'])->toBe(['q1' => ['d9'], 'q3' => ['d2']])
         ->and(BenchDataset::subset($dataset, queries: 1)['qrels'])->toBe(['q1' => ['d9']]);
+});
+
+it('renders hybrid as a delta against the first mode, with the queries below take', function () {
+    $hybrid = ['quality' => array_fill_keys(BenchReport::QUALITY_KEYS, 0.55), 'below_take' => 0, 'concurrency' => [1 => ['queries' => 10, 'wall_ms' => 30, 'qps' => 333.3, 'p50_ms' => 3.0, 'p95_ms' => 4.0, 'p99_ms' => 5.0]]];
+    $markdown = BenchReport::markdown(benchReport(overrides: ['modes' => ['dense' => ['below_take' => 2], 'hybrid' => $hybrid]]));
+
+    expect($markdown)->toContain('| Metric | dense | hybrid (delta vs dense) |')
+        ->and($markdown)->toContain('| ndcg_at_10 | 0.5000 | 0.5500 (+0.0500) |')
+        ->and($markdown)->toContain('Queries with fewer than 10 hits: dense 2, hybrid 0.')
+        ->and($markdown)->toContain('| hybrid | 1 | 333.3 | 3 | 4 | 5 |');
+
+    $filtered = benchReport(overrides: ['filter' => ['field' => 'product', 'queries' => 8, 'unfiltered_queries' => 10]]);
+    $filtered['modes'] = ['dense@off' => $filtered['modes']['dense'], 'dense@relaxed_order' => $hybrid];
+    $markdown = BenchReport::markdown($filtered);
+
+    expect($markdown)->toContain('- Filtered set: field `product`, 8 of 10 queries')
+        ->and($markdown)->toContain('| Metric | dense@off | dense@relaxed_order (delta vs dense@off) |');
+});
+
+it('refuses to compare a filtered run with an unfiltered baseline', function () {
+    $result = BenchReport::compare(benchReport(overrides: ['filter' => ['field' => 'bucket', 'queries' => 9, 'unfiltered_queries' => 10]]), benchReport(), 0.01);
+
+    expect($result['failures'])->toHaveCount(1)
+        ->and($result['failures'][0])->toContain('filter.field');
+});
+
+it('derives the filtered set: WixQA product, SciFact bucket, queries whose relevant documents share one value', function () {
+    expect(BenchRunner::filterField('wixqa-expert'))->toBe('product')
+        ->and(BenchRunner::filterField('scifact'))->toBe('bucket')
+        ->and(BenchRunner::filterValue('product', ['id' => 'x', 'text' => "Wix Stores: Adding Products\nBody: with a colon"]))->toBe('Wix Stores')
+        ->and(BenchRunner::filterValue('product', ['id' => 'x', 'text' => "No product here\nBody: colon"]))->toBeNull()
+        ->and(BenchRunner::filterValue('bucket', ['id' => '4983', 'text' => 't']))->toBe(crc32('4983') % 20);
+
+    $values = ['a' => 'Wix Stores', 'b' => 'Wix Stores', 'c' => 'Wix Blog', 'd' => null];
+
+    expect(BenchRunner::queryFilters(['q1' => ['a', 'b'], 'q2' => ['a', 'c'], 'q3' => ['d'], 'q4' => ['c'], 'q5' => ['missing']], $values))
+        ->toBe(['q1' => 'Wix Stores', 'q4' => 'Wix Blog']);
+});
+
+it('gives benchmark documents lang en and runs hybrid queries in any match mode', function () {
+    config()->set('vector.stores.pgvector', ['driver' => 'memory']);
+    config()->set('vector.hybrid.match', 'websearch');
+    $store = Vector::store('pgvector');
+    $store->createCollection(new CollectionDefinition('bench_unit', dimensions: 2, keyword: true));
+    $store->collection('bench_unit')->upsert([
+        Document::make('near', 'unrelated text', BenchRunner::documentMetadata(null, null), [1.0, 0.0]),
+        Document::make('far', 'reset a password', BenchRunner::documentMetadata('bucket', 3), [0.0, 1.0]),
+    ]);
+    $job = ['collection' => 'bench_unit', 'top_k' => 2, 'mode' => 'hybrid', 'field' => null, 'options' => []];
+
+    // A question no document holds every word of: websearch (the config here) would find no keyword hit.
+    expect(BenchRunner::documentMetadata(null, null))->toBe(['lang' => 'en'])
+        ->and(BenchRunner::documentMetadata('bucket', 3))->toBe(['lang' => 'en', 'bucket' => 3])
+        ->and(BenchRunner::documentMetadata('product', null))->toBe(['lang' => 'en'])
+        ->and(BenchRunner::searchIds($job, ['text' => 'How do I reset my password?', 'vector' => [1.0, 0.0], 'filter' => null]))->toBe(['far', 'near'])
+        ->and(BenchRunner::searchIds(['mode' => 'dense'] + $job, ['text' => 'How do I reset my password?', 'vector' => [1.0, 0.0], 'filter' => null]))->toBe(['near', 'far']);
+});
+
+it('computes per-query metrics and a seeded paired bootstrap interval', function () {
+    $qrels = ['q1' => ['a'], 'q2' => ['b', 'c']];
+    $ranked = ['q1' => ['x', 'a'], 'q2' => ['b']];
+
+    expect(RetrievalMetrics::recallPerQuery($qrels, $ranked, 1))->toBe(['q1' => 0.0, 'q2' => 0.5])
+        ->and(RetrievalMetrics::ndcgPerQuery($qrels, $ranked, 10)['q1'])->toEqualWithDelta(1 / log(3, 2), 1e-12);
+
+    $same = BenchReport::pairedBootstrap(['q1' => 0.5, 'q2' => 0.2], ['q1' => 0.5, 'q2' => 0.2]);
+    $better = array_combine(array_map(fn (int $i): string => "q{$i}", range(1, 50)), array_map(fn (int $i): float => $i % 5 === 0 ? 0.0 : 0.1, range(1, 50)));
+    $zero = array_fill_keys(array_keys($better), 0.0);
+    $interval = BenchReport::pairedBootstrap($better, $zero, 2000);
+
+    expect($same)->toMatchArray(['mean' => 0.0, 'low' => 0.0, 'high' => 0.0, 'queries' => 2])
+        ->and($interval['mean'])->toEqualWithDelta(0.08, 1e-12)
+        ->and($interval['low'])->toBeGreaterThan(0.0)->toBeLessThan(0.08)
+        ->and($interval['high'])->toBeGreaterThan(0.08)->toBeLessThanOrEqual(0.1)
+        ->and(BenchReport::pairedBootstrap($better, $zero, 2000))->toBe($interval)
+        ->and(fn () => BenchReport::pairedBootstrap(['q1' => 1.0], ['q2' => 1.0]))->toThrow(InvalidArgumentException::class);
+});
+
+it('expands hybrid into sweep keys and reads the keyword candidate list in keyword order', function () {
+    config()->set('vector.hybrid.match', 'websearch');
+    config()->set('vector.hybrid.keyword_weight', 0.25);
+
+    expect(array_keys(BenchRunner::variants(['dense', 'hybrid'], ['any', 'websearch'], ['0', '0.5'], true)))->toBe(['dense', 'hybrid:any:0', 'hybrid:any:0.5', 'hybrid:websearch:0', 'hybrid:websearch:0.5'])
+        ->and(BenchRunner::variants(['dense', 'hybrid'], [null], [null], false))->toBe([
+            'dense' => ['mode' => 'dense', 'match' => null, 'keyword_weight' => null],
+            'hybrid' => ['mode' => 'hybrid', 'match' => 'websearch', 'keyword_weight' => 0.25],
+        ]);
+
+    config()->set('vector.stores.pgvector', ['driver' => 'memory']);
+    $store = Vector::store('pgvector');
+    $store->createCollection(new CollectionDefinition('bench_kw', dimensions: 2, keyword: true));
+    $store->collection('bench_kw')->upsert([
+        Document::make('near', 'unrelated', [], [1.0, 0.0]),
+        Document::make('one', 'reset', [], [0.0, 1.0]),
+        Document::make('two', 'reset password', [], [0.1, 1.0]),
+    ]);
+    $job = ['collection' => 'bench_kw', 'top_k' => 3, 'mode' => 'dense', 'field' => null, 'options' => [], 'match' => 'any'];
+    $query = ['text' => 'reset my password', 'vector' => [1.0, 0.0], 'filter' => null];
+
+    // Keyword order: two (both words) before one; the dense-only document is not in the keyword list.
+    expect(BenchRunner::keywordIds($job, $query))->toBe(['two', 'one'])
+        ->and(BenchRunner::searchIds(['mode' => 'hybrid', 'keyword_weight' => 0.0] + $job, $query))->toBe(BenchRunner::searchIds($job, $query));
+});
+
+it('reports same-budget candidate recall, paired intervals and the raw union separately', function () {
+    $hybrid = benchReport()['modes']['dense'];
+    $hybrid['settings'] = ['match' => 'any', 'keyword_weight' => 0.25];
+    $hybrid['candidates'] = ['recall_at_30' => 0.9, 'recall_at_50' => 0.95, 'recall_at_100' => 0.97];
+    $hybrid['paired'] = ['reference' => 'dense', 'ndcg_at_10' => ['mean' => -0.01, 'low' => -0.02, 'high' => 0.005], 'candidate_recall_at_30' => ['mean' => 0.02, 'low' => 0.01, 'high' => 0.03]];
+    $report = benchReport();
+    $report['modes']['dense']['candidates'] = ['recall_at_30' => 0.88, 'recall_at_50' => 0.93, 'recall_at_100' => 0.96];
+    $report['modes']['hybrid:any:0.25'] = $hybrid;
+    $report['union'] = ['any' => ['k_30' => ['recall' => 0.95, 'documents_mean' => 51.5, 'documents_max' => 60]]];
+    $markdown = BenchReport::markdown($report);
+
+    expect($markdown)->toContain('Hybrid settings: hybrid:any:0.25 match any, keyword weight 0.25.')
+        ->and($markdown)->toContain('| hybrid:any:0.25 | 0.9000 (+0.0200) | 0.9500 (+0.0200) | 0.9700 (+0.0100) |')
+        ->and($markdown)->toContain('| hybrid:any:0.25 | -0.0100 [-0.0200, +0.0050] | +0.0200 [+0.0100, +0.0300] |')
+        ->and($markdown)->toContain('not a same-budget comparison')
+        ->and($markdown)->toContain('| any | 30 | 0.9500 | 51.5, 60 |');
 });
