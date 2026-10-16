@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Stores;
 
 use AgenticGraph\Vector\Concerns\InteractsWithBuilder;
+use AgenticGraph\Vector\Contracts\AliasStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\PgVectorMetric;
@@ -26,6 +27,7 @@ use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\HealthCheckResult;
 use AgenticGraph\Vector\ValueObjects\IdPage;
+use AgenticGraph\Vector\ValueObjects\MigrationState;
 use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
 use AgenticGraph\Vector\ValueObjects\SearchHit;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
@@ -37,7 +39,7 @@ use Illuminate\Database\DatabaseManager;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Throwable;
 
-final class PgVectorStore implements VectorStoreContract
+final class PgVectorStore implements AliasStoreContract, VectorStoreContract
 {
     use InteractsWithBuilder;
 
@@ -132,6 +134,7 @@ final class PgVectorStore implements VectorStoreContract
             StoreCapability::FilterNot,
             StoreCapability::FilterContains,
             StoreCapability::FilterRange,
+            StoreCapability::Aliases,
         );
     }
 
@@ -200,14 +203,15 @@ final class PgVectorStore implements VectorStoreContract
                 return;
             }
 
-            $resolved = $this->registry->resolve($collection);
-            $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
-            $placeholders = implode(', ', array_fill(0, count($idList), '?'));
+            $this->connection()->transaction(function () use ($collection, $idList): void {
+                $storage = $this->storage($this->registry->resolve($collection, forWrite: true));
+                $placeholders = implode(', ', array_fill(0, count($idList), '?'));
 
-            $this->connection()->delete(
-                "DELETE FROM {$storage} WHERE id IN ({$placeholders})",
-                array_map(strval(...), $idList),
-            );
+                $this->connection()->delete(
+                    "DELETE FROM {$storage} WHERE id IN ({$placeholders})",
+                    array_map(strval(...), $idList),
+                );
+            });
         });
     }
 
@@ -220,14 +224,16 @@ final class PgVectorStore implements VectorStoreContract
         $this->run(function () use ($collection, $filter): void {
             $this->preparePgVector();
 
-            $resolved = $this->registry->resolve($collection);
-            $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
             $translated = $this->filterTranslator->translate($filter);
 
-            $this->connection()->delete(
-                "DELETE FROM {$storage} WHERE {$translated['sql']}",
-                $translated['bindings'],
-            );
+            $this->connection()->transaction(function () use ($collection, $translated): void {
+                $storage = $this->storage($this->registry->resolve($collection, forWrite: true));
+
+                $this->connection()->delete(
+                    "DELETE FROM {$storage} WHERE {$translated['sql']}",
+                    $translated['bindings'],
+                );
+            });
         });
     }
 
@@ -259,8 +265,6 @@ final class PgVectorStore implements VectorStoreContract
         return $this->run(function () use ($collection, $metadataById, $merge): UpdateMetadataResult {
             $this->preparePgVector();
 
-            $resolved = $this->registry->resolve($collection);
-            $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
             $requested = array_map(strval(...), array_keys($metadataById));
             $updated = [];
 
@@ -274,7 +278,9 @@ final class PgVectorStore implements VectorStoreContract
                 ? "(CASE WHEN jsonb_typeof(documents.metadata) = 'object' THEN documents.metadata ELSE '{}'::jsonb END) || changes.metadata"
                 : 'changes.metadata';
 
-            $this->connection()->transaction(function () use ($rows, $storage, $value, &$updated): void {
+            $this->connection()->transaction(function () use ($collection, $rows, $value, &$updated): void {
+                $storage = $this->storage($this->registry->resolve($collection, forWrite: true));
+
                 foreach (array_chunk($rows, max(1, $this->batchSize())) as $chunk) {
                     $placeholders = implode(', ', array_fill(0, count($chunk), '(?, ?::jsonb)'));
 
@@ -314,7 +320,7 @@ final class PgVectorStore implements VectorStoreContract
             $this->preparePgVector();
 
             $index = PgVectorIndex::fromDefinition($definition, $this->indexType(), $this->configuredIvfflatLists());
-            $dimensions = $definition->dimensions ?? $this->embeddings->using()->dimensions();
+            $dimensions = $definition->dimensions ?? $this->embeddings->using($definition->embeddings)->dimensions();
             $metric = PgVectorMetric::fromString($this->resolveCollectionMetric($definition));
 
             if ($dimensions < 1) {
@@ -327,17 +333,20 @@ final class PgVectorStore implements VectorStoreContract
 
                 if ($existing['dimensions'] === $dimensions
                     && $existing['metric'] === $metric
-                    && ($existingIndex === null || $existingIndex->equals($index))) {
+                    && ($existingIndex === null || $existingIndex->equals($index))
+                    && ($definition->embeddings === null || $definition->embeddings === ($existing['embedding']['provider'] ?? null))) {
                     return;
                 }
 
                 throw new VectorQueryException(
-                    "Collection [{$definition->name}] already exists with a different definition.",
+                    "Collection [{$definition->name}] already exists with a different definition. Change it with Vector::migrate() (php artisan vector:migrate).",
                 );
             }
 
-            $this->connection()->transaction(function () use ($definition, $dimensions, $metric, $index): void {
-                $storageIdentifier = $this->registry->register($definition, $dimensions, $metric, $index->toArray());
+            $embedding = $this->embeddings->record($definition->embeddings, $dimensions);
+
+            $this->connection()->transaction(function () use ($definition, $dimensions, $metric, $index, $embedding): void {
+                $storageIdentifier = $this->registry->register($definition, $dimensions, $metric, $index->toArray(), $embedding);
                 $this->createStorage($storageIdentifier, $dimensions, $metric, $index);
             });
         });
@@ -346,11 +355,13 @@ final class PgVectorStore implements VectorStoreContract
     public function deleteCollection(string $name): void
     {
         $this->run(function () use ($name): void {
-            $resolved = $this->registry->resolve($name);
-            $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
+            $this->preparePgVector();
 
-            $this->connection()->statement("DROP TABLE IF EXISTS {$storage}");
-            $this->registry->remove($name);
+            $this->connection()->transaction(function () use ($name): void {
+                $storage = $this->storage($this->registry->resolve($name));
+                $this->registry->remove($name);
+                $this->connection()->statement("DROP TABLE IF EXISTS {$storage}");
+            });
         });
     }
 
@@ -383,6 +394,287 @@ final class PgVectorStore implements VectorStoreContract
 
             return new HealthCheckResult(healthy: true, latencyMs: $latencyMs);
         });
+    }
+
+    public function describeCollection(string $name): array
+    {
+        return $this->run(function () use ($name): array {
+            $this->preparePgVector();
+
+            $resolved = $this->registry->resolve($name);
+
+            return [
+                'collection' => $resolved['name'],
+                'dimensions' => $resolved['dimensions'],
+                'metric' => $resolved['metric']->value,
+                'index' => $this->existingIndex($this->registry->qualifiedStorageName($resolved['storage_identifier']), $resolved['index_options'])?->toArray(),
+                'embedding' => $resolved['embedding'],
+            ];
+        });
+    }
+
+    public function listAliases(): array
+    {
+        return $this->run(function (): array {
+            $this->preparePgVector();
+
+            return $this->registry->listAliases();
+        });
+    }
+
+    public function deleteAlias(string $alias): void
+    {
+        $this->run(function () use ($alias): void {
+            $this->preparePgVector();
+            $this->registry->removeAlias($alias);
+        });
+    }
+
+    public function pointAlias(string $alias, string $collection): void
+    {
+        $this->run(function () use ($alias, $collection): void {
+            $this->preparePgVector();
+            $this->registry->pointAlias($alias, $collection);
+        });
+    }
+
+    public function adoptCollection(string $name, string $physical): void
+    {
+        $this->run(function () use ($name, $physical): void {
+            $this->preparePgVector();
+            $this->connection()->transaction(fn () => $this->registry->adopt($name, $physical));
+        });
+    }
+
+    public function countDocuments(string $collection): int
+    {
+        return $this->run(function () use ($collection): int {
+            $this->preparePgVector();
+
+            return (int) $this->connection()->scalar("SELECT COUNT(*) FROM {$this->storage($this->registry->resolve($collection))}");
+        });
+    }
+
+    public function migration(string $alias): ?MigrationState
+    {
+        return $this->run(function () use ($alias): ?MigrationState {
+            $this->preparePgVector();
+
+            return $this->registry->migration($alias);
+        });
+    }
+
+    public function saveMigration(MigrationState $state): void
+    {
+        $this->run(function () use ($state): void {
+            $this->preparePgVector();
+            $this->registry->saveMigration($state);
+        });
+    }
+
+    public function migrateBatch(MigrationState $state, int $limit): MigrationState
+    {
+        return $this->run(function () use ($state, $limit): MigrationState {
+            $this->preparePgVector();
+
+            $target = $this->registry->resolve($state->target);
+            $from = $this->storage($this->registry->resolve($state->source));
+            $to = $this->storage($target);
+            $after = $state->lastId !== null ? ' WHERE id > ?' : '';
+            $bindings = $state->lastId !== null ? [$state->lastId, $limit] : [$limit];
+
+            $next = $this->connection()->transaction(function () use ($state, $limit, $target, $from, $to, $after, $bindings): MigrationState {
+                if ($state->mode === 'copy') {
+                    /** @var object{count: int|string, last_id: string|null} $page */
+                    $page = $this->connection()->selectOne(
+                        "WITH page AS (SELECT id, content, embedding, metadata FROM {$from}{$after} ORDER BY id LIMIT ?),
+                         copied AS (
+                            INSERT INTO {$to} (id, content, embedding, metadata) SELECT id, content, embedding, metadata FROM page
+                            ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, embedding = EXCLUDED.embedding, metadata = EXCLUDED.metadata
+                         )
+                         SELECT COUNT(*) AS count, MAX(id) AS last_id FROM page",
+                        $bindings,
+                    );
+                    $count = (int) $page->count;
+                    $lastId = $page->last_id;
+                } else {
+                    $rows = $this->connection()->select("SELECT id, content, metadata FROM {$from}{$after} ORDER BY id LIMIT ?", $bindings);
+                    $this->reembedRows($rows, $target);
+                    $count = count($rows);
+                    $lastId = $rows === [] ? null : (string) $rows[array_key_last($rows)]->id;
+                }
+
+                $next = $state->withProgress($state->copied + $count, $lastId ?? $state->lastId);
+                $next = $count < $limit ? $next->withPhase('catching_up') : $next;
+                $this->registry->saveMigration($next);
+
+                return $next;
+            });
+
+            if ($next->phase === 'catching_up') {
+                $this->rebuildIfIvfflat($target);
+            }
+
+            return $next;
+        });
+    }
+
+    public function catchUpMigration(MigrationState $state): int
+    {
+        return $this->run(function () use ($state): int {
+            $this->preparePgVector();
+
+            return $this->catchUpPass($state, null);
+        });
+    }
+
+    public function finishMigration(MigrationState $state, int $threshold): MigrationState
+    {
+        return $this->run(function () use ($state, $threshold): MigrationState {
+            $this->preparePgVector();
+
+            return $this->connection()->transaction(function () use ($state, $threshold): MigrationState {
+                // Alias row first (waits for in-flight writes), then the table: writers lock in that order too.
+                $this->registry->lockAlias($state->alias);
+                $this->connection()->statement("LOCK TABLE {$this->storage($this->registry->resolve($state->source))} IN SHARE ROW EXCLUSIVE MODE");
+
+                $this->catchUpPass($state, $threshold);
+                $this->verifyMigration($state);
+
+                $this->registry->pointAlias($state->alias, $state->target);
+                $switched = $state->withPhase('switched');
+                $this->registry->saveMigration($switched);
+
+                return $switched;
+            });
+        });
+    }
+
+    /**
+     * Apply what the source changed since the copy: new ids and changed rows (re-embedded when the content
+     * changed in reembed mode), metadata-only changes, deleted ids. Above $threshold it throws first.
+     */
+    private function catchUpPass(MigrationState $state, ?int $threshold): int
+    {
+        $target = $this->registry->resolve($state->target);
+        $from = $this->storage($this->registry->resolve($state->source));
+        $to = $this->storage($target);
+        $reembed = $state->mode === 'reembed';
+
+        $changed = $reembed
+            ? 't.content IS DISTINCT FROM s.content'
+            : '(t.content, t.embedding, t.metadata) IS DISTINCT FROM (s.content, s.embedding, s.metadata)';
+        $rewrite = "FROM {$from} s LEFT JOIN {$to} t ON t.id = s.id WHERE t.id IS NULL OR {$changed}";
+        $metadataOnly = "FROM {$from} s JOIN {$to} t ON t.id = s.id WHERE t.content = s.content AND t.metadata IS DISTINCT FROM s.metadata";
+        $missing = "FROM {$to} t WHERE NOT EXISTS (SELECT 1 FROM {$from} s WHERE s.id = t.id)";
+
+        $difference = (int) $this->connection()->scalar(
+            "SELECT (SELECT COUNT(*) {$rewrite}) + (SELECT COUNT(*) {$missing})".($reembed ? " + (SELECT COUNT(*) {$metadataOnly})" : ''),
+        );
+
+        if ($threshold !== null && $difference > $threshold) {
+            throw new VectorQueryException(
+                "Migration of [{$state->alias}] did not switch: {$difference} documents changed since the last pass, above catch_up_threshold {$threshold}. Run it again to continue.",
+            );
+        }
+
+        if ($difference === 0) {
+            return 0;
+        }
+
+        if ($reembed) {
+            $this->connection()->update("UPDATE {$to} AS t SET metadata = s.metadata FROM {$from} s WHERE s.id = t.id AND t.content = s.content AND t.metadata IS DISTINCT FROM s.metadata");
+
+            foreach (array_chunk($this->connection()->select("SELECT s.id, s.content, s.metadata {$rewrite} ORDER BY s.id"), max(1, $this->batchSize())) as $rows) {
+                $this->reembedRows($rows, $target);
+            }
+        } else {
+            $this->connection()->statement(
+                "INSERT INTO {$to} (id, content, embedding, metadata) SELECT s.id, s.content, s.embedding, s.metadata {$rewrite}
+                 ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, embedding = EXCLUDED.embedding, metadata = EXCLUDED.metadata",
+            );
+        }
+
+        $this->connection()->delete("DELETE FROM {$to} AS t WHERE NOT EXISTS (SELECT 1 FROM {$from} s WHERE s.id = t.id)");
+
+        return $difference;
+    }
+
+    private function verifyMigration(MigrationState $state): void
+    {
+        $from = $this->storage($this->registry->resolve($state->source));
+        $to = $this->storage($this->registry->resolve($state->target));
+
+        /** @var object{source: int|string, target: int|string} $counts */
+        $counts = $this->connection()->selectOne("SELECT (SELECT COUNT(*) FROM {$from}) AS source, (SELECT COUNT(*) FROM {$to}) AS target");
+
+        if ((int) $counts->source !== (int) $counts->target) {
+            throw new VectorQueryException("Migration of [{$state->alias}] did not switch: the source holds {$counts->source} documents, the target {$counts->target}.");
+        }
+
+        $same = $state->mode === 'reembed'
+            ? 't.content = s.content AND t.metadata = s.metadata'
+            : '(t.content, t.embedding, t.metadata) = (s.content, s.embedding, s.metadata)';
+
+        // ponytail: ORDER BY random() sorts the whole source; use TABLESAMPLE if collections reach millions of rows.
+        $mismatches = (int) $this->connection()->scalar(
+            "SELECT COUNT(*) FROM (SELECT * FROM {$from} ORDER BY random() LIMIT 20) s LEFT JOIN {$to} t ON t.id = s.id WHERE t.id IS NULL OR NOT ({$same})",
+        );
+
+        if ($mismatches > 0) {
+            throw new VectorQueryException("Migration of [{$state->alias}] did not switch: {$mismatches} sampled documents differ between source and target.");
+        }
+    }
+
+    /**
+     * Embed source rows with the target's recorded provider and upsert them into the target.
+     *
+     * @param  array<int, object>  $rows  id, content, metadata
+     * @param  array{name: string, dimensions: int, storage_identifier: string, embedding: array{provider: string, model: string, dimensions: int}|null}  $target
+     */
+    private function reembedRows(array $rows, array $target): void
+    {
+        if ($rows === []) {
+            return;
+        }
+
+        $documents = array_map(
+            fn (object $row): Document => new Document(id: (string) $row->id, content: (string) $row->content, metadata: $this->decodeMetadata($row->metadata)),
+            array_values($rows),
+        );
+
+        $this->bulkUpsertDocuments(
+            storage: $this->storage($target),
+            documents: $this->resolveDocumentsWithEmbeddings($documents, $target['embedding']['provider'] ?? null),
+            dimensions: $target['dimensions'],
+            collection: $target['name'],
+            globalMetadata: [],
+        );
+    }
+
+    /**
+     * @param  array{storage_identifier: string}  $resolved
+     */
+    private function storage(array $resolved): string
+    {
+        return $this->registry->qualifiedStorageName($resolved['storage_identifier']);
+    }
+
+    /**
+     * @param  array{storage_identifier: string, metric: PgVectorMetric, index_options: array{type?: string, options?: array<string, int>}|null}|null  $resolved
+     */
+    private function rebuildIfIvfflat(?array $resolved): void
+    {
+        if ($resolved === null) {
+            return;
+        }
+
+        $storage = $this->storage($resolved);
+        $index = $this->existingIndex($storage, $resolved['index_options']);
+
+        if ($index?->type === 'ivfflat') {
+            $this->rebuildIvfflatIndex($storage, $resolved['metric'], $index);
+        }
     }
 
     private function createStorage(string $storageIdentifier, int $dimensions, PgVectorMetric $metric, PgVectorIndex $index): void
@@ -440,21 +732,21 @@ final class PgVectorStore implements VectorStoreContract
                 return;
             }
 
-            $resolved = $this->registry->resolve($collection);
-            $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
             $total = count($documents);
             $processed = 0;
+            $resolved = null;
 
             foreach ($this->chunkDocuments($documents) as $chunk) {
-                $this->connection()->transaction(function () use (
-                    $storage,
+                // Each chunk resolves the alias in its own transaction, so a switch mid-ingest moves the rest.
+                $resolved = $this->connection()->transaction(function () use (
                     $chunk,
-                    $resolved,
                     $collection,
                     $globalMetadata,
                     $upsert,
-                ): void {
-                    $embedded = $this->resolveDocumentsWithEmbeddings($chunk);
+                ): array {
+                    $resolved = $this->registry->resolve($collection, forWrite: true);
+                    $storage = $this->storage($resolved);
+                    $embedded = $this->resolveDocumentsWithEmbeddings($chunk, $resolved['embedding']['provider'] ?? null);
 
                     if ($upsert) {
                         $this->bulkUpsertDocuments(
@@ -465,7 +757,7 @@ final class PgVectorStore implements VectorStoreContract
                             globalMetadata: $globalMetadata,
                         );
 
-                        return;
+                        return $resolved;
                     }
 
                     $this->bulkInsertDocuments(
@@ -474,6 +766,8 @@ final class PgVectorStore implements VectorStoreContract
                         dimensions: $resolved['dimensions'],
                         collection: $collection,
                     );
+
+                    return $resolved;
                 });
 
                 $processed += count($chunk);
@@ -483,11 +777,7 @@ final class PgVectorStore implements VectorStoreContract
                 }
             }
 
-            $index = $this->existingIndex($storage, $resolved['index_options']);
-
-            if ($index?->type === 'ivfflat') {
-                $this->rebuildIvfflatIndex($storage, $resolved['metric'], $index);
-            }
+            $this->rebuildIfIvfflat($resolved);
         });
     }
 
@@ -595,7 +885,7 @@ final class PgVectorStore implements VectorStoreContract
      * @param  list<Document>  $documents
      * @return list<Document>
      */
-    private function resolveDocumentsWithEmbeddings(array $documents): array
+    private function resolveDocumentsWithEmbeddings(array $documents, ?string $provider = null): array
     {
         $needsEmbedding = array_values(array_filter(
             $documents,
@@ -606,7 +896,7 @@ final class PgVectorStore implements VectorStoreContract
             return $documents;
         }
 
-        $vectors = TraceSpan::embedding(fn (): array => $this->embeddings->using()->embedBatch(array_map(
+        $vectors = TraceSpan::embedding(fn (): array => $this->embeddings->using($provider)->embedBatch(array_map(
             static fn (Document $document): string => $document->content,
             $needsEmbedding,
         )));

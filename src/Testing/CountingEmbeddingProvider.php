@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Testing;
 
 use AgenticGraph\Vector\Contracts\EmbeddingProviderContract;
+use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
 
 /**
  * Wraps a provider and counts its calls, to assert how often a store or builder embeds.
@@ -14,6 +15,9 @@ final class CountingEmbeddingProvider implements EmbeddingProviderContract
     public int $embedCallCount = 0;
 
     public int $embedBatchCallCount = 0;
+
+    /** From this embedBatch() call on (1-based), throw VectorEmbeddingException; null never fails. */
+    public ?int $failOnBatch = null;
 
     public function __construct(
         private readonly EmbeddingProviderContract $inner,
@@ -29,6 +33,10 @@ final class CountingEmbeddingProvider implements EmbeddingProviderContract
     public function embedBatch(array $texts): array
     {
         $this->embedBatchCallCount++;
+
+        if ($this->failOnBatch !== null && $this->embedBatchCallCount >= $this->failOnBatch) {
+            throw new VectorEmbeddingException('Injected embedding failure.');
+        }
 
         return $this->inner->embedBatch($texts);
     }

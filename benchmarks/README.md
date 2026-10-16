@@ -46,6 +46,7 @@ PRISM_REQUEST_TIMEOUT=120 bin/vector-bench --dataset=scifact --model=openai:text
 | `--tolerance` | `0.01` | Absolute drop allowed per quality metric |
 | `--price-per-1m-tokens` | none | Embedding price for the cost section; never built in |
 | `--report=<file>` | none | With `--compare`: compare an existing report, no run |
+| `--collection=<name>` | none | Search an existing collection or alias that holds exactly the corpus (for example after `vector:migrate`): no ingest, no `REINDEX`, not dropped. The ingest section reads 0 |
 
 Preflight checks the env keys, pgvector, the dataset checksums and one embedding call, and stops with exit 2 naming what is missing.
 

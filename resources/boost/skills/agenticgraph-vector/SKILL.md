@@ -1,6 +1,6 @@
 ---
 name: agenticgraph-vector
-description: "Use AgenticGraph vector search: named stores and configuration, the memory store for tests, ingestion and batch ingestion, metadata updates, retrieval, filters and SearchQuery, listing ids, building RAG nodes, score handling, capability discovery, the store conformance suite, vector span attributes, and vector exceptions."
+description: "Use AgenticGraph vector search: named stores and configuration, the memory store for tests, ingestion and batch ingestion, metadata updates, retrieval, filters and SearchQuery, listing ids, building RAG nodes, score handling, capability discovery, the store conformance suite, aliases and zero-downtime collection migration (vector:migrate), vector span attributes, and vector exceptions."
 ---
 
 # AgenticGraph Vector
@@ -79,9 +79,33 @@ Vector::store('pgvector')->deleteCollection('articles');
 
 - Omit `dimensions` to use the embedding provider's width. With `VECTOR_EMBEDDINGS_DIMENSIONS` unset, that width costs one extra embed call per process.
 - Index (pgvector): `new CollectionDefinition(name: 'articles', dimensions: 1536, index: 'hnsw', indexOptions: ['m' => 16, 'ef_construction' => 64])`, or `index: 'ivfflat'` with `['lists' => 200]`. Invalid options throw `VectorQueryException` before anything is created. IVFFlat is rebuilt after every write with `min(lists, row count)`. The memory store ignores index options.
-- Dimensions, metric and index are frozen. Creating the same name with the same definition does nothing; a different one throws `VectorQueryException`. To change them: new collection, re-upsert, swap callers, drop the old one.
+- Dimensions, metric, index and embeddings are fixed at create. Creating the same name with the same definition does nothing; a different one throws `VectorQueryException`. To change them, migrate (below).
+- `new CollectionDefinition(name: 'articles', embeddings: 'prism_large')` names a provider from `vector.embeddings.providers`. The collection records its provider, model and width and embeds documents and `similarTo()` queries with it; a later change of the default does not affect it.
 
 Docs: `/docs/vector-quick-start`, `/docs/vector-reference-facades-and-builder`
+
+## Aliases and migration
+
+```php
+use AgenticGraph\Vector\Facades\Vector;
+use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
+
+$plan = Vector::migrate('articles', new CollectionDefinition('articles', embeddings: 'prism_large'), dryRun: true);
+$state = Vector::migrate('articles', new CollectionDefinition('articles', embeddings: 'prism_large'));
+Vector::rollbackMigration('articles');
+Vector::dropOldCollection('articles');
+Vector::store('pgvector')->listAliases();
+```
+
+- CLI: `php artisan vector:migrate articles --embeddings=prism_large` (also `--dry-run`, `--copy`, `--reembed`, `--batch`, `--dimensions`, `--metric`, `--index`, `--index-option=m=16`, `--store`, `--rollback`, `--drop-old`).
+- The first migration turns `articles` into an alias for `articles__v1`; the new collection is `articles__v2`. Code that uses `articles` keeps working: every store operation resolves aliases.
+- Same provider, model and width: vectors are copied in Postgres. Otherwise documents are re-embedded with the new provider. A collection with no recorded model (created before B5) needs `--copy` or `--reembed`.
+- Reads and writes stay on the old collection until the switch. Catch-up passes apply writes made during the copy; the final pass pauses writers (not searches) and switches in one transaction. `vector.migration.catch_up_threshold` (default 500), at most `vector.migration.catch_up_max_passes` unlocked passes (default 10).
+- Options left out of the migration definition come from the source collection (width, metric, index, index options, provider). `--dry-run` prints the resulting definition.
+- A failed or killed run resumes when rerun with the same definition. The old collection stays until `dropOldCollection()` / `--drop-old`.
+- Needs the `Aliases` capability (pgvector, memory). `deleteCollection()` on an alias, or on the collection behind one, throws; use `deleteAlias()` first.
+
+Docs: `/docs/vector-guide-changing-embedding-model`
 
 ## Ingestion
 
@@ -176,7 +200,7 @@ if ($capabilities->supports(StoreCapability::DeleteByFilter)) {
 ```
 
 - `capabilities()` and `healthCheck()` are on the store, not on the `collection()` builder. `capabilities()` returns `StoreCapabilities`; ask it with `supports(StoreCapability::...)`.
-- pgvector and memory support `ListIds`, `UpdateMetadata`, `DeleteByFilter`, `FilterNot` (`ne`, `not_in`), `FilterContains` and `FilterRange`. `Keyword` and `Aliases` are not built. An unsupported capability is not a roadmap.
+- pgvector and memory support `ListIds`, `UpdateMetadata`, `DeleteByFilter`, `FilterNot` (`ne`, `not_in`), `FilterContains`, `FilterRange` and `Aliases`. `Keyword` is not built. An unsupported capability is not a roadmap.
 - The builder checks the capability before each operation and throws `VectorUnsupportedOperationException`.
 - `healthCheck()` is connectivity, not feature detection.
 
@@ -226,6 +250,7 @@ Docs: `/docs/vector-reference-facades-and-builder`, `/docs/vector-configuration`
 Two separate channels.
 
 - **Events** (`AgenticGraph\Vector\Events`): `VectorOperationCompleted` (`operation`, `store`, `collection`, `durationMs`, `resultCount`, `documentCount`, `embeddingMs`) and `VectorOperationFailed` (adds `exception`). One per store operation, collection management and store-level calls included, when `events.enabled` is on: controller, job or node, with or without AgenticGraph. `store` is the store name.
+- `VectorMigrationProgressed` (`store`, `alias`, `source`, `target`, `phase`, `copied`, `total`): per migration batch and phase change. A migration is one `vector.migrate` span (`vector.result_count` is the documents copied).
 - `VectorEmbeddingCompleted` (`model`, `inputCount`, `tokens`, `durationMs`): one per `embed()` / `embedBatch()` of the built-in providers; `tokens` is the provider's reported usage (null for deterministic). Use it for embedding cost.
 - **Spans**: a `vector` span named `vector.{operation}` exists only when the call runs inside an AgenticGraph node and AgenticGraph tracing is on. It nests under the node.
 - Span attributes (schema v2) are counts and timings, never query text or document bodies: `vector.store`, `vector.collection`, `vector.operation`, `vector.top_k`, `vector.result_count`, `vector.latency_ms`, `vector.embedding_ms`, `vector.score_min`, `vector.score_max`, `vector.filter_count`.
@@ -241,7 +266,7 @@ All extend `VectorException` (`AgenticGraph\Vector\Exceptions`).
 
 | Exception | Usual cause |
 |---|---|
-| `VectorQueryException` | No `similarTo`/`usingVector`, delete without ids or filters or with both, collection redefined, invalid index options |
+| `VectorQueryException` | No `similarTo`/`usingVector`, delete without ids or filters or with both, collection redefined, invalid index options, alias or migration refused |
 | `VectorDuplicateDocumentException` | `insert()` with an existing or repeated id (a `VectorQueryException`) |
 | `VectorDimensionMismatchException` | Vector width differs from the collection's dimensions |
 | `VectorExtensionMissingException` | pgvector not installed and cannot be created |
@@ -257,8 +282,8 @@ Docs: `/docs/vector-reference-exceptions`
 
 ## Limitations
 
-- No in-place collection migration. Dimensions, metric and index need a new collection.
-- No hybrid search, reranking, aliases or tenant isolation yet. Named stores exist; there is no routing between them.
+- No in-place collection change. Dimensions, metric, index and model change through `Vector::migrate()` / `vector:migrate`.
+- No hybrid search, reranking or tenant isolation yet. Named stores exist; there is no routing between them.
 - No metadata index: a selective filter can return fewer than `take()` hits.
 - Scores are not probabilities.
 - Runtime config needs the manager reset (see Configuration).

@@ -4,11 +4,19 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector;
 
+use AgenticGraph\Vector\Contracts\AliasStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
+use AgenticGraph\Vector\Enums\StoreCapability;
+use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
+use AgenticGraph\Vector\Migration\CollectionMigrator;
 use AgenticGraph\Vector\Stores\InstrumentedStore;
 use AgenticGraph\Vector\Stores\MemoryStore;
 use AgenticGraph\Vector\Stores\PgVectorStore;
 use AgenticGraph\Vector\Support\MetadataValidator;
+use AgenticGraph\Vector\Tracing\TraceSpan;
+use AgenticGraph\Vector\Tracing\VectorTraceContext;
+use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
+use AgenticGraph\Vector\ValueObjects\MigrationState;
 use Illuminate\Database\DatabaseManager;
 use Illuminate\Support\Manager;
 use InvalidArgumentException;
@@ -27,6 +35,41 @@ class VectorManager extends Manager
     public function store(?string $name = null): VectorStoreContract
     {
         return $this->driver($name);
+    }
+
+    /**
+     * Move $alias to a new collection with $definition (its name is ignored): adopt a plain collection,
+     * copy or re-embed, catch up writes, switch. The old collection stays until dropOldCollection().
+     * A rerun resumes an unfinished migration. One `vector.migrate` span.
+     *
+     * @param  string|null  $mode  copy or reembed; required when the source has no recorded embeddings
+     */
+    public function migrate(string $alias, CollectionDefinition $definition, ?string $store = null, bool $dryRun = false, ?string $mode = null, ?int $batchSize = null): MigrationState
+    {
+        $name = $store ?? $this->getDefaultDriver();
+        $migrator = $this->migrator($name);
+
+        return TraceSpan::operation(
+            'migrate',
+            fn (): MigrationState => $migrator->migrate($alias, $definition, $dryRun, $mode, $batchSize),
+            VectorTraceContext::forCollection($alias, $name),
+        );
+    }
+
+    /**
+     * Point $alias back at the collection its last migration came from.
+     */
+    public function rollbackMigration(string $alias, ?string $store = null): MigrationState
+    {
+        return $this->migrator($store ?? $this->getDefaultDriver())->rollback($alias);
+    }
+
+    /**
+     * Delete the collection $alias's last migration came from (no rollback after this).
+     */
+    public function dropOldCollection(string $alias, ?string $store = null): MigrationState
+    {
+        return $this->migrator($store ?? $this->getDefaultDriver())->dropOld($alias);
     }
 
     /**
@@ -54,6 +97,17 @@ class VectorManager extends Manager
         };
 
         return $store instanceof VectorStoreContract ? new InstrumentedStore($name, $store) : $store;
+    }
+
+    private function migrator(string $name): CollectionMigrator
+    {
+        $store = $this->store($name);
+
+        if (! $store instanceof AliasStoreContract || ! $store->capabilities()->supports(StoreCapability::Aliases)) {
+            throw new VectorUnsupportedOperationException("Aliases and migrations are not supported by store [{$name}].");
+        }
+
+        return new CollectionMigrator($store, $name, $this->container->make(EmbeddingsManager::class));
     }
 
     /**

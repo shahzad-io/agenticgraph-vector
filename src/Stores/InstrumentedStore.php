@@ -5,12 +5,16 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Stores;
 
 use AgenticGraph\Vector\Concerns\InteractsWithBuilder;
+use AgenticGraph\Vector\Contracts\AliasStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
+use AgenticGraph\Vector\Enums\StoreCapability;
+use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\Tracing\VectorTraceContext;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\HealthCheckResult;
 use AgenticGraph\Vector\ValueObjects\IdPage;
+use AgenticGraph\Vector\ValueObjects\MigrationState;
 use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use AgenticGraph\Vector\ValueObjects\SearchResult;
@@ -19,9 +23,10 @@ use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
 
 /**
  * What Vector::store() returns: the configured store, with every operation (document, search and
- * collection management) going through TraceSpan under the store's configured name.
+ * collection management) going through TraceSpan under the store's configured name. Alias and
+ * migration calls throw VectorUnsupportedOperationException unless the store supports Aliases.
  */
-final class InstrumentedStore implements VectorStoreContract
+final class InstrumentedStore implements AliasStoreContract, VectorStoreContract
 {
     use InteractsWithBuilder;
 
@@ -160,5 +165,77 @@ final class InstrumentedStore implements VectorStoreContract
             fn (): HealthCheckResult => $this->store->healthCheck(),
             VectorTraceContext::forCollection('', $this->name),
         );
+    }
+
+    public function describeCollection(string $name): array
+    {
+        return $this->store->describeCollection($name);
+    }
+
+    public function listAliases(): array
+    {
+        return TraceSpan::operation(
+            'list_aliases',
+            fn (): array => $this->aliasStore()->listAliases(),
+            VectorTraceContext::forCollection('', $this->name),
+        );
+    }
+
+    public function deleteAlias(string $alias): void
+    {
+        TraceSpan::operation(
+            'delete_alias',
+            fn () => $this->aliasStore()->deleteAlias($alias),
+            VectorTraceContext::forCollection($alias, $this->name),
+        );
+    }
+
+    public function pointAlias(string $alias, string $collection): void
+    {
+        $this->aliasStore()->pointAlias($alias, $collection);
+    }
+
+    public function adoptCollection(string $name, string $physical): void
+    {
+        $this->aliasStore()->adoptCollection($name, $physical);
+    }
+
+    public function countDocuments(string $collection): int
+    {
+        return $this->aliasStore()->countDocuments($collection);
+    }
+
+    public function migration(string $alias): ?MigrationState
+    {
+        return $this->aliasStore()->migration($alias);
+    }
+
+    public function saveMigration(MigrationState $state): void
+    {
+        $this->aliasStore()->saveMigration($state);
+    }
+
+    public function migrateBatch(MigrationState $state, int $limit): MigrationState
+    {
+        return $this->aliasStore()->migrateBatch($state, $limit);
+    }
+
+    public function catchUpMigration(MigrationState $state): int
+    {
+        return $this->aliasStore()->catchUpMigration($state);
+    }
+
+    public function finishMigration(MigrationState $state, int $threshold): MigrationState
+    {
+        return $this->aliasStore()->finishMigration($state, $threshold);
+    }
+
+    private function aliasStore(): AliasStoreContract
+    {
+        if (! $this->store instanceof AliasStoreContract || ! $this->store->capabilities()->supports(StoreCapability::Aliases)) {
+            throw new VectorUnsupportedOperationException('Aliases and migrations are not supported by this store.');
+        }
+
+        return $this->store;
     }
 }

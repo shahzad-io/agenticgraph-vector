@@ -9,9 +9,14 @@ use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
 use AgenticGraph\Vector\Exceptions\VectorInvalidFilterException;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
+use AgenticGraph\Vector\ValueObjects\MigrationState;
 use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\Schema;
 
+/**
+ * The registry table (one row per physical collection), its `_aliases` table (alias -> collection)
+ * and its `_migrations` table (one row per migration of an alias).
+ */
 final class PgVectorCollectionRegistry
 {
     public function __construct(
@@ -20,7 +25,8 @@ final class PgVectorCollectionRegistry
     ) {}
 
     /**
-     * Create the registry table, or add `index_options` to a registry created before B3.
+     * Create the registry, alias and migration tables, or add the columns a registry created before B3
+     * (`index_options`) or B5 (`embedding`) lacks.
      */
     public function ensureRegistryTable(): void
     {
@@ -34,22 +40,50 @@ final class PgVectorCollectionRegistry
                     metric VARCHAR(32) NOT NULL,
                     storage_identifier VARCHAR(255) NOT NULL UNIQUE,
                     index_options JSONB NULL,
+                    embedding JSONB NULL,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )",
             );
-
-            return;
+        } else {
+            foreach (['index_options', 'embedding'] as $column) {
+                if (! $schema->hasColumn($this->registryTable, $column)) {
+                    $this->connection->statement("ALTER TABLE {$this->registryTable} ADD COLUMN IF NOT EXISTS {$column} JSONB NULL");
+                }
+            }
         }
 
-        if (! $schema->hasColumn($this->registryTable, 'index_options')) {
-            $this->connection->statement("ALTER TABLE {$this->registryTable} ADD COLUMN IF NOT EXISTS index_options JSONB NULL");
-        }
+        $this->connection->statement(
+            "CREATE TABLE IF NOT EXISTS {$this->aliasTable()} (
+                alias VARCHAR(255) PRIMARY KEY,
+                collection VARCHAR(255) NOT NULL,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+        );
+
+        $this->connection->statement(
+            "CREATE TABLE IF NOT EXISTS {$this->migrationTable()} (
+                id BIGSERIAL PRIMARY KEY,
+                alias VARCHAR(255) NOT NULL,
+                source VARCHAR(255) NOT NULL,
+                target VARCHAR(255) NOT NULL,
+                definition JSONB NOT NULL,
+                mode VARCHAR(16) NOT NULL,
+                phase VARCHAR(32) NOT NULL,
+                last_id TEXT NULL,
+                copied INTEGER NOT NULL DEFAULT 0,
+                total INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (alias, target)
+            )",
+        );
     }
 
     /**
      * @param  array<string, mixed>  $indexOptions  the requested index (PgVectorIndex::toArray())
+     * @param  array{provider: string, model: string, dimensions: int}|null  $embedding
      */
-    public function register(CollectionDefinition $definition, int $dimensions, PgVectorMetric $metric, array $indexOptions = []): string
+    public function register(CollectionDefinition $definition, int $dimensions, PgVectorMetric $metric, array $indexOptions = [], ?array $embedding = null): string
     {
         $this->assertValidCollectionName($definition->name);
 
@@ -59,25 +93,47 @@ final class PgVectorCollectionRegistry
 
         $storageIdentifier = $this->storageIdentifier($definition->name);
 
+        // An adopted collection keeps the identifier of its old name, which may be this name.
+        if ($this->connection->scalar("SELECT COUNT(*) FROM {$this->registryTable} WHERE storage_identifier = ?", [$storageIdentifier])) {
+            $storageIdentifier = 'vcol_'.bin2hex(random_bytes(16));
+        }
+
         $this->connection->insert(
-            "INSERT INTO {$this->registryTable} (name, dimensions, metric, storage_identifier, index_options) VALUES (?, ?, ?, ?, ?::jsonb)",
-            [$definition->name, $dimensions, $metric->value, $storageIdentifier, $indexOptions === [] ? null : json_encode($indexOptions, JSON_THROW_ON_ERROR)],
+            "INSERT INTO {$this->registryTable} (name, dimensions, metric, storage_identifier, index_options, embedding) VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb)",
+            [
+                $definition->name,
+                $dimensions,
+                $metric->value,
+                $storageIdentifier,
+                $indexOptions === [] ? null : json_encode($indexOptions, JSON_THROW_ON_ERROR),
+                $embedding === null ? null : json_encode($embedding, JSON_THROW_ON_ERROR),
+            ],
         );
 
         return $storageIdentifier;
     }
 
+    /**
+     * A collection or an alias of that name exists.
+     */
     public function exists(string $collection): bool
     {
         $this->assertValidCollectionName($collection);
 
         return (bool) $this->connection->scalar(
-            "SELECT COUNT(*) FROM {$this->registryTable} WHERE name = ?",
-            [$collection],
+            "SELECT EXISTS (SELECT 1 FROM {$this->registryTable} WHERE name = ?) OR EXISTS (SELECT 1 FROM {$this->aliasTable()} WHERE alias = ?)",
+            [$collection, $collection],
         );
     }
 
+    public function isAlias(string $name): bool
+    {
+        return (bool) $this->connection->scalar("SELECT COUNT(*) FROM {$this->aliasTable()} WHERE alias = ?", [$name]);
+    }
+
     /**
+     * Physical collections only.
+     *
      * @return list<string>
      */
     public function listCollectionNames(): array
@@ -91,10 +147,34 @@ final class PgVectorCollectionRegistry
         return $names;
     }
 
+    /**
+     * @return array<string, string>
+     */
+    public function listAliases(): array
+    {
+        /** @var array<string, string> $aliases */
+        $aliases = $this->connection->table($this->aliasTable())
+            ->orderBy('alias')
+            ->pluck('collection', 'alias')
+            ->all();
+
+        return $aliases;
+    }
+
     public function remove(string $collection): void
     {
+        if ($this->isAlias($collection)) {
+            throw new VectorQueryException("Collection [{$collection}] is an alias. Delete the alias with deleteAlias(), or delete its collection [{$this->aliasTarget($collection)}].");
+        }
+
         if (! $this->exists($collection)) {
             throw new VectorCollectionNotFoundException("Collection [{$collection}] was not found.");
+        }
+
+        $alias = $this->connection->scalar("SELECT alias FROM {$this->aliasTable()} WHERE collection = ? ORDER BY alias LIMIT 1", [$collection]);
+
+        if (is_string($alias)) {
+            throw new VectorQueryException("Collection [{$collection}] is the target of alias [{$alias}]. Delete the alias first.");
         }
 
         $this->connection->delete(
@@ -103,17 +183,63 @@ final class PgVectorCollectionRegistry
         );
     }
 
+    public function removeAlias(string $alias): void
+    {
+        $this->assertValidCollectionName($alias);
+
+        if ($this->connection->delete("DELETE FROM {$this->aliasTable()} WHERE alias = ?", [$alias]) === 0) {
+            throw new VectorCollectionNotFoundException("Alias [{$alias}] was not found.");
+        }
+    }
+
+    public function pointAlias(string $alias, string $collection): void
+    {
+        $this->assertValidCollectionName($alias);
+
+        if (! $this->connection->scalar("SELECT COUNT(*) FROM {$this->registryTable} WHERE name = ?", [$collection])) {
+            throw new VectorCollectionNotFoundException("Collection [{$collection}] was not found.");
+        }
+
+        if ($this->connection->update("UPDATE {$this->aliasTable()} SET collection = ?, updated_at = CURRENT_TIMESTAMP WHERE alias = ?", [$collection, $alias]) === 0) {
+            throw new VectorCollectionNotFoundException("Alias [{$alias}] was not found.");
+        }
+    }
+
     /**
-     * @return array{dimensions: int, metric: PgVectorMetric, storage_identifier: string, index_options: array{type?: string, options?: array<string, int>}|null}
+     * Rename collection $name to $physical (its table keeps its storage identifier) and add the alias
+     * $name -> $physical. Run inside a transaction.
      */
-    public function resolve(string $collection): array
+    public function adopt(string $name, string $physical): void
+    {
+        $this->assertValidCollectionName($physical);
+
+        if ($this->exists($physical)) {
+            throw new VectorQueryException("Collection [{$physical}] already exists.");
+        }
+
+        if ($this->isAlias($name) || $this->connection->update("UPDATE {$this->registryTable} SET name = ? WHERE name = ?", [$physical, $name]) === 0) {
+            throw new VectorCollectionNotFoundException("Collection [{$name}] was not found.");
+        }
+
+        $this->connection->insert("INSERT INTO {$this->aliasTable()} (alias, collection) VALUES (?, ?)", [$name, $physical]);
+    }
+
+    /**
+     * Resolve a collection or alias in one query. $forWrite locks the alias row (FOR SHARE) until the
+     * caller's transaction ends, so a switch waits for the write and later writes see the new target.
+     *
+     * @return array{name: string, dimensions: int, metric: PgVectorMetric, storage_identifier: string, index_options: array{type?: string, options?: array<string, int>}|null, embedding: array{provider: string, model: string, dimensions: int}|null}
+     */
+    public function resolve(string $collection, bool $forWrite = false): array
     {
         $this->assertValidCollectionName($collection);
+        $lock = $forWrite ? ' FOR SHARE' : '';
 
-        /** @var object{dimensions: int|string, metric: string, storage_identifier: string, index_options: string|null}|null $row */
+        /** @var object{name: string, dimensions: int|string, metric: string, storage_identifier: string, index_options: string|null, embedding: string|null}|null $row */
         $row = $this->connection->selectOne(
-            "SELECT dimensions, metric, storage_identifier, index_options FROM {$this->registryTable} WHERE name = ?",
-            [$collection],
+            "SELECT name, dimensions, metric, storage_identifier, index_options, embedding FROM {$this->registryTable}
+             WHERE name = COALESCE((SELECT collection FROM {$this->aliasTable()} WHERE alias = ?{$lock}), ?)",
+            [$collection, $collection],
         );
 
         if ($row === null) {
@@ -121,11 +247,67 @@ final class PgVectorCollectionRegistry
         }
 
         return [
+            'name' => $row->name,
             'dimensions' => (int) $row->dimensions,
             'metric' => PgVectorMetric::fromString($row->metric),
             'storage_identifier' => $row->storage_identifier,
             'index_options' => $row->index_options !== null ? json_decode($row->index_options, true, flags: JSON_THROW_ON_ERROR) : null,
+            'embedding' => $this->decodeEmbedding($row->embedding),
         ];
+    }
+
+    /**
+     * JSONB reorders keys; return the record in its written order.
+     *
+     * @return array{provider: string, model: string, dimensions: int}|null
+     */
+    private function decodeEmbedding(?string $json): ?array
+    {
+        if ($json === null) {
+            return null;
+        }
+
+        /** @var array{provider: string, model: string, dimensions: int|string} $embedding */
+        $embedding = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
+
+        return ['provider' => (string) $embedding['provider'], 'model' => (string) $embedding['model'], 'dimensions' => (int) $embedding['dimensions']];
+    }
+
+    /**
+     * Lock the alias row against writers (FOR UPDATE) until the caller's transaction ends.
+     */
+    public function lockAlias(string $alias): void
+    {
+        $this->connection->select("SELECT alias FROM {$this->aliasTable()} WHERE alias = ? FOR UPDATE", [$alias]);
+    }
+
+    public function migration(string $alias): ?MigrationState
+    {
+        /** @var object{alias: string, source: string, target: string, mode: string, phase: string, definition: string, total: int|string, copied: int|string, last_id: string|null}|null $row */
+        $row = $this->connection->selectOne(
+            "SELECT alias, source, target, mode, phase, definition, total, copied, last_id FROM {$this->migrationTable()} WHERE alias = ? ORDER BY id DESC LIMIT 1",
+            [$alias],
+        );
+
+        if ($row === null) {
+            return null;
+        }
+
+        /** @var array<string, mixed> $definition */
+        $definition = json_decode($row->definition, true, flags: JSON_THROW_ON_ERROR);
+
+        return new MigrationState($row->alias, $row->source, $row->target, $row->mode, $row->phase, $definition, (int) $row->total, (int) $row->copied, $row->last_id);
+    }
+
+    public function saveMigration(MigrationState $state): void
+    {
+        $this->connection->statement(
+            "INSERT INTO {$this->migrationTable()} (alias, source, target, definition, mode, phase, last_id, copied, total)
+             VALUES (?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?)
+             ON CONFLICT (alias, target) DO UPDATE SET source = EXCLUDED.source, definition = EXCLUDED.definition, mode = EXCLUDED.mode,
+                phase = EXCLUDED.phase, last_id = EXCLUDED.last_id, copied = EXCLUDED.copied, total = EXCLUDED.total, updated_at = CURRENT_TIMESTAMP",
+            [$state->alias, $state->source, $state->target, json_encode((object) $state->definition, JSON_THROW_ON_ERROR), $state->mode, $state->phase, $state->lastId, $state->copied, $state->total],
+        );
     }
 
     public function storageIdentifier(string $collection): string
@@ -142,6 +324,21 @@ final class PgVectorCollectionRegistry
         }
 
         return $storageIdentifier;
+    }
+
+    private function aliasTarget(string $alias): string
+    {
+        return (string) $this->connection->scalar("SELECT collection FROM {$this->aliasTable()} WHERE alias = ?", [$alias]);
+    }
+
+    private function aliasTable(): string
+    {
+        return "{$this->registryTable}_aliases";
+    }
+
+    private function migrationTable(): string
+    {
+        return "{$this->registryTable}_migrations";
     }
 
     private function assertValidCollectionName(string $collection): void

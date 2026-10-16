@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector;
 
+use AgenticGraph\Vector\Console\MigrateCommand;
 use AgenticGraph\Vector\Support\MetadataValidator;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
@@ -14,7 +15,8 @@ class VectorServiceProvider extends PackageServiceProvider
     {
         $package
             ->name('vector')
-            ->hasConfigFile();
+            ->hasConfigFile()
+            ->hasCommand(MigrateCommand::class);
     }
 
     public function packageRegistered(): void

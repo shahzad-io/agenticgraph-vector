@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector\Builder;
 
+use AgenticGraph\Vector\Contracts\CollectionStoreContract;
 use AgenticGraph\Vector\Contracts\DocumentStoreContract;
 use AgenticGraph\Vector\Contracts\SearchStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
@@ -277,12 +278,30 @@ final class Builder
         return $documentStore->updateMetadata($this->collection, $metadataById, $merge);
     }
 
+    /**
+     * A similarTo() query is embedded with the provider the collection recorded and targets the collection
+     * the name resolved to, so an alias switched in between cannot pair the vector with the other model.
+     */
     public function compile(): SearchQuery
     {
-        $vector = $this->vector ?? $this->resolveEmbedding($this->similarToText);
+        $collection = $this->collection;
+        $vector = $this->vector ?? [];
+
+        if ($this->vector === null && $this->similarToText !== null) {
+            $provider = null;
+
+            if ($this->store instanceof CollectionStoreContract) {
+                $target = $this->store->describeCollection($this->collection);
+                $collection = $target['collection'];
+                $provider = $target['embedding']['provider'] ?? null;
+            }
+
+            $text = $this->similarToText;
+            $vector = TraceSpan::embedding(fn (): array => $this->embeddings->driver($provider)->embed($text));
+        }
 
         return new SearchQuery(
-            collection: $this->collection,
+            collection: $collection,
             vector: $vector,
             filter: $this->filter(),
             topK: $this->topK,
@@ -369,17 +388,5 @@ final class Builder
                 $this->assertSupported($capability, "The {$condition->operator->value} filter");
             }
         }
-    }
-
-    /**
-     * @return list<float>
-     */
-    private function resolveEmbedding(?string $text): array
-    {
-        if ($text === null) {
-            return [];
-        }
-
-        return TraceSpan::embedding(fn (): array => $this->embeddings->driver()->embed($text));
     }
 }

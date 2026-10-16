@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector\Tests\Support;
 
+use AgenticGraph\Vector\Contracts\AliasStoreContract;
 use AgenticGraph\Vector\Events\VectorEmbeddingCompleted;
 use AgenticGraph\Vector\Events\VectorOperationCompleted;
 use AgenticGraph\Vector\Facades\Embeddings;
@@ -35,7 +36,7 @@ final class BenchRunner
     public const OPTIONS = [
         'dataset:', 'model:', 'dimensions:', 'mode:', 'concurrency:', 'warmup:', 'queries:', 'docs:',
         'truncate:', 'out:', 'compare::', 'tolerance:', 'price-per-1m-tokens:', 'report:', 'help',
-        'child:', 'slice:', 'results:',
+        'collection:', 'child:', 'slice:', 'results:',
     ];
 
     public const USAGE = <<<'TXT'
@@ -51,6 +52,7 @@ final class BenchRunner
                                  (default benchmarks/baselines/<dataset>/<model-slug>.json)
       --tolerance=0.01           allowed absolute quality drop for --compare
       --price-per-1m-tokens=X    embedding price, for the cost section
+      --collection=NAME          search an existing collection or alias holding the corpus (no ingest, not dropped)
     Or: bin/vector-bench --report=<report.json> --compare=<baseline.json> [--tolerance=0.01]
       compares an existing report without a run.
     Env: OPENAI_API_KEY (or <PROVIDER>_API_KEY), VECTOR_PG_HOST, VECTOR_PG_PORT, VECTOR_PG_DATABASE,
@@ -219,18 +221,24 @@ final class BenchRunner
             $upsertEmbeddingMs += $event->operation === 'upsert' ? (int) $event->embeddingMs : 0;
         });
 
-        // Ingest once.
-        $collection = 'bench_'.substr(hash('sha256', $dataset['name'].$slug.getmypid().microtime()), 0, 12);
+        // Ingest once, or search an existing collection (for example one a migration built).
+        $reused = isset($options['collection']) ? (string) $options['collection'] : null;
+        $collection = $reused ?? 'bench_'.substr(hash('sha256', $dataset['name'].$slug.getmypid().microtime()), 0, 12);
         $store = Vector::store('pgvector');
         $db = DB::connection('pgvector');
         $this->sample(true);
-        $store->createCollection(new CollectionDefinition(name: $collection, dimensions: $dimensions));
+
+        if ($reused === null) {
+            $store->createCollection(new CollectionDefinition(name: $collection, dimensions: $dimensions));
+        } elseif (! $store instanceof AliasStoreContract || ($count = $store->countDocuments($reused)) !== count($dataset['corpus'])) {
+            throw new RuntimeException("--collection={$reused} must hold exactly the corpus (".count($dataset['corpus']).' documents), it holds '.($count ?? 'an unknown number of').'.');
+        }
 
         try {
-            self::say("Ingesting {$dataset['name']}: ".count($dataset['corpus'])." documents into {$collection}");
+            self::say($reused === null ? "Ingesting {$dataset['name']}: ".count($dataset['corpus'])." documents into {$collection}" : "Searching {$reused} (no ingest)");
             $this->embedCalls = [];
             $started = hrtime(true);
-            $store->collection($collection)
+            $reused !== null || $store->collection($collection)
                 ->onProgress(function (int $done, int $total): void {
                     $this->sample();
 
@@ -247,9 +255,9 @@ final class BenchRunner
             $this->sample(true);
 
             $storage = (string) $db->table((string) config('vector.stores.pgvector.registry_table', 'vector_collection_registry'))
-                ->where('name', $collection)->value('storage_identifier');
+                ->where('name', $store->describeCollection($collection)['collection'])->value('storage_identifier');
             $started = hrtime(true);
-            $db->statement("REINDEX INDEX {$storage}_embedding_idx");
+            $reused !== null || $db->statement("REINDEX INDEX {$storage}_embedding_idx");
             $rebuildMs = self::ms($started);
             /** @var object{t: int|string, i: int|string, a: int|string} $sizes */
             $sizes = $db->selectOne('SELECT pg_table_size(?::regclass) AS t, pg_indexes_size(?::regclass) AS i, pg_total_relation_size(?::regclass) AS a', [$storage, $storage, $storage]);
@@ -313,7 +321,7 @@ final class BenchRunner
 
             unlink($jobFile);
         } finally {
-            $store->deleteCollection($collection);
+            $reused !== null || $store->deleteCollection($collection);
         }
 
         $ingestTokens = self::tokens($ingestCalls);
@@ -342,11 +350,11 @@ final class BenchRunner
                 'warmup' => $warmup,
                 'subset' => [count($dataset['corpus']), count($dataset['queries'])] !== $full,
             ],
-            'store' => ['name' => 'pgvector', 'index' => $indexDef],
+            'store' => ['name' => 'pgvector', 'index' => $indexDef, 'collection' => $reused],
             'ingest' => [
                 'documents' => count($dataset['corpus']),
                 'wall_ms' => $ingestMs,
-                'docs_per_second' => round(count($dataset['corpus']) / max($ingestMs / 1000, 1e-9), 1),
+                'docs_per_second' => $reused !== null ? 0.0 : round(count($dataset['corpus']) / max($ingestMs / 1000, 1e-9), 1),
                 'embedding_ms' => $upsertEmbeddingMs,
                 'embedding_calls' => count($ingestCalls),
                 'embedding_tokens' => $ingestTokens,

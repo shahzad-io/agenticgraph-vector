@@ -70,9 +70,9 @@ it('declares pgvector and memory capabilities', function (string $store) {
         StoreCapability::FilterNot,
         StoreCapability::FilterContains,
         StoreCapability::FilterRange,
+        StoreCapability::Aliases,
     ])
-        ->and($caps->supports(StoreCapability::Keyword))->toBeFalse()
-        ->and($caps->supports(StoreCapability::Aliases))->toBeFalse();
+        ->and($caps->supports(StoreCapability::Keyword))->toBeFalse();
 })->with(['pgvector', 'memory']);
 
 it('returns a sensible pgvector batch size', function () {

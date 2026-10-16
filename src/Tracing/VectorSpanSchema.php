@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Tracing;
 
 use AgenticGraph\Vector\ValueObjects\IdPage;
+use AgenticGraph\Vector\ValueObjects\MigrationState;
 use AgenticGraph\Vector\ValueObjects\SearchHit;
 use AgenticGraph\Vector\ValueObjects\SearchResult;
 use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
@@ -90,7 +91,7 @@ final class VectorSpanSchema
     }
 
     /**
-     * Hits for search and fetch, ids for listIds, updated ids for updateMetadata.
+     * Hits for search and fetch, ids for listIds, updated ids for updateMetadata, copied documents for migrate.
      */
     public static function resultCount(mixed $result): ?int
     {
@@ -98,6 +99,7 @@ final class VectorSpanSchema
             $result instanceof SearchResult => $result->count(),
             $result instanceof IdPage => count($result->ids),
             $result instanceof UpdateMetadataResult => count($result->updated),
+            $result instanceof MigrationState => $result->copied,
             default => null,
         };
     }

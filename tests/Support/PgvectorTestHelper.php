@@ -89,6 +89,15 @@ final class PgvectorTestHelper
         } catch (Throwable) {
             // Best-effort cleanup: never fail a test from here.
         }
+
+        // Aliases and migration records of the dropped collections (B5 tables; absent on an older registry).
+        try {
+            $pdo = self::pdo();
+            $pdo->exec('DELETE FROM vector_collection_registry_aliases WHERE collection NOT IN (SELECT name FROM vector_collection_registry)');
+            $pdo->exec('DELETE FROM vector_collection_registry_migrations m WHERE NOT EXISTS (SELECT 1 FROM vector_collection_registry r WHERE r.name IN (m.source, m.target))');
+        } catch (Throwable) {
+            // Best-effort cleanup.
+        }
     }
 
     private static function pdo(): PDO

@@ -5,12 +5,17 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Facades;
 
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
+use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
+use AgenticGraph\Vector\ValueObjects\MigrationState;
 use AgenticGraph\Vector\VectorManager;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\Facades\Facade;
 
 /**
  * @method static VectorStoreContract store(?string $name = null)
+ * @method static MigrationState migrate(string $alias, CollectionDefinition $definition, ?string $store = null, bool $dryRun = false, ?string $mode = null, ?int $batchSize = null)
+ * @method static MigrationState rollbackMigration(string $alias, ?string $store = null)
+ * @method static MigrationState dropOldCollection(string $alias, ?string $store = null)
  * @method static mixed driver(?string $driver = null)
  * @method static VectorManager extend(string $driver, \Closure(Container, array<string, mixed>, string): VectorStoreContract $callback)
  *

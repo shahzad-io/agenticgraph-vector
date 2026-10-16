@@ -5,21 +5,27 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Testing;
 
 use AgenticGraph\Vector\Builder\Builder;
+use AgenticGraph\Vector\Contracts\AliasStoreContract;
+use AgenticGraph\Vector\Contracts\EmbeddingProviderContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\FilterOperator;
 use AgenticGraph\Vector\Enums\StoreCapability;
+use AgenticGraph\Vector\Events\VectorMigrationProgressed;
 use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
 use AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException;
 use AgenticGraph\Vector\Exceptions\VectorDuplicateDocumentException;
+use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
 use AgenticGraph\Vector\Exceptions\VectorInvalidFilterException;
 use AgenticGraph\Vector\Exceptions\VectorInvalidMetadataException;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
+use AgenticGraph\Vector\Migration\CollectionMigrator;
 use AgenticGraph\Vector\Providers\DeterministicEmbeddingProvider;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\FilterCondition;
+use AgenticGraph\Vector\ValueObjects\MigrationState;
 use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use Closure;
@@ -34,13 +40,17 @@ use Throwable;
  * (or Pest, which runs these methods).
  *
  * The suite registers a deterministic, call-counting embedding driver (`conformance`, 8 dimensions)
- * and makes it the default for the test. Collections it creates are dropped after each test.
+ * and makes it the default for the test, plus a second one (`conformance_b`, another model) for
+ * migrations. Collections it creates, their aliases and migrated copies are dropped after each test.
+ * Alias and migration tests are skipped for a store without the Aliases capability.
  */
 trait StoreConformanceTests
 {
     private ?VectorStoreContract $conformanceStore = null;
 
     private ?CountingEmbeddingProvider $conformanceEmbeddings = null;
+
+    private ?CountingEmbeddingProvider $conformanceEmbeddingsB = null;
 
     /** @var list<string> */
     private array $conformanceCollections = [];
@@ -50,10 +60,25 @@ trait StoreConformanceTests
     #[After]
     public function dropConformanceCollections(): void
     {
+        $store = $this->conformanceStore;
+
         foreach ($this->conformanceCollections as $name) {
             try {
-                if ($this->conformanceStore?->collectionExists($name)) {
-                    $this->conformanceStore->deleteCollection($name);
+                // Aliases first, then their collections (a collection behind an alias cannot be deleted).
+                if ($store instanceof AliasStoreContract && $store->capabilities()->supports(StoreCapability::Aliases)) {
+                    if (array_key_exists($name, $store->listAliases())) {
+                        $store->deleteAlias($name);
+                    }
+
+                    foreach ($store->listCollections() as $collection) {
+                        if (str_starts_with($collection, "{$name}__v")) {
+                            $store->deleteCollection($collection);
+                        }
+                    }
+                }
+
+                if ($store?->collectionExists($name)) {
+                    $store->deleteCollection($name);
                 }
             } catch (Throwable) {
                 // Best-effort cleanup.
@@ -711,6 +736,7 @@ trait StoreConformanceTests
             StoreCapability::FilterNot->value => fn () => $builder->where('n', '!=', 1)->usingVector([1.0, 0.0, 0.0])->get(),
             StoreCapability::FilterContains->value => fn () => $builder->whereContains('tags', 'x')->usingVector([1.0, 0.0, 0.0])->get(),
             StoreCapability::FilterRange->value => fn () => $builder->where('n', '>', 0)->usingVector([1.0, 0.0, 0.0])->get(),
+            StoreCapability::Aliases->value => fn () => $this->conformanceAliasCall(),
         ];
 
         foreach ($operations as $capability => $operation) {
@@ -723,7 +749,328 @@ trait StoreConformanceTests
         }
     }
 
+    // Aliases and migrations
+
+    public function test_conformance_aliases_resolve_for_every_operation(): void
+    {
+        [$alias, $state] = $this->migratedAlias();
+        $store = $this->aliasStore();
+        $builder = $store->collection($alias);
+
+        $builder->insert([
+            Document::make('new', 'new document', ['n' => 2], [0.0, 1.0, 0.0]),
+            Document::make('temp', 'temporary document', ['n' => 1], [0.0, 0.0, 1.0]),
+        ]);
+        $builder->upsert([Document::make('doc-0', 'changed document', ['index' => 0], [1.0, 0.0, 0.0])]);
+        $builder->updateMetadata(['doc-1' => ['index' => 10]]);
+        $builder->delete('doc-2');
+        $builder->where('n', 1)->delete();
+
+        $target = $store->collection($state->target);
+        $this->assertSame(['doc-0', 'doc-1', 'new'], $this->sortedIds(array_map(strval(...), $target->fetch(['doc-0', 'doc-1', 'doc-2', 'new', 'temp'])->pluck('id'))));
+        $this->assertSame('changed document', $target->fetch(['doc-0'])->hits[0]->content);
+        $this->assertSame(10, $target->fetch(['doc-1'])->hits[0]->metadata['index']);
+        $this->assertSame(['doc-0', 'doc-1', 'doc-2'], $this->sortedIds(array_map(strval(...), $store->collection($state->source)->fetch(['doc-0', 'doc-1', 'doc-2', 'new'])->pluck('id'))));
+
+        $this->assertSame(['doc-0', 'doc-1', 'new'], $this->allPages($builder, 10)[0]);
+        $this->assertSame('new', $builder->usingVector([0.0, 1.0, 0.0])->take(1)->get()->hits[0]->id);
+        $this->assertSame('new', $store->search(new SearchQuery($alias, [0.0, 1.0, 0.0], topK: 1))->hits[0]->id);
+        $this->assertSame(['doc-1'], array_map(strval(...), $store->fetch($alias, ['doc-1'])->pluck('id')));
+    }
+
+    public function test_conformance_alias_semantics_and_namespace(): void
+    {
+        [$alias, $state] = $this->migratedAlias();
+        $store = $this->aliasStore();
+
+        $this->assertTrue($store->collectionExists($alias));
+        $this->assertNotContains($alias, $store->listCollections());
+        $this->assertContains($state->source, $store->listCollections());
+        $this->assertContains($state->target, $store->listCollections());
+        $this->assertSame($state->target, $store->listAliases()[$alias]);
+        $this->assertSame($state->target, $store->describeCollection($alias)['collection']);
+
+        $store->createCollection(new CollectionDefinition($alias, dimensions: 3, metric: 'cosine'));
+        $this->assertConformanceThrows(
+            VectorQueryException::class,
+            fn () => $store->createCollection(new CollectionDefinition($alias, dimensions: 4, metric: 'cosine')),
+            'migrate',
+        );
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $store->deleteCollection($alias), 'is an alias');
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $store->deleteCollection($state->target), "is the target of alias [{$alias}]");
+
+        $store->deleteAlias($alias);
+
+        $this->assertFalse($store->collectionExists($alias));
+        $this->assertTrue($store->collectionExists($state->target));
+        $this->assertConformanceThrows(VectorCollectionNotFoundException::class, fn () => $store->deleteAlias($alias));
+
+        // The name is free again, as a new and empty collection.
+        $store->createCollection(new CollectionDefinition($alias, dimensions: 3, metric: 'cosine'));
+        $this->assertSame([], $store->collection($alias)->listIds()->ids);
+        $this->assertCount(3, $store->collection($state->target)->listIds()->ids);
+    }
+
+    public function test_conformance_migration_switches_reads_and_keeps_the_old_collection(): void
+    {
+        $phases = [];
+        app('events')->listen(VectorMigrationProgressed::class, function (VectorMigrationProgressed $event) use (&$phases): void {
+            $phases[] = $event->phase;
+        });
+
+        [$alias, $state] = $this->migratedAlias();
+        $store = $this->aliasStore();
+
+        $this->assertSame('switched', $state->phase);
+        $this->assertSame("{$alias}__v1", $state->source);
+        $this->assertSame("{$alias}__v2", $state->target);
+        $this->assertSame(3, $state->copied);
+        $this->assertSame('copying', $phases[0]);
+        $this->assertSame('switched', $phases[array_key_last($phases)]);
+
+        $store->collection($state->source)->upsert([Document::make('only-old', 'only in the old collection', [], [1.0, 0.0, 0.0])]);
+
+        $this->assertSame([], $store->collection($alias)->fetch(['only-old'])->hits);
+        $this->assertCount(4, $store->collection($state->source)->listIds()->ids);
+    }
+
+    public function test_conformance_adoption_keeps_the_name_working(): void
+    {
+        $store = $this->aliasStore();
+        $builder = $this->vectorBuilder();
+        $name = $this->lastVectorCollection();
+        $builder->upsert($this->vectorDocuments(3));
+
+        $this->migrator()->migrate($name, new CollectionDefinition($name, dimensions: 3, metric: 'cosine'));
+
+        $this->assertSame(['doc-0', 'doc-1', 'doc-2'], $this->allPages($builder, 10)[0]);
+        $this->assertSame('doc-1', $builder->usingVector([1.0, 1.0, 0.0])->take(1)->get()->hits[0]->id);
+        $this->assertNotContains($name, $store->listCollections());
+    }
+
+    public function test_conformance_migration_copies_matching_embeddings_and_re_embeds_otherwise(): void
+    {
+        $store = $this->aliasStore();
+        $builder = $this->vectorBuilder(dimensions: 8);
+        $name = $this->lastVectorCollection();
+        $builder->upsert($this->contentDocuments(3));
+        $this->countingEmbeddings()->reset();
+
+        $copied = $this->migrator()->migrate($name, new CollectionDefinition($name, dimensions: 8));
+
+        $this->assertSame('copy', $copied->mode);
+        $this->assertSame(0, $this->countingEmbeddings()->embedBatchCallCount);
+
+        $providerB = $this->conformanceEmbeddingsB ?? throw new \LogicException('The conformance store is not set up.');
+        $reembedded = $this->migrator()->migrate($name, new CollectionDefinition($name, embeddings: 'conformance_b'));
+
+        $this->assertSame('reembed', $reembedded->mode);
+        $this->assertSame(1, $providerB->embedBatchCallCount);
+        $this->assertSame(0, $this->countingEmbeddings()->embedBatchCallCount);
+        $this->assertSame(['provider' => 'conformance_b', 'model' => 'deterministic-b', 'dimensions' => 8], $store->describeCollection($name)['embedding']);
+
+        // Queries embed with the recorded provider of the collection the alias points to.
+        $this->assertSame('doc-1', $builder->similarTo('batch ingestion document 1')->take(1)->get()->hits[0]->id);
+        $this->assertSame(1, $providerB->embedCallCount);
+        $this->assertSame(0, $this->countingEmbeddings()->embedCallCount);
+    }
+
+    public function test_conformance_migration_refuses_an_unknown_source_embedding(): void
+    {
+        $store = $this->aliasStore();
+        $name = $this->vectorCollectionName();
+
+        app(EmbeddingsManager::class)->extend('conformance_unconfigured', fn (): EmbeddingProviderContract => new class implements EmbeddingProviderContract
+        {
+            public function embed(string $text): array
+            {
+                throw new VectorEmbeddingException('No embedding model configured.');
+            }
+
+            public function embedBatch(array $texts): array
+            {
+                throw new VectorEmbeddingException('No embedding model configured.');
+            }
+
+            public function dimensions(): int
+            {
+                return 3;
+            }
+
+            public function model(): string
+            {
+                throw new VectorEmbeddingException('No embedding model configured.');
+            }
+        });
+        config()->set('vector.embeddings.default', 'conformance_unconfigured');
+        $store->createCollection(new CollectionDefinition($name, dimensions: 3, metric: 'cosine'));
+        config()->set('vector.embeddings.default', 'conformance');
+        $store->collection($name)->upsert($this->vectorDocuments(2));
+
+        $this->assertNull($store->describeCollection($name)['embedding']);
+        $this->assertConformanceThrows(
+            VectorQueryException::class,
+            fn () => $this->migrator()->migrate($name, new CollectionDefinition($name, dimensions: 3, metric: 'cosine')),
+            'no recorded embedding model',
+        );
+        $this->assertArrayNotHasKey($name, $store->listAliases());
+
+        $state = $this->migrator()->migrate($name, new CollectionDefinition($name, dimensions: 3, metric: 'cosine'), mode: 'copy');
+
+        $this->assertSame('switched', $state->phase);
+        $this->assertCount(2, $store->collection($name)->listIds()->ids);
+    }
+
+    public function test_conformance_migration_dry_run_writes_nothing(): void
+    {
+        $store = $this->aliasStore();
+        $builder = $this->vectorBuilder(dimensions: 8);
+        $name = $this->lastVectorCollection();
+        $builder->upsert($this->contentDocuments(5));
+        $collections = $store->listCollections();
+        $aliases = $store->listAliases();
+
+        $copy = $this->migrator()->migrate($name, new CollectionDefinition($name, dimensions: 8), dryRun: true);
+        $reembed = $this->migrator()->migrate($name, new CollectionDefinition($name, embeddings: 'conformance_b'), dryRun: true, batchSize: 2);
+
+        $this->assertSame(['planned', "{$name}__v1", "{$name}__v2", 5, 'copy', 0], [$copy->phase, $copy->source, $copy->target, $copy->total, $copy->mode, $copy->estimatedEmbeddingCalls(2)]);
+        $this->assertSame(['reembed', 3], [$reembed->mode, $reembed->estimatedEmbeddingCalls(2)]);
+        $this->assertSame($collections, $store->listCollections());
+        $this->assertSame($aliases, $store->listAliases());
+        $this->assertNull($store->migration($name));
+    }
+
+    public function test_conformance_a_failed_migration_resumes_without_duplicates(): void
+    {
+        $store = $this->aliasStore();
+        $builder = $this->vectorBuilder(dimensions: 8);
+        $name = $this->lastVectorCollection();
+        $builder->upsert($this->contentDocuments(5));
+        $providerB = $this->conformanceEmbeddingsB ?? throw new \LogicException('The conformance store is not set up.');
+        $definition = new CollectionDefinition($name, embeddings: 'conformance_b');
+        $providerB->failOnBatch = 2;
+
+        $this->assertConformanceThrows(VectorEmbeddingException::class, fn () => $this->migrator()->migrate($name, $definition, batchSize: 2));
+
+        $failed = $store->migration($name) ?? throw new \LogicException('No migration was recorded.');
+        $this->assertSame(['copying', 2], [$failed->phase, $failed->copied]);
+        $this->assertConformanceThrows(
+            VectorQueryException::class,
+            fn () => $this->migrator()->migrate($name, new CollectionDefinition($name, dimensions: 8), batchSize: 2),
+            'unfinished with a different definition',
+        );
+
+        $providerB->failOnBatch = null;
+        $providerB->reset();
+        $state = $this->migrator()->migrate($name, $definition, batchSize: 2);
+
+        $this->assertSame(['switched', 5], [$state->phase, $state->copied]);
+        $this->assertSame(2, $providerB->embedBatchCallCount);
+        $this->assertSame(5, $store->countDocuments($name));
+        $this->assertSame(['doc-0', 'doc-1', 'doc-2', 'doc-3', 'doc-4'], array_merge(...$this->allPages($builder, 2)));
+    }
+
+    public function test_conformance_writes_during_a_migration_are_not_lost(): void
+    {
+        foreach (['copy' => new CollectionDefinition('ignored', dimensions: 8), 'reembed' => new CollectionDefinition('ignored', embeddings: 'conformance_b')] as $mode => $definition) {
+            $store = $this->aliasStore();
+            $builder = $this->vectorBuilder(dimensions: 8);
+            $name = $this->lastVectorCollection();
+            $builder->upsert($this->contentDocuments(6));
+            $wrote = false;
+
+            app('events')->listen(VectorMigrationProgressed::class, function (VectorMigrationProgressed $event) use ($builder, $name, &$wrote): void {
+                if ($wrote || $event->alias !== $name || $event->phase !== 'copying' || $event->copied === 0) {
+                    return;
+                }
+
+                $wrote = true;
+                $builder->upsert([Document::make('doc-0', 'rewritten during the copy', ['index' => 0]), Document::make('zz-new', 'added during the copy')]);
+                $builder->updateMetadata(['doc-1' => ['index' => 100]]);
+                $builder->delete('doc-2');
+            });
+
+            $state = $this->migrator()->migrate($name, $definition, batchSize: 3);
+
+            $this->assertTrue($wrote, $mode);
+            $this->assertSame($mode, $state->mode);
+            $this->assertSame(['doc-0', 'doc-1', 'doc-3', 'doc-4', 'doc-5', 'zz-new'], array_merge(...$this->allPages($builder, 10)), $mode);
+            $this->assertSame('rewritten during the copy', $builder->fetch(['doc-0'])->hits[0]->content, $mode);
+            $this->assertSame(100, $builder->fetch(['doc-1'])->hits[0]->metadata['index'], $mode);
+            $this->assertSame('doc-0', $builder->similarTo('rewritten during the copy')->take(1)->get()->hits[0]->id, $mode);
+            $this->assertEqualsWithDelta(1.0, $builder->similarTo('rewritten during the copy')->take(1)->get()->hits[0]->score, 0.0001, $mode);
+        }
+    }
+
+    public function test_conformance_rollback_and_drop_old(): void
+    {
+        [$alias, $state] = $this->migratedAlias();
+        $store = $this->aliasStore();
+        $store->collection($state->target)->upsert([Document::make('only-new', 'only in the new collection', [], [1.0, 0.0, 0.0])]);
+
+        $rolledBack = $this->migrator()->rollback($alias);
+
+        $this->assertSame('rolled_back', $rolledBack->phase);
+        $this->assertSame($state->source, $store->listAliases()[$alias]);
+        $this->assertSame([], $store->collection($alias)->fetch(['only-new'])->hits);
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $this->migrator()->dropOld($alias), 'not switched');
+
+        $again = $this->migrator()->migrate($alias, new CollectionDefinition($alias, dimensions: 3, metric: 'cosine'));
+        $this->assertSame([$state->source, "{$alias}__v3"], [$again->source, $again->target]);
+
+        $dropped = $this->migrator()->dropOld($alias);
+
+        $this->assertSame('dropped', $dropped->phase);
+        $this->assertNotContains($state->source, $store->listCollections());
+        $this->assertCount(3, $store->collection($alias)->listIds()->ids);
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $this->migrator()->rollback($alias), 'not switched');
+    }
+
     // Helpers
+
+    /**
+     * @return AliasStoreContract&VectorStoreContract
+     */
+    protected function aliasStore(): AliasStoreContract
+    {
+        $store = $this->vectorStore();
+
+        if (! $store instanceof AliasStoreContract || ! $store->capabilities()->supports(StoreCapability::Aliases)) {
+            $this->markTestSkipped('The store does not support aliases.');
+        }
+
+        return $store;
+    }
+
+    protected function migrator(): CollectionMigrator
+    {
+        return new CollectionMigrator($this->aliasStore(), 'conformance', app(EmbeddingsManager::class));
+    }
+
+    /**
+     * A plain collection of three documents (3 dimensions), migrated by copy into an alias.
+     *
+     * @return array{0: string, 1: MigrationState}
+     */
+    private function migratedAlias(): array
+    {
+        $builder = $this->vectorBuilder();
+        $name = $this->lastVectorCollection();
+        $builder->upsert($this->vectorDocuments(3));
+
+        return [$name, $this->migrator()->migrate($name, new CollectionDefinition($name, dimensions: 3, metric: 'cosine'))];
+    }
+
+    private function conformanceAliasCall(): mixed
+    {
+        $store = $this->vectorStore();
+
+        if (! $store instanceof AliasStoreContract) {
+            throw new VectorUnsupportedOperationException('The store does not implement AliasStoreContract.');
+        }
+
+        return $store->listAliases();
+    }
 
     protected function vectorStore(): VectorStoreContract
     {
@@ -734,6 +1081,9 @@ trait StoreConformanceTests
             $embeddings->forgetDrivers();
             // Manager::extend() rebinds the closure to the manager, so capture the provider, not $this.
             $embeddings->extend('conformance', fn (): CountingEmbeddingProvider => $provider);
+            $providerB = new CountingEmbeddingProvider(new DeterministicEmbeddingProvider(dimensions: 8, modelName: 'deterministic-b'));
+            $this->conformanceEmbeddingsB = $providerB;
+            $embeddings->extend('conformance_b', fn (): CountingEmbeddingProvider => $providerB);
             config()->set('vector.embeddings.default', 'conformance');
 
             $this->conformanceStore = $this->makeStore();

@@ -65,7 +65,11 @@ return [
     | Embeddings
     |--------------------------------------------------------------------------
     |
-    | Default embedding provider and provider-specific configuration.
+    | Default embedding provider and named providers. Each entry names its
+    | driver (prism, deterministic, or one registered with Embeddings::extend()),
+    | so you can hold several models, for example a second Prism entry while
+    | migrating a collection to it. A collection records the provider it was
+    | created with and embeds documents and queries with it.
     |
     */
 
@@ -109,6 +113,27 @@ return [
     'batch' => [
 
         'size' => 100,
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Migrations
+    |--------------------------------------------------------------------------
+    |
+    | Vector::migrate() and vector:migrate catch up writes made during the
+    | copy without a lock until at most this many documents differ, then
+    | lock the old collection against writers for one final pass and switch.
+    | At most catch_up_max_passes unlocked passes run; if more documents still
+    | differ after them, the final pass refuses and a rerun continues.
+    |
+    */
+
+    'migration' => [
+
+        'catch_up_threshold' => (int) env('VECTOR_MIGRATION_CATCH_UP_THRESHOLD', 500),
+
+        'catch_up_max_passes' => (int) env('VECTOR_MIGRATION_CATCH_UP_MAX_PASSES', 10),
 
     ],
 

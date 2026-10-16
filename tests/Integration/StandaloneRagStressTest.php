@@ -79,7 +79,7 @@ describe('Standalone RAG Stress Test #1', function (): void {
         $capabilities = $this->store->capabilities();
         expect($capabilities->supports(StoreCapability::DeleteByFilter))->toBeTrue()
             ->and($capabilities->supports(StoreCapability::Keyword))->toBeFalse()
-            ->and($capabilities->supports(StoreCapability::Aliases))->toBeFalse();
+            ->and($capabilities->supports(StoreCapability::Aliases))->toBeTrue();
 
         expect($this->store->batchSize())->toBeGreaterThan(0);
 

@@ -253,7 +253,7 @@ function memoryTracingStore(string $name = 'memory'): VectorStoreContract
 
     $store = Vector::store($name);
     $store->createCollection(new CollectionDefinition('articles', dimensions: 8));
-    $store->collection('articles')->upsert([Document::make('doc', 'observability search probe')]);
+    $store->collection('articles')->upsert([Document::make('doc', 'observability search probe', vector: array_fill(0, 8, 0.5))]);
 
     return $store;
 }
@@ -280,7 +280,6 @@ it('reports the name of the store actually used on spans and events', function (
 
 it('puts the query embedding time on the search span and event', function () {
     app()->singleton(Tracer::class);
-    $store = memoryTracingStore();
     useEmbeddingProvider(new class(new DeterministicEmbeddingProvider(8)) implements EmbeddingProviderContract
     {
         public function __construct(private readonly EmbeddingProviderContract $inner) {}
@@ -307,6 +306,8 @@ it('puts the query embedding time on the search span and event', function () {
             return 'slow';
         }
     });
+    // A collection embeds queries with the provider it was created with, so create it after the switch.
+    $store = memoryTracingStore();
     Event::fake([VectorOperationCompleted::class]);
 
     $store->collection('articles')->similarTo('observability search probe')->take(1)->get();
@@ -378,7 +379,6 @@ it('puts the ingest embedding time on the upsert span and event, for both stores
 })->with(['memory', 'pgvector']);
 
 it('fires VectorOperationFailed with the store name when the query embedding fails', function () {
-    $store = memoryTracingStore();
     useEmbeddingProvider(new class implements EmbeddingProviderContract
     {
         public function embed(string $text): array
@@ -401,6 +401,7 @@ it('fires VectorOperationFailed with the store name when the query embedding fai
             return 'down';
         }
     });
+    $store = memoryTracingStore();
     Event::fake([VectorOperationCompleted::class, VectorOperationFailed::class]);
 
     expect(fn () => $store->collection('articles')->similarTo('anything')->get())
