@@ -19,22 +19,37 @@ final class PgVectorCollectionRegistry
         private readonly string $registryTable,
     ) {}
 
+    /**
+     * Create the registry table, or add `index_options` to a registry created before B3.
+     */
     public function ensureRegistryTable(): void
     {
-        if (! Schema::connection($this->connection->getName())->hasTable($this->registryTable)) {
+        $schema = Schema::connection($this->connection->getName());
+
+        if (! $schema->hasTable($this->registryTable)) {
             $this->connection->statement(
                 "CREATE TABLE {$this->registryTable} (
                     name VARCHAR(255) PRIMARY KEY,
                     dimensions INTEGER NOT NULL,
                     metric VARCHAR(32) NOT NULL,
                     storage_identifier VARCHAR(255) NOT NULL UNIQUE,
+                    index_options JSONB NULL,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )",
             );
+
+            return;
+        }
+
+        if (! $schema->hasColumn($this->registryTable, 'index_options')) {
+            $this->connection->statement("ALTER TABLE {$this->registryTable} ADD COLUMN IF NOT EXISTS index_options JSONB NULL");
         }
     }
 
-    public function register(CollectionDefinition $definition, int $dimensions, PgVectorMetric $metric): string
+    /**
+     * @param  array<string, mixed>  $indexOptions  the requested index (PgVectorIndex::toArray())
+     */
+    public function register(CollectionDefinition $definition, int $dimensions, PgVectorMetric $metric, array $indexOptions = []): string
     {
         $this->assertValidCollectionName($definition->name);
 
@@ -45,8 +60,8 @@ final class PgVectorCollectionRegistry
         $storageIdentifier = $this->storageIdentifier($definition->name);
 
         $this->connection->insert(
-            "INSERT INTO {$this->registryTable} (name, dimensions, metric, storage_identifier) VALUES (?, ?, ?, ?)",
-            [$definition->name, $dimensions, $metric->value, $storageIdentifier],
+            "INSERT INTO {$this->registryTable} (name, dimensions, metric, storage_identifier, index_options) VALUES (?, ?, ?, ?, ?::jsonb)",
+            [$definition->name, $dimensions, $metric->value, $storageIdentifier, $indexOptions === [] ? null : json_encode($indexOptions, JSON_THROW_ON_ERROR)],
         );
 
         return $storageIdentifier;
@@ -89,15 +104,15 @@ final class PgVectorCollectionRegistry
     }
 
     /**
-     * @return array{dimensions: int, metric: PgVectorMetric, storage_identifier: string}
+     * @return array{dimensions: int, metric: PgVectorMetric, storage_identifier: string, index_options: array{type?: string, options?: array<string, int>}|null}
      */
     public function resolve(string $collection): array
     {
         $this->assertValidCollectionName($collection);
 
-        /** @var object{dimensions: int|string, metric: string, storage_identifier: string}|null $row */
+        /** @var object{dimensions: int|string, metric: string, storage_identifier: string, index_options: string|null}|null $row */
         $row = $this->connection->selectOne(
-            "SELECT dimensions, metric, storage_identifier FROM {$this->registryTable} WHERE name = ?",
+            "SELECT dimensions, metric, storage_identifier, index_options FROM {$this->registryTable} WHERE name = ?",
             [$collection],
         );
 
@@ -109,6 +124,7 @@ final class PgVectorCollectionRegistry
             'dimensions' => (int) $row->dimensions,
             'metric' => PgVectorMetric::fromString($row->metric),
             'storage_identifier' => $row->storage_identifier,
+            'index_options' => $row->index_options !== null ? json_decode($row->index_options, true, flags: JSON_THROW_ON_ERROR) : null,
         ];
     }
 

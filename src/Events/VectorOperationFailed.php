@@ -20,5 +20,6 @@ final class VectorOperationFailed
         public readonly int $durationMs,
         public readonly Throwable $exception,
         public readonly ?int $documentCount = null,
+        public readonly ?int $embeddingMs = null,
     ) {}
 }

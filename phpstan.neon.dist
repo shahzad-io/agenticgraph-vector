@@ -6,6 +6,13 @@ parameters:
     paths:
         - src
         - config
+        # The shipped conformance trait is analysed through the classes that use it.
+        - tests/Conformance
+        # bin/vector-bench logic (7.7).
+        - tests/Support/BenchDataset.php
+        - tests/Support/BenchReport.php
+        - tests/Support/BenchRunner.php
+        - tests/Support/RetrievalMetrics.php
     configDirectories:
         - config
     scanFiles:

@@ -4,7 +4,7 @@
  * BEIR SciFact retrieval accuracy baseline (local Ollama embeddings + pgvector).
  *
  * Requires: VECTOR_BENCHMARK=true, pgvector, Ollama with mxbai-embed-large pulled.
- * Export data first: build/benchmark/.venv/bin/python benchmarks/export-scifact.py
+ * Export data first: python3 benchmarks/export-datasets.py (or run bin/vector-bench)
  *
  * @group benchmark
  */
@@ -12,8 +12,8 @@
 use AgenticGraph\Vector\Facades\Embeddings;
 use AgenticGraph\Vector\Facades\Vector;
 use AgenticGraph\Vector\Tests\Support\BeirSciFactDataset;
+use AgenticGraph\Vector\Tests\Support\BenchReport;
 use AgenticGraph\Vector\Tests\Support\OllamaBenchmarkHelper;
-use AgenticGraph\Vector\Tests\Support\RetrievalMetrics;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
 
@@ -118,19 +118,13 @@ describe('BEIR SciFact retrieval benchmark', function (): void {
         }
 
         $qrels = $this->dataset['qrels'];
-        $metrics = [
-            'recall_at_1' => RetrievalMetrics::recallAtK($qrels, $ranked, 1),
-            'recall_at_5' => RetrievalMetrics::recallAtK($qrels, $ranked, 5),
-            'recall_at_10' => RetrievalMetrics::recallAtK($qrels, $ranked, 10),
-            'mrr' => RetrievalMetrics::mrr($qrels, $ranked),
-            'ndcg_at_10' => RetrievalMetrics::ndcgAtK($qrels, $ranked, 10),
-        ];
+        $metrics = BenchReport::quality($qrels, $ranked);
 
         $elapsed = round(microtime(true) - $started, 1);
 
         $report = [
             'dataset' => 'BEIR SciFact (test split)',
-            'source' => 'ir_datasets beir/scifact/test via benchmarks/export-scifact.py',
+            'source' => 'benchmarks/datasets.json scifact via benchmarks/export-datasets.py',
             'corpus_documents' => count($this->dataset['corpus']),
             'queries' => $queryCount,
             'qrels_queries' => count($qrels),
@@ -148,7 +142,8 @@ describe('BEIR SciFact retrieval benchmark', function (): void {
             'score_samples' => $scoreSamples,
         ];
 
-        $resultsPath = dirname(BeirSciFactDataset::exportPath()).'/scifact-results.json';
+        $resultsPath = '/tmp/ag2/bench/scifact-results.json';
+        @mkdir(dirname($resultsPath), 0777, true);
         file_put_contents($resultsPath, json_encode($report, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
 
         fwrite(STDOUT, "\n=== SciFact Retrieval Baseline ===\n");
@@ -157,7 +152,8 @@ describe('BEIR SciFact retrieval benchmark', function (): void {
         fwrite(STDOUT, sprintf("Recall@1:  %.4f\n", $metrics['recall_at_1']));
         fwrite(STDOUT, sprintf("Recall@5:  %.4f\n", $metrics['recall_at_5']));
         fwrite(STDOUT, sprintf("Recall@10: %.4f\n", $metrics['recall_at_10']));
-        fwrite(STDOUT, sprintf("MRR:       %.4f\n", $metrics['mrr']));
+        fwrite(STDOUT, sprintf("Hit@10:    %.4f\n", $metrics['hit_at_10']));
+        fwrite(STDOUT, sprintf("MRR@10:    %.4f\n", $metrics['mrr_at_10']));
         fwrite(STDOUT, sprintf("nDCG@10:   %.4f\n", $metrics['ndcg_at_10']));
         fwrite(STDOUT, "Elapsed:   {$elapsed}s\n");
         fwrite(STDOUT, "Results:   {$resultsPath}\n\n");

@@ -1,0 +1,21 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * Retrieval benchmark for agenticgraph-vector on pgvector (dev only). The logic lives in
+ * tests/Support/BenchRunner.php; see benchmarks/README.md. Exit codes: 0 done, 1 quality drop
+ * against the baseline, 2 setup error.
+ */
+
+declare(strict_types=1);
+
+use AgenticGraph\Vector\Tests\Support\BenchRunner;
+
+require __DIR__.'/../vendor/autoload.php';
+
+try {
+    exit(BenchRunner::main(getopt('', BenchRunner::OPTIONS) ?: []));
+} catch (Throwable $exception) {
+    fwrite(STDERR, "vector-bench: {$exception->getMessage()}\n");
+    exit(2);
+}

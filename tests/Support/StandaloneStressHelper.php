@@ -7,6 +7,7 @@ namespace AgenticGraph\Vector\Tests\Support;
 use AgenticGraph\Vector\Contracts\EmbeddingProviderContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Facades\Vector;
+use AgenticGraph\Vector\Testing\CountingEmbeddingProvider;
 use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\VectorManager;
 use Composer\InstalledVersions;

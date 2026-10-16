@@ -4,49 +4,20 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector\ValueObjects;
 
+use AgenticGraph\Vector\Enums\StoreCapability;
+
 final readonly class StoreCapabilities
 {
-    public function __construct(
-        private bool $deleteByFilter = false,
-        private bool $namespaces = false,
-        private bool $hybridSearch = false,
-        private bool $reranking = false,
-        private bool $tenantIsolation = false,
-    ) {}
+    /** @var list<StoreCapability> */
+    public array $capabilities;
 
-    public static function pgvector(): self
+    public function __construct(StoreCapability ...$capabilities)
     {
-        return new self(
-            deleteByFilter: true,
-            namespaces: false,
-            hybridSearch: false,
-            reranking: false,
-            tenantIsolation: false,
-        );
+        $this->capabilities = array_values($capabilities);
     }
 
-    public function supportsDeleteByFilter(): bool
+    public function supports(StoreCapability $capability): bool
     {
-        return $this->deleteByFilter;
-    }
-
-    public function supportsNamespaces(): bool
-    {
-        return $this->namespaces;
-    }
-
-    public function supportsHybridSearch(): bool
-    {
-        return $this->hybridSearch;
-    }
-
-    public function supportsReranking(): bool
-    {
-        return $this->reranking;
-    }
-
-    public function supportsTenantIsolation(): bool
-    {
-        return $this->tenantIsolation;
+        return in_array($capability, $this->capabilities, true);
     }
 }

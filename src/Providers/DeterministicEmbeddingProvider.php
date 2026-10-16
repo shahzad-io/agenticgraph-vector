@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Providers;
 
 use AgenticGraph\Vector\Contracts\EmbeddingProviderContract;
+use AgenticGraph\Vector\Events\VectorEmbeddingCompleted;
 
 /**
  * Deterministic, API-free embedding provider for fast unit and integration tests.
@@ -18,12 +19,20 @@ final class DeterministicEmbeddingProvider implements EmbeddingProviderContract
 
     public function embed(string $text): array
     {
-        return $this->vectorFor($text);
+        $started = hrtime(true);
+        $vector = $this->vectorFor($text);
+        VectorEmbeddingCompleted::record($this->modelName, 1, null, $started);
+
+        return $vector;
     }
 
     public function embedBatch(array $texts): array
     {
-        return array_map(fn (string $text): array => $this->vectorFor($text), $texts);
+        $started = hrtime(true);
+        $vectors = array_map(fn (string $text): array => $this->vectorFor($text), $texts);
+        VectorEmbeddingCompleted::record($this->modelName, count($texts), null, $started);
+
+        return $vectors;
     }
 
     public function dimensions(): int

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Providers;
 
 use AgenticGraph\Vector\Contracts\EmbeddingProviderContract;
+use AgenticGraph\Vector\Events\VectorEmbeddingCompleted;
 use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
 use Prism\Prism\Embeddings\Response as EmbeddingResponse;
 use Prism\Prism\Exceptions\PrismException;
@@ -66,11 +67,14 @@ final class PrismEmbeddingProvider implements EmbeddingProviderContract
     }
 
     /**
+     * One Prism request. Its token usage goes out on VectorEmbeddingCompleted.
+     *
      * @param  list<string>  $texts
      */
     private function requestEmbeddings(array $texts): EmbeddingResponse
     {
         [$provider, $model] = $this->parseProviderAndModel();
+        $started = hrtime(true);
 
         try {
             $request = Prism::embeddings()
@@ -83,7 +87,7 @@ final class PrismEmbeddingProvider implements EmbeddingProviderContract
                 $request = $request->withProviderOptions($providerOptions);
             }
 
-            return $request->asEmbeddings();
+            $response = $request->asEmbeddings();
         } catch (PrismException $exception) {
             throw new VectorEmbeddingException(
                 'Embedding generation failed: '.$exception->getMessage(),
@@ -95,6 +99,10 @@ final class PrismEmbeddingProvider implements EmbeddingProviderContract
                 previous: $exception,
             );
         }
+
+        VectorEmbeddingCompleted::record($model, count($texts), $response->usage->tokens, $started);
+
+        return $response;
     }
 
     /**

@@ -6,9 +6,11 @@ use AgenticGraph\Vector\Contracts\SearchStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\FilterOperator;
+use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
 use AgenticGraph\Vector\Exceptions\VectorConnectionException;
 use AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException;
+use AgenticGraph\Vector\Exceptions\VectorDuplicateDocumentException;
 use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
 use AgenticGraph\Vector\Exceptions\VectorException;
 use AgenticGraph\Vector\Exceptions\VectorExtensionMissingException;
@@ -58,15 +60,20 @@ it('resolves pgvector store and prism embedding provider via facades', function 
         ->and(Embeddings::using('prism'))->toBeInstanceOf(PrismEmbeddingProvider::class);
 });
 
-it('declares pgvector capabilities', function () {
-    $caps = Vector::store('pgvector')->capabilities();
+it('declares pgvector and memory capabilities', function (string $store) {
+    $caps = Vector::store($store)->capabilities();
 
-    expect($caps->supportsDeleteByFilter())->toBeTrue()
-        ->and($caps->supportsNamespaces())->toBeFalse()
-        ->and($caps->supportsHybridSearch())->toBeFalse()
-        ->and($caps->supportsReranking())->toBeFalse()
-        ->and($caps->supportsTenantIsolation())->toBeFalse();
-});
+    expect($caps->capabilities)->toBe([
+        StoreCapability::ListIds,
+        StoreCapability::UpdateMetadata,
+        StoreCapability::DeleteByFilter,
+        StoreCapability::FilterNot,
+        StoreCapability::FilterContains,
+        StoreCapability::FilterRange,
+    ])
+        ->and($caps->supports(StoreCapability::Keyword))->toBeFalse()
+        ->and($caps->supports(StoreCapability::Aliases))->toBeFalse();
+})->with(['pgvector', 'memory']);
 
 it('returns a sensible pgvector batch size', function () {
     expect(Vector::store('pgvector')->batchSize())->toBe(100);
@@ -228,6 +235,7 @@ it('defines the vector exception hierarchy', function () {
         VectorExtensionMissingException::class,
         VectorEmbeddingException::class,
         VectorInvalidMetadataException::class,
+        VectorDuplicateDocumentException::class,
     ];
 
     foreach ($exceptions as $exception) {
@@ -259,7 +267,7 @@ it('embeds via the configured deterministic provider by default in tests', funct
 });
 
 it('allows registering a custom store via the manager extend seam', function () {
-    Vector::extend('memory', fn (): SearchStoreContract => new class implements SearchStoreContract
+    Vector::extend('search-only', fn (): SearchStoreContract => new class implements SearchStoreContract
     {
         public function search(SearchQuery $query): SearchResult
         {
@@ -272,7 +280,7 @@ it('allows registering a custom store via the manager extend seam', function () 
         }
     });
 
-    $store = app(VectorManager::class)->driver('memory');
+    $store = app(VectorManager::class)->driver('search-only');
 
     expect($store->search(new SearchQuery('articles', [0.1])))->toBeInstanceOf(SearchResult::class);
 });

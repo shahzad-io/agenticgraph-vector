@@ -20,8 +20,9 @@
 /phpstan-baseline.neon  export-ignore
 
 # Engineering docs (PRD, phase files, v8-docs) are under /docs above.
-# Benchmark scripts and data, local services, PHPStan-only stubs, build output, the lock file.
+# Benchmark runner, scripts and data, local services, PHPStan-only stubs, build output, the lock file.
 /benchmarks export-ignore
+/bin export-ignore
 /build export-ignore
 /docker-compose.yml export-ignore
 /stubs export-ignore

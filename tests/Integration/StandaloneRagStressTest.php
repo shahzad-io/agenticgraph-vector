@@ -6,6 +6,7 @@ use AgenticGraph\Vector\Contracts\SearchStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\FilterOperator;
+use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
 use AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException;
 use AgenticGraph\Vector\Exceptions\VectorInvalidMetadataException;
@@ -76,9 +77,9 @@ describe('Standalone RAG Stress Test #1', function (): void {
             ->and($health->latencyMs)->toBeGreaterThanOrEqual(0);
 
         $capabilities = $this->store->capabilities();
-        expect($capabilities->supportsDeleteByFilter())->toBeTrue()
-            ->and($capabilities->supportsHybridSearch())->toBeFalse()
-            ->and($capabilities->supportsNamespaces())->toBeFalse();
+        expect($capabilities->supports(StoreCapability::DeleteByFilter))->toBeTrue()
+            ->and($capabilities->supports(StoreCapability::Keyword))->toBeFalse()
+            ->and($capabilities->supports(StoreCapability::Aliases))->toBeFalse();
 
         expect($this->store->batchSize())->toBeGreaterThan(0);
 

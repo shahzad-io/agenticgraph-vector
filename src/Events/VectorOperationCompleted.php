@@ -19,5 +19,6 @@ final class VectorOperationCompleted
         public readonly int $durationMs,
         public readonly ?int $resultCount = null,
         public readonly ?int $documentCount = null,
+        public readonly ?int $embeddingMs = null,
     ) {}
 }

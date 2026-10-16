@@ -1,0 +1,77 @@
+{
+    "datasets": {
+        "scifact": {
+            "description": "BEIR SciFact, test split (300 queries)",
+            "license": "CC BY-SA 4.0",
+            "citation": "Thakur et al., BEIR: A Heterogeneous Benchmark for Zero-shot Evaluation of Information Retrieval Models, NeurIPS 2021",
+            "source": {
+                "url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip",
+                "sha256": "536e14446a0ba56ed1398ab1055f39fe852686ecad24a6306c80c490fa8e0165"
+            },
+            "files": {
+                "corpus": {
+                    "path": "scifact/corpus.json",
+                    "sha256": "6c3b4e6d3d1b3083d15edb968bbd01c7c4371e18037f41c5cf605ebd979fc206"
+                },
+                "queries": {
+                    "path": "scifact/queries.json",
+                    "sha256": "aba14080b568cb40e42e22b26687ba074552ef1a2170259a7f635c619304de08"
+                },
+                "qrels": {
+                    "path": "scifact/qrels.json",
+                    "sha256": "b5e75fcf630ad54380a8e21f3534d88a8ba543cb0450527f45f45dcae1d8b857"
+                }
+            }
+        },
+        "wixqa-expert": {
+            "description": "WixQA ExpertWritten (200 queries) over the Wix KB corpus",
+            "license": "MIT",
+            "citation": "Wix.com AI Research, WixQA: A Multi-Dataset Benchmark for Enterprise Retrieval-Augmented Generation, 2025",
+            "source": {
+                "url": "https://huggingface.co/datasets/Wix/WixQA",
+                "revision": "d662dc42479c14e202eccd832f8c4b66a035c4cc"
+            },
+            "split": "wixqa_expertwritten",
+            "query_prefix": "expert",
+            "files": {
+                "corpus": {
+                    "path": "wixqa/corpus.json",
+                    "sha256": "dc2c9cd21ce4ea189317f3825c2d0d59d6ce0167581b8132e20cfdcd23858ca4"
+                },
+                "queries": {
+                    "path": "wixqa/expert/queries.json",
+                    "sha256": "a102a04778f5681216e99b902e7ce0c624ecaaeeeaca8ea6ee5ef03d48bbefb0"
+                },
+                "qrels": {
+                    "path": "wixqa/expert/qrels.json",
+                    "sha256": "d59bc7944d5a10ea6dfac69083f6b1ddf142a611f54db87e390be4481aad6461"
+                }
+            }
+        },
+        "wixqa-simulated": {
+            "description": "WixQA Simulated (200 queries) over the Wix KB corpus",
+            "license": "MIT",
+            "citation": "Wix.com AI Research, WixQA: A Multi-Dataset Benchmark for Enterprise Retrieval-Augmented Generation, 2025",
+            "source": {
+                "url": "https://huggingface.co/datasets/Wix/WixQA",
+                "revision": "d662dc42479c14e202eccd832f8c4b66a035c4cc"
+            },
+            "split": "wixqa_simulated",
+            "query_prefix": "simulated",
+            "files": {
+                "corpus": {
+                    "path": "wixqa/corpus.json",
+                    "sha256": "dc2c9cd21ce4ea189317f3825c2d0d59d6ce0167581b8132e20cfdcd23858ca4"
+                },
+                "queries": {
+                    "path": "wixqa/simulated/queries.json",
+                    "sha256": "ab4acc89d329499416ed53077da2ed8aeedd71316ce4f8cbce9f0a3f2d95bc6c"
+                },
+                "qrels": {
+                    "path": "wixqa/simulated/qrels.json",
+                    "sha256": "342fd6583b999e390ebe57ad2effa4bfe3a9afb9834ceef8e67096bf95277dbe"
+                }
+            }
+        }
+    }
+}

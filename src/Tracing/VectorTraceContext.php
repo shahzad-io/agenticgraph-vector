@@ -13,25 +13,26 @@ final readonly class VectorTraceContext
         public string $store,
         public string $collection,
         public int $documentCount = 0,
-        public ?SearchQuery $searchQuery = null,
+        public ?int $topK = null,
         public int $filterCount = 0,
     ) {}
 
     public static function forSearch(SearchQuery $query, ?string $store = null): self
     {
         return new self(
-            store: $store ?? (string) config('vector.default', 'pgvector'),
+            store: $store ?? self::defaultStore(),
             collection: $query->collection,
-            searchQuery: $query,
-            filterCount: $query->filter !== null ? count($query->filter->conditions) : 0,
+            topK: $query->topK,
+            filterCount: self::filterCount($query->filter),
         );
     }
 
-    public static function forCollection(string $collection, ?string $store = null): self
+    public static function forCollection(string $collection, ?string $store = null, ?NormalizedFilter $filter = null): self
     {
         return new self(
-            store: $store ?? (string) config('vector.default', 'pgvector'),
+            store: $store ?? self::defaultStore(),
             collection: $collection,
+            filterCount: self::filterCount($filter),
         );
     }
 
@@ -42,10 +43,20 @@ final readonly class VectorTraceContext
         ?string $store = null,
     ): self {
         return new self(
-            store: $store ?? (string) config('vector.default', 'pgvector'),
+            store: $store ?? self::defaultStore(),
             collection: $collection,
             documentCount: $documentCount,
-            filterCount: $filter !== null ? count($filter->conditions) : 0,
+            filterCount: self::filterCount($filter),
         );
+    }
+
+    private static function defaultStore(): string
+    {
+        return (string) config('vector.default', 'pgvector');
+    }
+
+    private static function filterCount(?NormalizedFilter $filter): int
+    {
+        return $filter !== null ? count($filter->conditions) : 0;
     }
 }

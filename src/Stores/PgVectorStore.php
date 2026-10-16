@@ -8,29 +8,33 @@ use AgenticGraph\Vector\Concerns\InteractsWithBuilder;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\PgVectorMetric;
-use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
+use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorConnectionException;
 use AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException;
-use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
-use AgenticGraph\Vector\Exceptions\VectorExtensionMissingException;
-use AgenticGraph\Vector\Exceptions\VectorInvalidMetadataException;
+use AgenticGraph\Vector\Exceptions\VectorDuplicateDocumentException;
+use AgenticGraph\Vector\Exceptions\VectorException;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorCollectionRegistry;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorExtensionGuard;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorFilterTranslator;
+use AgenticGraph\Vector\Stores\PgVector\PgVectorIndex;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorSearchOptions;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorVectorFormatter;
 use AgenticGraph\Vector\Support\MetadataValidator;
+use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\HealthCheckResult;
+use AgenticGraph\Vector\ValueObjects\IdPage;
 use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
 use AgenticGraph\Vector\ValueObjects\SearchHit;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use AgenticGraph\Vector\ValueObjects\SearchResult;
 use AgenticGraph\Vector\ValueObjects\StoreCapabilities;
+use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
 use Illuminate\Database\Connection;
 use Illuminate\Database\DatabaseManager;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Throwable;
 
 final class PgVectorStore implements VectorStoreContract
@@ -42,6 +46,9 @@ final class PgVectorStore implements VectorStoreContract
     private readonly PgVectorFilterTranslator $filterTranslator;
 
     private readonly PgVectorExtensionGuard $extensionGuard;
+
+    /** Extension check and registry table done for this store instance (one per process). */
+    private bool $prepared = false;
 
     /**
      * @param  array<string, mixed>  $config
@@ -118,7 +125,14 @@ final class PgVectorStore implements VectorStoreContract
 
     public function capabilities(): StoreCapabilities
     {
-        return StoreCapabilities::pgvector();
+        return new StoreCapabilities(
+            StoreCapability::ListIds,
+            StoreCapability::UpdateMetadata,
+            StoreCapability::DeleteByFilter,
+            StoreCapability::FilterNot,
+            StoreCapability::FilterContains,
+            StoreCapability::FilterRange,
+        );
     }
 
     public function fetch(string $collection, array $ids): SearchResult
@@ -199,8 +213,8 @@ final class PgVectorStore implements VectorStoreContract
 
     public function deleteByFilter(string $collection, NormalizedFilter $filter): void
     {
-        if (! $this->capabilities()->supportsDeleteByFilter()) {
-            throw new VectorQueryException('Delete by filter is not supported by this store.');
+        if ($filter->conditions === []) {
+            throw new VectorQueryException('Delete by filter requires at least one filter condition.');
         }
 
         $this->run(function () use ($collection, $filter): void {
@@ -213,6 +227,72 @@ final class PgVectorStore implements VectorStoreContract
             $this->connection()->delete(
                 "DELETE FROM {$storage} WHERE {$translated['sql']}",
                 $translated['bindings'],
+            );
+        });
+    }
+
+    public function listIds(string $collection, ?NormalizedFilter $filter = null, ?string $cursor = null, int $limit = 100): IdPage
+    {
+        return $this->run(function () use ($collection, $filter, $cursor, $limit): IdPage {
+            $this->preparePgVector();
+
+            $resolved = $this->registry->resolve($collection);
+            $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
+            $translated = $this->filterTranslator->translate($filter);
+
+            $sql = "SELECT id FROM {$storage} WHERE {$translated['sql']}";
+            $bindings = $translated['bindings'];
+
+            if ($cursor !== null) {
+                $sql .= ' AND id > ?';
+                $bindings[] = $cursor;
+            }
+
+            $rows = $this->connection()->select("{$sql} ORDER BY id LIMIT ?", [...$bindings, $limit + 1]);
+
+            return IdPage::fromOverfetch(array_map(static fn (object $row): string => (string) $row->id, $rows), $limit);
+        });
+    }
+
+    public function updateMetadata(string $collection, array $metadataById, bool $merge = true): UpdateMetadataResult
+    {
+        return $this->run(function () use ($collection, $metadataById, $merge): UpdateMetadataResult {
+            $this->preparePgVector();
+
+            $resolved = $this->registry->resolve($collection);
+            $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
+            $requested = array_map(strval(...), array_keys($metadataById));
+            $updated = [];
+
+            $rows = [];
+            foreach ($metadataById as $id => $metadata) {
+                $rows[] = [(string) $id, json_encode((object) $this->metadataValidator->normalize($metadata), JSON_THROW_ON_ERROR)];
+            }
+
+            // Rows written before B3 may hold empty metadata as a JSON array; || on an array would append.
+            $value = $merge
+                ? "(CASE WHEN jsonb_typeof(documents.metadata) = 'object' THEN documents.metadata ELSE '{}'::jsonb END) || changes.metadata"
+                : 'changes.metadata';
+
+            $this->connection()->transaction(function () use ($rows, $storage, $value, &$updated): void {
+                foreach (array_chunk($rows, max(1, $this->batchSize())) as $chunk) {
+                    $placeholders = implode(', ', array_fill(0, count($chunk), '(?, ?::jsonb)'));
+
+                    $returned = $this->connection()->selectFromWriteConnection(
+                        "UPDATE {$storage} AS documents SET metadata = {$value}
+                         FROM (VALUES {$placeholders}) AS changes(id, metadata)
+                         WHERE documents.id = changes.id
+                         RETURNING documents.id",
+                        array_merge(...$chunk),
+                    );
+
+                    array_push($updated, ...array_map(static fn (object $row): string => (string) $row->id, $returned));
+                }
+            });
+
+            return new UpdateMetadataResult(
+                updated: array_values(array_intersect($requested, $updated)),
+                unknown: array_values(array_diff($requested, $updated)),
             );
         });
     }
@@ -233,6 +313,7 @@ final class PgVectorStore implements VectorStoreContract
         $this->run(function () use ($definition): void {
             $this->preparePgVector();
 
+            $index = PgVectorIndex::fromDefinition($definition, $this->indexType(), $this->configuredIvfflatLists());
             $dimensions = $definition->dimensions ?? $this->embeddings->using()->dimensions();
             $metric = PgVectorMetric::fromString($this->resolveCollectionMetric($definition));
 
@@ -242,8 +323,11 @@ final class PgVectorStore implements VectorStoreContract
 
             if ($this->registry->exists($definition->name)) {
                 $existing = $this->registry->resolve($definition->name);
+                $existingIndex = $this->existingIndex($this->registry->qualifiedStorageName($existing['storage_identifier']), $existing['index_options']);
 
-                if ($existing['dimensions'] === $dimensions && $existing['metric'] === $metric) {
+                if ($existing['dimensions'] === $dimensions
+                    && $existing['metric'] === $metric
+                    && ($existingIndex === null || $existingIndex->equals($index))) {
                     return;
                 }
 
@@ -252,9 +336,9 @@ final class PgVectorStore implements VectorStoreContract
                 );
             }
 
-            $this->connection()->transaction(function () use ($definition, $dimensions, $metric): void {
-                $storageIdentifier = $this->registry->register($definition, $dimensions, $metric);
-                $this->createStorage($storageIdentifier, $dimensions, $metric);
+            $this->connection()->transaction(function () use ($definition, $dimensions, $metric, $index): void {
+                $storageIdentifier = $this->registry->register($definition, $dimensions, $metric, $index->toArray());
+                $this->createStorage($storageIdentifier, $dimensions, $metric, $index);
             });
         });
     }
@@ -301,11 +385,9 @@ final class PgVectorStore implements VectorStoreContract
         });
     }
 
-    private function createStorage(string $storageIdentifier, int $dimensions, PgVectorMetric $metric): void
+    private function createStorage(string $storageIdentifier, int $dimensions, PgVectorMetric $metric, PgVectorIndex $index): void
     {
         $storage = $this->registry->qualifiedStorageName($storageIdentifier);
-        $indexType = (string) ($this->config['index'] ?? 'hnsw');
-        $ops = $metric->indexOps();
 
         $this->connection()->statement(
             "CREATE TABLE {$storage} (
@@ -316,14 +398,23 @@ final class PgVectorStore implements VectorStoreContract
             )",
         );
 
-        if ($indexType === 'ivfflat') {
-            $this->createIvfflatIndex($storage, $metric);
+        $this->connection()->statement($index->createSql($storage, $metric->indexOps()));
+    }
 
-            return;
-        }
+    /**
+     * The collection's embedding index as it exists in Postgres (with the registered IVFFlat lists),
+     * or null when it has none.
+     *
+     * @param  array{type?: string, options?: array<string, int>}|null  $registered
+     */
+    private function existingIndex(string $storage, ?array $registered): ?PgVectorIndex
+    {
+        $indexDefinition = $this->connection()->scalar('SELECT pg_get_indexdef(to_regclass(?))', ["{$storage}_embedding_idx"]);
 
-        $this->connection()->statement(
-            "CREATE INDEX IF NOT EXISTS {$storage}_embedding_idx ON {$storage} USING hnsw (embedding {$ops})",
+        return PgVectorIndex::fromExisting(
+            is_string($indexDefinition) ? $indexDefinition : null,
+            $registered,
+            $this->configuredIvfflatLists(),
         );
     }
 
@@ -392,11 +483,10 @@ final class PgVectorStore implements VectorStoreContract
                 }
             }
 
-            if ($this->indexType() === 'ivfflat') {
-                $this->createIvfflatIndex(
-                    $this->registry->qualifiedStorageName($resolved['storage_identifier']),
-                    $resolved['metric'],
-                );
+            $index = $this->existingIndex($storage, $resolved['index_options']);
+
+            if ($index?->type === 'ivfflat') {
+                $this->rebuildIvfflatIndex($storage, $resolved['metric'], $index);
             }
         });
     }
@@ -429,7 +519,7 @@ final class PgVectorStore implements VectorStoreContract
         $bindings = [];
 
         foreach ($documents as $document) {
-            $this->metadataValidator->validate($document->metadata);
+            $metadata = $this->metadataValidator->normalize($document->metadata);
             $vector = $this->requireVector($document, $dimensions, $collection);
 
             $placeholders[] = '(?, ?, ?::vector, ?::jsonb)';
@@ -438,16 +528,22 @@ final class PgVectorStore implements VectorStoreContract
                 (string) $document->id,
                 $document->content,
                 PgVectorVectorFormatter::format($vector),
-                json_encode($document->metadata, JSON_THROW_ON_ERROR),
+                json_encode((object) $metadata, JSON_THROW_ON_ERROR),
             );
         }
 
         $values = implode(', ', $placeholders);
 
-        $this->connection()->insert(
-            "INSERT INTO {$storage} (id, content, embedding, metadata) VALUES {$values}",
-            $bindings,
-        );
+        try {
+            $this->connection()->insert(
+                "INSERT INTO {$storage} (id, content, embedding, metadata) VALUES {$values}",
+                $bindings,
+            );
+        } catch (UniqueConstraintViolationException $exception) {
+            preg_match('/Key \(id\)=\((.*)\) already exists/', $exception->getMessage(), $match);
+
+            throw VectorDuplicateDocumentException::forId($collection, $match[1] ?? null);
+        }
     }
 
     /**
@@ -469,8 +565,7 @@ final class PgVectorStore implements VectorStoreContract
         $bindings = [];
 
         foreach ($documents as $document) {
-            $metadata = array_merge($globalMetadata, $document->metadata);
-            $this->metadataValidator->validate($metadata);
+            $metadata = $this->metadataValidator->normalize(array_merge($globalMetadata, $document->metadata));
             $vector = $this->requireVector($document, $dimensions, $collection);
 
             $placeholders[] = '(?, ?, ?::vector, ?::jsonb)';
@@ -479,7 +574,7 @@ final class PgVectorStore implements VectorStoreContract
                 (string) $document->id,
                 $document->content,
                 PgVectorVectorFormatter::format($vector),
-                json_encode($metadata, JSON_THROW_ON_ERROR),
+                json_encode((object) $metadata, JSON_THROW_ON_ERROR),
             );
         }
 
@@ -511,10 +606,10 @@ final class PgVectorStore implements VectorStoreContract
             return $documents;
         }
 
-        $vectors = $this->embeddings->using()->embedBatch(array_map(
+        $vectors = TraceSpan::embedding(fn (): array => $this->embeddings->using()->embedBatch(array_map(
             static fn (Document $document): string => $document->content,
             $needsEmbedding,
-        ));
+        )));
 
         $vectorById = [];
         foreach ($needsEmbedding as $index => $document) {
@@ -583,8 +678,16 @@ final class PgVectorStore implements VectorStoreContract
 
     private function preparePgVector(): void
     {
-        $this->extensionGuard->ensureAvailable();
+        if ($this->prepared) {
+            return;
+        }
+
+        if ((bool) ($this->config['verify_extension'] ?? true)) {
+            $this->extensionGuard->ensureAvailable();
+        }
+
         $this->registry->ensureRegistryTable();
+        $this->prepared = true;
     }
 
     private function resolveCollectionMetric(CollectionDefinition $definition): string
@@ -601,25 +704,21 @@ final class PgVectorStore implements VectorStoreContract
         return (string) ($this->config['index'] ?? 'hnsw');
     }
 
-    private function createIvfflatIndex(string $storage, PgVectorMetric $metric): void
+    /**
+     * IVFFlat centroids come from the rows, so the index is rebuilt after ingest with
+     * lists = min(requested lists, row count).
+     */
+    private function rebuildIvfflatIndex(string $storage, PgVectorMetric $metric, PgVectorIndex $index): void
     {
         $rowCount = (int) $this->connection()->scalar("SELECT COUNT(*) FROM {$storage}");
-        $lists = $this->resolveIvfflatLists($rowCount);
-        $ops = $metric->indexOps();
-        $indexName = "{$storage}_embedding_idx";
 
-        $this->connection()->statement("DROP INDEX IF EXISTS {$indexName}");
-        $this->connection()->statement(
-            "CREATE INDEX {$indexName} ON {$storage} USING ivfflat (embedding {$ops}) WITH (lists = {$lists})",
-        );
+        $this->connection()->statement("DROP INDEX IF EXISTS {$storage}_embedding_idx");
+        $this->connection()->statement($index->createSql($storage, $metric->indexOps(), $rowCount));
     }
 
-    private function resolveIvfflatLists(int $rowCount): int
+    private function configuredIvfflatLists(): int
     {
-        $configured = (int) ($this->config['ivfflat_lists'] ?? 100);
-        $effectiveRows = max(1, $rowCount);
-
-        return max(1, min($configured, $effectiveRows));
+        return (int) ($this->config['ivfflat_lists'] ?? 100);
     }
 
     private function connection(): Connection
@@ -639,7 +738,7 @@ final class PgVectorStore implements VectorStoreContract
     {
         try {
             return $callback();
-        } catch (VectorCollectionNotFoundException|VectorDimensionMismatchException|VectorEmbeddingException|VectorExtensionMissingException|VectorInvalidMetadataException|VectorQueryException $exception) {
+        } catch (VectorException $exception) {
             throw $exception;
         } catch (Throwable $exception) {
             throw new VectorConnectionException(

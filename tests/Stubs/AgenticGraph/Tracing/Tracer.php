@@ -12,6 +12,9 @@ final class Tracer
     /** @var array<string, int|string|float>|null */
     public ?array $exportedAttributes = null;
 
+    /** @var list<array{0: string, 1: array<string, int|string|float>}> span names with their exported attributes */
+    public array $spans = [];
+
     /**
      * @param  callable(): mixed  $callback
      * @param  array<string, int|string|float>  $attributes
@@ -20,6 +23,7 @@ final class Tracer
     {
         $result = $callback();
         $this->exportedAttributes = $attributes;
+        $this->spans[] = [$name, $attributes];
 
         return $result;
     }

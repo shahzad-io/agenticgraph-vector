@@ -1,13 +1,16 @@
 <?php
 
+use AgenticGraph\Vector\Events\VectorEmbeddingCompleted;
 use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
 use AgenticGraph\Vector\Providers\DeterministicEmbeddingProvider;
 use AgenticGraph\Vector\Providers\PrismEmbeddingProvider;
+use Illuminate\Support\Facades\Event;
 use Prism\Prism\Exceptions\PrismException;
 use Prism\Prism\Facades\Prism;
 use Prism\Prism\PrismManager;
 use Prism\Prism\Testing\EmbeddingsResponseFake;
 use Prism\Prism\ValueObjects\Embedding;
+use Prism\Prism\ValueObjects\EmbeddingsUsage;
 
 it('embeds text deterministically with aligned batch output', function () {
     $provider = new DeterministicEmbeddingProvider(dimensions: 8);
@@ -133,4 +136,47 @@ it('wraps PrismException in VectorEmbeddingException', function () {
 
     expect(fn () => $provider->embed('hello'))
         ->toThrow(VectorEmbeddingException::class, 'Embedding generation failed');
+});
+
+it('fires VectorEmbeddingCompleted with the token usage Prism reports, per embed and per batch', function () {
+    Event::fake([VectorEmbeddingCompleted::class]);
+    Prism::fake([
+        EmbeddingsResponseFake::make()->withEmbeddings([Embedding::fromArray([0.1, 0.2, 0.3])])->withUsage(new EmbeddingsUsage(7)),
+        EmbeddingsResponseFake::make()->withEmbeddings([Embedding::fromArray([0.1, 0.2, 0.3]), Embedding::fromArray([0.4, 0.5, 0.6])])->withUsage(new EmbeddingsUsage(19)),
+    ]);
+
+    $provider = new PrismEmbeddingProvider(['provider' => 'openai', 'model' => 'text-embedding-3-small', 'dimensions' => 3]);
+    $provider->embed('hello');
+    $provider->embedBatch(['hello', 'world']);
+
+    $events = Event::dispatched(VectorEmbeddingCompleted::class)->map(fn (array $args): array => [
+        $args[0]->model, $args[0]->inputCount, $args[0]->tokens, $args[0]->durationMs >= 0,
+    ])->all();
+
+    expect($events)->toBe([
+        ['text-embedding-3-small', 1, 7, true],
+        ['text-embedding-3-small', 2, 19, true],
+    ]);
+});
+
+it('fires VectorEmbeddingCompleted without tokens from the deterministic provider', function () {
+    Event::fake([VectorEmbeddingCompleted::class]);
+
+    $provider = new DeterministicEmbeddingProvider(dimensions: 8);
+    $provider->embed('hello');
+    $provider->embedBatch(['a', 'b', 'c']);
+
+    Event::assertDispatchedTimes(VectorEmbeddingCompleted::class, 2);
+    Event::assertDispatched(VectorEmbeddingCompleted::class, fn (VectorEmbeddingCompleted $event): bool => $event->model === 'deterministic-test'
+        && $event->inputCount === 3
+        && $event->tokens === null);
+});
+
+it('guard: fires no VectorEmbeddingCompleted when vector events are disabled', function () {
+    config()->set('vector.events.enabled', false);
+    Event::fake([VectorEmbeddingCompleted::class]);
+
+    (new DeterministicEmbeddingProvider(dimensions: 8))->embedBatch(['a']);
+
+    Event::assertNotDispatched(VectorEmbeddingCompleted::class);
 });

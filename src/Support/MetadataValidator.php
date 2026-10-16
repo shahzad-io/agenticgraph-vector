@@ -5,9 +5,30 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Support;
 
 use AgenticGraph\Vector\Exceptions\VectorInvalidMetadataException;
+use DateTimeInterface;
 
 final class MetadataValidator
 {
+    /**
+     * Metadata ready to store: DateTimeInterface values become UTC ISO 8601 strings (UtcDate::FORMAT),
+     * then the result is validated.
+     *
+     * @param  array<string, mixed>  $metadata
+     * @return array<string, mixed>
+     */
+    public function normalize(array $metadata): array
+    {
+        array_walk_recursive($metadata, static function (mixed &$value): void {
+            if ($value instanceof DateTimeInterface) {
+                $value = UtcDate::format($value);
+            }
+        });
+
+        $this->validate($metadata);
+
+        return $metadata;
+    }
+
     /**
      * @param  array<string, mixed>  $metadata
      */

@@ -1,0 +1,111 @@
+{
+    "schema": 1,
+    "created_at": "2026-10-16T11:47:38+00:00",
+    "dataset": {
+        "name": "wixqa-simulated",
+        "description": "WixQA Simulated (200 queries) over the Wix KB corpus",
+        "license": "MIT",
+        "citation": "Wix.com AI Research, WixQA: A Multi-Dataset Benchmark for Enterprise Retrieval-Augmented Generation, 2025",
+        "revision": "d662dc42479c14e202eccd832f8c4b66a035c4cc",
+        "files": {
+            "corpus": "dc2c9cd21ce4ea189317f3825c2d0d59d6ce0167581b8132e20cfdcd23858ca4",
+            "queries": "ab4acc89d329499416ed53077da2ed8aeedd71316ce4f8cbce9f0a3f2d95bc6c",
+            "qrels": "342fd6583b999e390ebe57ad2effa4bfe3a9afb9834ceef8e67096bf95277dbe"
+        }
+    },
+    "model": {
+        "name": "openai:text-embedding-3-small",
+        "slug": "openai-text-embedding-3-small",
+        "dimensions": 1536
+    },
+    "truncate": 24000,
+    "sizes": {
+        "documents": 6221,
+        "queries": 200,
+        "top_k": 10,
+        "warmup": 20,
+        "subset": false
+    },
+    "store": {
+        "name": "pgvector",
+        "index": "CREATE INDEX vcol_ea3fa92b1db2c048e1b59a27e8ff0710_embedding_idx ON public.vcol_ea3fa92b1db2c048e1b59a27e8ff0710 USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')"
+    },
+    "ingest": {
+        "documents": 6221,
+        "wall_ms": 239649,
+        "docs_per_second": 26,
+        "embedding_ms": 152129,
+        "embedding_calls": 63,
+        "embedding_tokens": 2953324,
+        "index_rebuild_ms": 2823
+    },
+    "query_embedding": {
+        "calls": 200,
+        "tokens": 2695,
+        "cached": false,
+        "p50_ms": 556,
+        "p95_ms": 820,
+        "p99_ms": 922
+    },
+    "modes": {
+        "dense": {
+            "quality": {
+                "ndcg_at_10": 0.5319809476074426,
+                "recall_at_1": 0.3125,
+                "recall_at_5": 0.6225,
+                "recall_at_10": 0.7441666666666665,
+                "hit_at_1": 0.33,
+                "hit_at_5": 0.645,
+                "hit_at_10": 0.765,
+                "mrr_at_10": 0.4718511904761906
+            },
+            "concurrency": {
+                "1": {
+                    "queries": 200,
+                    "wall_ms": 4885,
+                    "qps": 40.9,
+                    "p50_ms": 24.142,
+                    "p95_ms": 25.533,
+                    "p99_ms": 29.103
+                },
+                "4": {
+                    "queries": 200,
+                    "wall_ms": 1657,
+                    "qps": 120.7,
+                    "p50_ms": 32.84,
+                    "p95_ms": 38.036,
+                    "p99_ms": 40.944
+                },
+                "8": {
+                    "queries": 200,
+                    "wall_ms": 938,
+                    "qps": 213.3,
+                    "p50_ms": 36.423,
+                    "p95_ms": 42.139,
+                    "p99_ms": 45.716
+                }
+            }
+        }
+    },
+    "resources": {
+        "table_bytes": 60555264,
+        "index_bytes": 51716096,
+        "total_bytes": 112271360,
+        "container": "agenticgraph-vector-postgres-1",
+        "memory_mib_max": 163,
+        "memory_samples": 71,
+        "memory_note": null
+    },
+    "cost": {
+        "price_per_1m_tokens": 0.02,
+        "ingest": 0.059066,
+        "queries": 5.4e-5
+    },
+    "infrastructure": {
+        "php": "8.4.23",
+        "postgres": "PostgreSQL 16.14 (Debian 16.14-1.pgdg12+1) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+        "pgvector": "0.8.3",
+        "os": "Darwin 24.6.0"
+    },
+    "runtime_ms": 376128
+}

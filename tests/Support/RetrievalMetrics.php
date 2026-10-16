@@ -4,55 +4,47 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector\Tests\Support;
 
+use Closure;
+
 /**
- * Standard IR metrics for labeled retrieval benchmarks (BEIR qrels).
+ * Standard IR metrics for labeled retrieval benchmarks (BEIR qrels). Every metric is the mean
+ * over all queries in the qrels; a query with no ranked results scores 0.
  */
 final class RetrievalMetrics
 {
     /**
+     * BEIR recall@k: relevant documents found in the top k divided by all relevant documents.
+     *
      * @param  array<string, list<string>>  $qrels  query id => relevant document ids
      * @param  array<string, list<string>>  $ranked  query id => ranked document ids (best first)
      */
     public static function recallAtK(array $qrels, array $ranked, int $k): float
     {
-        if ($qrels === []) {
-            return 0.0;
-        }
-
-        $hits = 0.0;
-
-        foreach ($qrels as $queryId => $relevant) {
-            if ($relevant === []) {
-                continue;
-            }
-
-            $topK = array_slice($ranked[$queryId] ?? [], 0, $k);
-
-            if (array_intersect($relevant, $topK) !== []) {
-                $hits += 1.0;
-            }
-        }
-
-        return $hits / count($qrels);
+        return self::average($qrels, $ranked, static fn (array $relevant, array $rankedIds): float => $relevant === []
+            ? 0.0
+            : count(array_intersect($relevant, array_slice($rankedIds, 0, $k))) / count($relevant));
     }
 
     /**
+     * Hit rate at k: 1 when any relevant document is in the top k (the pre-B4 "recall").
+     *
      * @param  array<string, list<string>>  $qrels
      * @param  array<string, list<string>>  $ranked
      */
-    public static function mrr(array $qrels, array $ranked): float
+    public static function hitAtK(array $qrels, array $ranked, int $k): float
     {
-        if ($qrels === []) {
-            return 0.0;
-        }
+        return self::average($qrels, $ranked, static fn (array $relevant, array $rankedIds): float => array_intersect($relevant, array_slice($rankedIds, 0, $k)) === [] ? 0.0 : 1.0);
+    }
 
-        $reciprocals = 0.0;
-
-        foreach ($qrels as $queryId => $relevant) {
-            $reciprocals += self::reciprocalRank($ranked[$queryId] ?? [], $relevant);
-        }
-
-        return $reciprocals / count($qrels);
+    /**
+     * MRR@k: reciprocal rank of the first relevant document within the top k.
+     *
+     * @param  array<string, list<string>>  $qrels
+     * @param  array<string, list<string>>  $ranked
+     */
+    public static function mrrAtK(array $qrels, array $ranked, int $k): float
+    {
+        return self::average($qrels, $ranked, static fn (array $relevant, array $rankedIds): float => self::reciprocalRank(array_slice($rankedIds, 0, $k), $relevant));
     }
 
     /**
@@ -61,6 +53,16 @@ final class RetrievalMetrics
      */
     public static function ndcgAtK(array $qrels, array $ranked, int $k): float
     {
+        return self::average($qrels, $ranked, static fn (array $relevant, array $rankedIds): float => self::ndcgForQuery(array_slice($rankedIds, 0, $k), $relevant, $k));
+    }
+
+    /**
+     * @param  array<string, list<string>>  $qrels
+     * @param  array<string, list<string>>  $ranked
+     * @param  Closure(list<string>, list<string>): float  $score
+     */
+    private static function average(array $qrels, array $ranked, Closure $score): float
+    {
         if ($qrels === []) {
             return 0.0;
         }
@@ -68,7 +70,7 @@ final class RetrievalMetrics
         $total = 0.0;
 
         foreach ($qrels as $queryId => $relevant) {
-            $total += self::ndcgForQuery(array_slice($ranked[$queryId] ?? [], 0, $k), $relevant, $k);
+            $total += $score($relevant, $ranked[$queryId] ?? []);
         }
 
         return $total / count($qrels);

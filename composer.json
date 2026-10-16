@@ -63,7 +63,8 @@
         "format": "vendor/bin/pint"
     },
     "suggest": {
-        "shahzad/agenticgraph": "Optional — enables automatic tracing of vector operations when used inside AgenticGraph nodes."
+        "shahzad/agenticgraph": "Optional: enables automatic tracing of vector operations when used inside AgenticGraph nodes.",
+        "phpunit/phpunit": "Required (directly or through Pest) to run AgenticGraph\\Vector\\Testing\\StoreConformanceTests against a store."
     },
     "config": {
         "sort-packages": true,

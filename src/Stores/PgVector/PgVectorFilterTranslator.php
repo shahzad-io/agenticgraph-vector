@@ -5,10 +5,18 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Stores\PgVector;
 
 use AgenticGraph\Vector\Enums\FilterOperator;
-use AgenticGraph\Vector\Exceptions\VectorInvalidFilterException;
 use AgenticGraph\Vector\ValueObjects\FilterCondition;
 use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
 
+/**
+ * JSONB SQL for validated filter conditions (FilterCondition owns the shape rules).
+ *
+ * - eq/in: type-exact. A string, number or boolean compares only against a field of the same JSON
+ *   type (CASE guard, so a field of another type never matches and never errors).
+ * - ne/not_in: the exact complement of eq/in (`IS NOT TRUE`), so a document without the field matches.
+ * - contains: `@>` on a one-element array, so only array fields match.
+ * - gt/gte/lt/lte: numbers against number fields, UTC ISO strings against string fields (byte order).
+ */
 final class PgVectorFilterTranslator
 {
     /**
@@ -40,108 +48,69 @@ final class PgVectorFilterTranslator
      */
     private function translateCondition(FilterCondition $condition): array
     {
-        $field = $this->assertSafeField($condition->field);
+        $field = $condition->field;
+        $value = $condition->value;
 
         return match ($condition->operator) {
-            FilterOperator::Equals => $this->translateEquals($field, $condition->value),
-            FilterOperator::In => $this->translateIn($field, $condition->value),
+            FilterOperator::Equals => $this->equals($field, [$value], '='),
+            FilterOperator::In => $this->equals($field, $value, 'IN'),
+            FilterOperator::NotEquals => $this->negate($this->equals($field, [$value], '=')),
+            FilterOperator::NotIn => $this->negate($this->equals($field, $value, 'IN')),
+            FilterOperator::Contains => [
+                'metadata @> ?::jsonb',
+                [json_encode([$field => [$value]], JSON_THROW_ON_ERROR)],
+            ],
+            FilterOperator::GreaterThan => $this->range($field, '>', $value),
+            FilterOperator::GreaterThanOrEqual => $this->range($field, '>=', $value),
+            FilterOperator::LessThan => $this->range($field, '<', $value),
+            FilterOperator::LessThanOrEqual => $this->range($field, '<=', $value),
         };
     }
 
     /**
+     * @param  list<bool|int|float|string>  $values  one scalar type (validated)
      * @return array{0: string, 1: list<mixed>}
      */
-    private function translateEquals(string $field, mixed $value): array
+    private function equals(string $field, array $values, string $comparison): array
     {
-        if (is_bool($value)) {
-            return [
-                "(metadata->'{$field}')::boolean = ?",
-                [$value],
-            ];
-        }
+        $first = $values[0];
+        $placeholders = $comparison === 'IN' ? '('.implode(', ', array_fill(0, count($values), '?')).')' : '?';
 
-        if (is_int($value) || is_float($value)) {
-            return [
-                "(metadata->'{$field}')::numeric = ?",
-                [$value],
-            ];
-        }
+        $expression = match (true) {
+            is_bool($first) => $this->typed($field, 'boolean', "(metadata->'{$field}')::boolean"),
+            is_string($first) => $this->typed($field, 'string', "metadata->>'{$field}'"),
+            default => $this->typed($field, 'number', "(metadata->'{$field}')::numeric"),
+        };
 
-        if (is_string($value)) {
-            return [
-                "metadata->>'{$field}' = ?",
-                [$value],
-            ];
-        }
+        return ["{$expression} {$comparison} {$placeholders}", $values];
+    }
 
-        throw new VectorInvalidFilterException('Filter values must be scalar.');
+    /**
+     * @param  array{0: string, 1: list<mixed>}  $translated
+     * @return array{0: string, 1: list<mixed>}
+     */
+    private function negate(array $translated): array
+    {
+        return ["({$translated[0]}) IS NOT TRUE", $translated[1]];
     }
 
     /**
      * @return array{0: string, 1: list<mixed>}
      */
-    private function translateIn(string $field, mixed $value): array
+    private function range(string $field, string $comparison, int|float|string $value): array
     {
-        if (! is_array($value) || $value === []) {
-            throw new VectorInvalidFilterException('The In filter operator requires a non-empty array of values.');
-        }
+        $expression = is_string($value)
+            ? $this->typed($field, 'string', "metadata->>'{$field}'").' COLLATE "C"'
+            : $this->typed($field, 'number', "(metadata->'{$field}')::numeric");
 
-        $first = $value[0];
-
-        if (is_bool($first)) {
-            foreach ($value as $item) {
-                if (! is_bool($item)) {
-                    throw new VectorInvalidFilterException('In filter values must share the same scalar type.');
-                }
-            }
-
-            $placeholders = implode(', ', array_fill(0, count($value), '?'));
-
-            return [
-                "(metadata->'{$field}')::boolean IN ({$placeholders})",
-                $value,
-            ];
-        }
-
-        if (is_int($first) || is_float($first)) {
-            foreach ($value as $item) {
-                if (! is_int($item) && ! is_float($item)) {
-                    throw new VectorInvalidFilterException('In filter values must share the same scalar type.');
-                }
-            }
-
-            $placeholders = implode(', ', array_fill(0, count($value), '?'));
-
-            return [
-                "(metadata->'{$field}')::numeric IN ({$placeholders})",
-                $value,
-            ];
-        }
-
-        if (is_string($first)) {
-            foreach ($value as $item) {
-                if (! is_string($item)) {
-                    throw new VectorInvalidFilterException('In filter values must share the same scalar type.');
-                }
-            }
-
-            $placeholders = implode(', ', array_fill(0, count($value), '?'));
-
-            return [
-                "metadata->>'{$field}' IN ({$placeholders})",
-                $value,
-            ];
-        }
-
-        throw new VectorInvalidFilterException('In filter values must be scalar.');
+        return ["{$expression} {$comparison} ?", [$value]];
     }
 
-    private function assertSafeField(string $field): string
+    /**
+     * The cast only runs for a field of that JSON type; other types give NULL instead of an error.
+     */
+    private function typed(string $field, string $jsonType, string $cast): string
     {
-        if (! preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $field)) {
-            throw new VectorInvalidFilterException("Invalid metadata filter field [{$field}].");
-        }
-
-        return $field;
+        return "(CASE WHEN jsonb_typeof(metadata->'{$field}') = '{$jsonType}' THEN {$cast} END)";
     }
 }

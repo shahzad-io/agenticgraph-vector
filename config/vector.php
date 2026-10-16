@@ -8,18 +8,20 @@ return [
     |--------------------------------------------------------------------------
     |
     | The default store used when Vector::store() is called without a name.
+    | Set VECTOR_STORE=memory in an app's test environment to run without Postgres.
     |
     */
 
-    'default' => 'pgvector',
+    'default' => env('VECTOR_STORE', 'pgvector'),
 
     /*
     |--------------------------------------------------------------------------
     | Vector Stores
     |--------------------------------------------------------------------------
     |
-    | Each store adapter is configured here. Index, metric, and batch settings
-    | apply to the pgvector adapter.
+    | Named stores. Each entry names its driver: pgvector, memory, or a driver
+    | registered with Vector::extend(). Vector::store('name') resolves the entry
+    | through its driver; several entries may use the same driver.
     |
     */
 
@@ -43,7 +45,17 @@ return [
             'batch_size' => (int) env('VECTOR_PGVECTOR_BATCH_SIZE', 100),
             'registry_table' => 'vector_collection_registry',
             'install_extension' => (bool) env('VECTOR_PGVECTOR_INSTALL_EXTENSION', true),
+            // Check once per process that the vector extension exists. false skips the check.
+            'verify_extension' => (bool) env('VECTOR_PGVECTOR_VERIFY_EXTENSION', true),
             'ivfflat_lists' => 100,
+        ],
+
+        // In-process reference store (exact search, no index). Data lives as long as the
+        // store instance, so it suits tests, not production.
+        'memory' => [
+            'driver' => 'memory',
+            'metric' => 'cosine',
+            'batch_size' => 100,
         ],
 
     ],

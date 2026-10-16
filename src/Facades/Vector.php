@@ -6,12 +6,13 @@ namespace AgenticGraph\Vector\Facades;
 
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\VectorManager;
+use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\Facades\Facade;
 
 /**
  * @method static VectorStoreContract store(?string $name = null)
  * @method static mixed driver(?string $driver = null)
- * @method static VectorManager extend(string $driver, \Closure(): VectorStoreContract $callback)
+ * @method static VectorManager extend(string $driver, \Closure(Container, array<string, mixed>, string): VectorStoreContract $callback)
  *
  * @see VectorManager
  */
