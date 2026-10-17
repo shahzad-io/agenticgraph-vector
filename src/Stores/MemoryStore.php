@@ -353,7 +353,13 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
             throw new VectorCollectionNotFoundException("Alias [{$alias}] was not found.");
         }
 
-        unset($this->aliases[$alias]);
+        $migration = $this->migration($alias);
+
+        if ($migration?->unfinished()) {
+            throw new VectorQueryException("Alias [{$alias}] has an unfinished migration to [{$migration->target}] ({$migration->phase}). Run vector:migrate {$alias} again to finish it, then delete the alias.");
+        }
+
+        unset($this->aliases[$alias], $this->migrations[$alias]);
     }
 
     public function pointAlias(string $alias, string $collection): void

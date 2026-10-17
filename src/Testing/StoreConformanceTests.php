@@ -1226,6 +1226,39 @@ trait StoreConformanceTests
         $this->assertCount(3, $store->collection($state->target)->listIds()->ids);
     }
 
+    public function test_conformance_delete_alias_removes_its_migration_history(): void
+    {
+        [$alias] = $this->migratedAlias();
+        $store = $this->aliasStore();
+        $this->assertSame('switched', $store->migration($alias)?->phase);
+
+        $store->deleteAlias($alias);
+
+        $this->assertNull($store->migration($alias));
+
+        // The name used again, as a plain collection: no stale migration of the old alias.
+        $store->createCollection(new CollectionDefinition($alias, dimensions: 3, metric: 'cosine'));
+        $this->assertNull($store->migration($alias));
+    }
+
+    public function test_conformance_delete_alias_refuses_while_its_latest_migration_is_unfinished(): void
+    {
+        [$alias, $state] = $this->migratedAlias();
+        $store = $this->aliasStore();
+        $unfinished = new MigrationState($alias, $state->target, "{$alias}__v3", $state->mode, 'copying', $state->definition);
+        $store->saveMigration($unfinished);
+
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $store->deleteAlias($alias), 'unfinished migration');
+        $this->assertSame($state->target, $store->listAliases()[$alias]);
+        $this->assertSame('copying', $store->migration($alias)?->phase);
+
+        $store->saveMigration($unfinished->withPhase('failed'));
+        $store->deleteAlias($alias);
+
+        $this->assertArrayNotHasKey($alias, $store->listAliases());
+        $this->assertNull($store->migration($alias));
+    }
+
     public function test_conformance_migration_switches_reads_and_keeps_the_old_collection(): void
     {
         $phases = [];

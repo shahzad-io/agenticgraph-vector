@@ -6,6 +6,7 @@ namespace AgenticGraph\Vector\Rerankers;
 
 use AgenticGraph\Vector\Contracts\RerankerContract;
 use AgenticGraph\Vector\Exceptions\VectorRerankException;
+use AgenticGraph\Vector\Support\HttpRetry;
 use AgenticGraph\Vector\Support\RerankOrder;
 use AgenticGraph\Vector\ValueObjects\RerankResult;
 use AgenticGraph\Vector\ValueObjects\SearchHit;
@@ -13,6 +14,7 @@ use Prism\Prism\Facades\Prism;
 use Prism\Prism\Schema\ArraySchema;
 use Prism\Prism\Schema\NumberSchema;
 use Prism\Prism\Schema\ObjectSchema;
+use Prism\Prism\Structured\Response as StructuredResponse;
 use Throwable;
 
 /**
@@ -25,7 +27,7 @@ final class PrismReranker implements RerankerContract
         .'Return one entry per passage with its index and score. Judge only the passage text.';
 
     /**
-     * @param  array<string, mixed>  $config  the provider entry: provider, model (or provider:model), api_key, max_characters, timeout (seconds)
+     * @param  array<string, mixed>  $config  the provider entry: provider, model (or provider:model), api_key, max_characters, timeout (total seconds, retries included), retries, retry_sleep_ms
      */
     public function __construct(
         private readonly string $name,
@@ -46,23 +48,41 @@ final class PrismReranker implements RerankerContract
             array_keys($hits),
             $hits,
         ));
-        $timeout = (int) ($this->config['timeout'] ?? 5);
         $apiKey = (string) ($this->config['api_key'] ?? '');
 
         try {
-            $response = Prism::structured()
-                ->using($provider, $model, $apiKey !== '' ? ['api_key' => $apiKey] : [])
-                ->withSchema(new ObjectSchema('rankings', 'Relevance of each passage to the query', [
-                    new ArraySchema('rankings', 'One entry per passage', new ObjectSchema('ranking', 'A passage and its score', [
-                        new NumberSchema('index', 'The passage number in brackets'),
-                        new NumberSchema('score', 'Relevance from 0 to 100'),
-                    ], ['index', 'score'])),
-                ], ['rankings']))
-                ->withSystemPrompt(self::SYSTEM)
-                ->withPrompt("Query: {$query}\n\nPassages:\n{$passages}")
-                ->usingTemperature(0)
-                ->withClientOptions(['timeout' => $timeout, 'connect_timeout' => $timeout])
-                ->asStructured();
+            $response = HttpRetry::withinBudget(
+                (float) ($this->config['timeout'] ?? 5),
+                (int) ($this->config['retries'] ?? 2),
+                (int) ($this->config['retry_sleep_ms'] ?? 500),
+                function (float $seconds) use ($provider, $model, $apiKey, $query, $passages): StructuredResponse {
+                    // Prism maps 429 and 529 without keeping the HTTP exception; the retry callback sees it first.
+                    $httpError = null;
+
+                    try {
+                        return Prism::structured()
+                            ->using($provider, $model, $apiKey !== '' ? ['api_key' => $apiKey] : [])
+                            ->withSchema(new ObjectSchema('rankings', 'Relevance of each passage to the query', [
+                                new ArraySchema('rankings', 'One entry per passage', new ObjectSchema('ranking', 'A passage and its score', [
+                                    new NumberSchema('index', 'The passage number in brackets'),
+                                    new NumberSchema('score', 'Relevance from 0 to 100'),
+                                ], ['index', 'score'])),
+                            ], ['rankings']))
+                            ->withSystemPrompt(self::SYSTEM)
+                            ->withPrompt("Query: {$query}\n\nPassages:\n{$passages}")
+                            ->usingTemperature(0)
+                            ->withClientOptions(['timeout' => $seconds, 'connect_timeout' => $seconds])
+                            ->withClientRetry(1, 0, static function (Throwable $exception) use (&$httpError): bool {
+                                $httpError = $exception;
+
+                                return false;
+                            })
+                            ->asStructured();
+                    } catch (Throwable $exception) {
+                        throw HttpRetry::cause($exception, $httpError) ?? $exception;
+                    }
+                },
+            );
         } catch (Throwable $exception) {
             throw new VectorRerankException("Reranker [{$this->name}] failed: {$exception->getMessage()}", previous: $exception);
         }

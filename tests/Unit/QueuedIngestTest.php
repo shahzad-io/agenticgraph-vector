@@ -1,5 +1,6 @@
 <?php
 
+use AgenticGraph\Vector\Contracts\EmbeddingProviderContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Events\VectorIngestCompleted;
@@ -28,7 +29,9 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Sleep;
 
 /*
  * Queued ingest through a real database queue and an in-process worker (queue:work --stop-when-empty), on an
@@ -67,6 +70,15 @@ beforeEach(function () {
 function ingestDocuments(int $count, string $prefix = 'd'): array
 {
     return array_map(fn (int $i): Document => Document::make("{$prefix}{$i}", "queued document {$i}", ['i' => $i]), range(1, $count));
+}
+
+/** A Prism provider (real OpenAI client, Http::fake) behind collection prism_docs, with the default retries. */
+function queuedPrismProvider(): void
+{
+    config()->set('prism.providers.openai.api_key', 'test-key');
+    config()->set('prism.providers.openai.url', 'https://api.openai.com/v1');
+    config()->set('vector.embeddings.providers.queued_prism', ['driver' => 'prism', 'provider' => 'openai', 'model' => 'm', 'dimensions' => 8]);
+    Vector::store('queued')->createCollection(new CollectionDefinition('prism_docs', dimensions: 8, embeddings: 'queued_prism'));
 }
 
 function work(): void
@@ -142,7 +154,8 @@ it('sets tries, backoff and timeout from config and fails non-retryable errors a
         ->and(QueuedIngest::NON_RETRYABLE)->toBe([VectorDimensionMismatchException::class, VectorInvalidMetadataException::class, VectorCollectionNotFoundException::class])
         ->and($fails(new VectorInvalidMetadataException('bad')))->toBeTrue()
         ->and($fails(new VectorCollectionNotFoundException('dropped')))->toBeTrue()
-        ->and($fails(new VectorEmbeddingException('429')))->toBeFalse()
+        ->and($fails(new VectorEmbeddingException('429', retryable: true, status: 429)))->toBeFalse()
+        ->and($fails(new VectorEmbeddingException('400', status: 400)))->toBeTrue()
         ->and($fails(new VectorConnectionException('down')))->toBeFalse();
 });
 
@@ -204,6 +217,94 @@ it('fails a non-retryable batch on its first try, writes the others and fails th
         ->and(Vector::store('queued')->collection('docs')->listIds()->ids)->toBe(['d1', 'd2', 'd5', 'd6']);
     Event::assertDispatched(VectorIngestFailed::class, fn (VectorIngestFailed $e): bool => $e->failedBatches === 1 && $e->processed === 4 && $e->total === 6);
     Event::assertNotDispatched(VectorIngestCompleted::class);
+});
+
+it('turns provider retries off inside a worker job: the job retries the batch', function () {
+    Sleep::fake();
+    Http::fake(['api.openai.com/*' => Http::sequence()
+        ->push(['error' => ['message' => 'unavailable']], 503)
+        ->push(['data' => [['embedding' => array_fill(0, 8, 0.1)], ['embedding' => array_fill(0, 8, 0.2)]], 'usage' => ['total_tokens' => 4], 'model' => 'm'])]);
+    queuedPrismProvider();
+
+    $run = Vector::store('queued')->collection('prism_docs')->queue('database')->upsert(ingestDocuments(2));
+    work();
+    $run = Vector::ingestRun($run->id);
+
+    expect($run->status)->toBe('completed')
+        ->and($run->batches[0]['attempts'])->toBe(2);
+    Http::assertSentCount(2);
+    Sleep::assertNeverSlept();
+});
+
+it('guard: restores provider retries after a worker job throws inside withoutRetries()', function () {
+    Sleep::fake();
+    Http::fake(['api.openai.com/*' => Http::sequence()
+        ->push(['error' => ['message' => 'bad request']], 400)
+        ->push(['error' => ['message' => 'unavailable']], 503)
+        ->push(['data' => [['embedding' => array_fill(0, 8, 0.1)]], 'usage' => ['total_tokens' => 2], 'model' => 'm'])]);
+    queuedPrismProvider();
+
+    $run = Vector::store('queued')->collection('prism_docs')->queue('database')->upsert(ingestDocuments(1));
+    work();
+
+    // The job failed (the 400 threw inside withoutRetries()); a plain upsert in the same process still retries.
+    Vector::store('queued')->collection('prism_docs')->upsert([Document::make('after', 'plain upsert after the failed job')]);
+
+    expect(Vector::ingestRun($run->id)->status)->toBe('failed')
+        ->and(Vector::store('queued')->collection('prism_docs')->listIds()->ids)->toBe(['after']);
+    Http::assertSentCount(3);
+    Sleep::assertSleptTimes(1);
+});
+
+it('guard: keeps provider retries for a queued ingest on the sync connection', function () {
+    Sleep::fake();
+    Http::fake(['api.openai.com/*' => Http::sequence()
+        ->push(['error' => ['message' => 'unavailable']], 503)
+        ->push(['data' => [['embedding' => array_fill(0, 8, 0.1)], ['embedding' => array_fill(0, 8, 0.2)]], 'usage' => ['total_tokens' => 4], 'model' => 'm'])]);
+    queuedPrismProvider();
+
+    $run = Vector::store('queued')->collection('prism_docs')->queue('sync')->upsert(ingestDocuments(2));
+
+    expect($run->status)->toBe('completed')
+        ->and($run->batches[0]['attempts'])->toBe(1);
+    Http::assertSentCount(2);
+    Sleep::assertSleptTimes(1);
+});
+
+it('fails an embedding error that is not retryable on its first try', function () {
+    $inner = new DeterministicEmbeddingProvider(dimensions: 8);
+    app(EmbeddingsManager::class)->forgetDrivers()->extend('counting', fn (): EmbeddingProviderContract => new class($inner) implements EmbeddingProviderContract
+    {
+        public function __construct(private readonly EmbeddingProviderContract $inner) {}
+
+        public function embed(string $text): array
+        {
+            return $this->inner->embed($text);
+        }
+
+        public function embedBatch(array $texts): array
+        {
+            throw new VectorEmbeddingException('Embedding generation failed: 400', status: 400);
+        }
+
+        public function dimensions(): int
+        {
+            return 8;
+        }
+
+        public function model(): string
+        {
+            return 'deterministic-test';
+        }
+    });
+
+    $run = Vector::store('queued')->collection('docs')->queue('database')->upsert(ingestDocuments(2));
+    work();
+    $run = Vector::ingestRun($run->id);
+
+    expect($run->status)->toBe('failed')
+        ->and($run->batches[0]['attempts'])->toBe(1)
+        ->and(DB::table('failed_jobs')->count())->toBe(1);
 });
 
 it('resumes a failed run: only the failed batches run again, then the run completes', function () {
@@ -305,6 +406,32 @@ it('refuses a job timeout that is not below the connection retry_after', functio
     'below' => [89, 90, false],
     'no retry_after' => [600, null, false],
 ]);
+
+it('refuses when the embedding request timeout plus 5 s is not below the job timeout', function (int $timeout, int $retries, bool $refused) {
+    config()->set('vector.embeddings.providers.slow', ['driver' => 'prism', 'provider' => 'openai', 'model' => 'm', 'timeout' => $timeout, 'retries' => $retries]);
+    Vector::store('queued')->createCollection(new CollectionDefinition('slow_docs', dimensions: 8, embeddings: 'slow'));
+    $queue = fn () => Vector::store('queued')->collection('slow_docs')->queue('database')->upsert(ingestDocuments(1));
+
+    if ($refused) {
+        expect($queue)->toThrow(InvalidArgumentException::class, 'Embedding provider [slow]')
+            ->and(DB::table(QueuedIngest::TABLE)->count())->toBe(0);
+    } else {
+        expect($queue()->status)->toBe('pending');
+    }
+})->with([
+    // vector.queue.timeout 60. Provider retries are off inside the job, so they do not count.
+    'the defaults (30 s, 2 retries)' => [30, 2, false],
+    '54 s' => [54, 2, false],
+    '55 s (55 + 5 = 60)' => [55, 0, true],
+    '55 s with retries' => [55, 5, true],
+    '90 s' => [90, 0, true],
+]);
+
+it('guard: does not apply the embedding timeout check to a provider without HTTP', function () {
+    config()->set('vector.queue.timeout', 2);
+
+    expect(Vector::store('queued')->collection('docs')->queue('database')->upsert(ingestDocuments(1))->status)->toBe('pending');
+});
 
 it('removes the run record when the dispatch itself fails', function () {
     config()->set('queue.connections.broken', ['driver' => 'database', 'connection' => 'missing-connection', 'table' => 'jobs', 'retry_after' => 90]);

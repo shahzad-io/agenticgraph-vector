@@ -349,7 +349,7 @@ it('ranks with Prism structured output, cuts passages, and validates the ranking
     $fake->assertRequest(function (array $requests): void {
         expect($requests[0]->prompt())->toContain("[0] pass\n\n[1] pass")->not->toContain('passage')
             ->and($requests[0]->temperature())->toBe(0)
-            ->and($requests[0]->clientOptions())->toMatchArray(['timeout' => 3]);
+            ->and($requests[0]->clientOptions()['timeout'])->toBeGreaterThan(2.9)->toBeLessThanOrEqual(3.0);
     });
 });
 

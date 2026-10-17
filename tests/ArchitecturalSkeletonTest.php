@@ -76,7 +76,7 @@ it('declares pgvector and memory capabilities', function (string $store, array $
     ]);
 })->with([
     // The memory store's data lives in one process, so it has no queued ingest (sync runs inline).
-    'pgvector' => ['pgvector', [StoreCapability::QueuedIngest]],
+    'pgvector' => ['pgvector', [StoreCapability::QueuedIngest, StoreCapability::RebuildIndex]],
     'memory' => ['memory', []],
 ]);
 

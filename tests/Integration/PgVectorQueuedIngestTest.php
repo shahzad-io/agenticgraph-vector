@@ -50,18 +50,18 @@ function queuedPgDocuments(int $count): array
     return array_map(fn (int $i): Document => Document::make("p{$i}", "queued pgvector document {$i}", ['i' => $i]), range(1, $count));
 }
 
-it('rebuilds an IVFFlat index once per queued run, not once per batch', function () {
+it('does not rebuild an IVFFlat index during or after a queued run', function () {
     Vector::store('pgvector')->createCollection(new CollectionDefinition($this->collection, dimensions: 8, index: 'ivfflat'));
     $rebuilds = 0;
     DB::connection('pgvector')->listen(function (QueryExecuted $query) use (&$rebuilds): void {
-        $rebuilds += str_starts_with($query->sql, 'DROP INDEX IF EXISTS') ? 1 : 0;
+        $rebuilds += str_starts_with($query->sql, 'DROP INDEX') ? 1 : 0;
     });
 
     $run = Vector::store('pgvector')->collection($this->collection)->queue('sync')->upsert(queuedPgDocuments(5));
 
     expect($run->status)->toBe('completed')
         ->and(count($run->batches))->toBe(3)
-        ->and($rebuilds)->toBe(1)
+        ->and($rebuilds)->toBe(0)
         ->and(Vector::store('pgvector')->describeCollection($this->collection)['index']['type'] ?? null)->toBe('ivfflat');
 });
 

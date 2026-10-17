@@ -186,13 +186,25 @@ final class PgVectorCollectionRegistry
         );
     }
 
+    /**
+     * Remove the alias and its migration rows (call inside a transaction). Refused while its latest
+     * migration is unfinished: the migration still needs the alias.
+     */
     public function removeAlias(string $alias): void
     {
         $this->assertValidCollectionName($alias);
+        $this->lockAlias($alias);
+        $migration = $this->migration($alias);
+
+        if ($migration?->unfinished()) {
+            throw new VectorQueryException("Alias [{$alias}] has an unfinished migration to [{$migration->target}] ({$migration->phase}). Run vector:migrate {$alias} again to finish it, then delete the alias.");
+        }
 
         if ($this->connection->delete("DELETE FROM {$this->aliasTable()} WHERE alias = ?", [$alias]) === 0) {
             throw new VectorCollectionNotFoundException("Alias [{$alias}] was not found.");
         }
+
+        $this->connection->delete("DELETE FROM {$this->migrationTable()} WHERE alias = ?", [$alias]);
     }
 
     public function pointAlias(string $alias, string $collection): void

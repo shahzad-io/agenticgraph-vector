@@ -47,8 +47,9 @@ Vector::ingestRun($run->id)->status; // pending, running, completed, failed
 ```
 
 - One job per batch of `batchSize()` through `Bus::batch`; each job is one transaction. The job resolves the store by name and the alias per batch, so it follows `vector:migrate`.
-- Connection and embedding errors retry (`vector.queue.tries`, `backoff`); dimension, metadata and missing-collection errors fail the batch at once. `php artisan vector:ingest:resume {run}` retries the failed jobs.
-- Refused before dispatch: a store not from `Vector::store()`, `onProgress()`, precomputed vectors, `insert()`, the memory store off `sync`, and `vector.queue.timeout` at or above the connection's `retry_after`.
+- Connection errors and retryable embedding errors (`VectorEmbeddingException::$retryable`: 429, 5xx, timeouts) retry (`vector.queue.tries`, `backoff`; the provider's own retries are off inside the job); other embedding errors (400, 401, 413) and dimension, metadata and missing-collection errors fail the batch at once. `php artisan vector:ingest:resume {run}` retries the failed jobs.
+- Refused before dispatch: a store not from `Vector::store()`, `onProgress()`, precomputed vectors, `insert()`, the memory store off `sync`, `vector.queue.timeout` at or above the connection's `retry_after`, and a Prism provider whose `timeout` + 5 s is not below `vector.queue.timeout` (the defaults, 30 s and 60 s, pass).
+- No IVFFlat rebuild during or after a run: `php artisan vector:index:rebuild {collection}` after the first bulk load.
 - Rows are idempotent by id and counters by batch index. Stale overwrites are not: an older run's retried batch overwrites a newer run's rows. One ingest of a set of ids at a time.
 
 ## Precomputed vectors

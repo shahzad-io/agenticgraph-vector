@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector;
 
 use AgenticGraph\Vector\Contracts\AliasStoreContract;
+use AgenticGraph\Vector\Contracts\IndexStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
@@ -92,6 +93,22 @@ class VectorManager extends Manager
     /**
      * Delete the collection $alias's last migration came from (no rollback after this).
      */
+    /**
+     * Rebuild a collection's embedding index from its rows, without blocking searches or writes (capability
+     * RebuildIndex). Needed after the first bulk load of an IVFFlat collection. Throws VectorQueryException while
+     * another rebuild of the same collection runs.
+     */
+    public function rebuildIndex(string $collection, ?string $store = null): void
+    {
+        $instance = $this->store($store);
+
+        if (! $instance instanceof IndexStoreContract) {
+            throw new VectorUnsupportedOperationException('Store ['.($store ?? $this->getDefaultDriver()).'] has no index to rebuild.');
+        }
+
+        $instance->rebuildIndex($collection);
+    }
+
     public function dropOldCollection(string $alias, ?string $store = null): MigrationState
     {
         return $this->migrator($store ?? $this->getDefaultDriver())->dropOld($alias);

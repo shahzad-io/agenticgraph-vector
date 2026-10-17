@@ -6,7 +6,7 @@ namespace AgenticGraph\Vector\Stores;
 
 use AgenticGraph\Vector\Concerns\InteractsWithBuilder;
 use AgenticGraph\Vector\Contracts\AliasStoreContract;
-use AgenticGraph\Vector\Contracts\QueuedIngestStoreContract;
+use AgenticGraph\Vector\Contracts\IndexStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
@@ -25,10 +25,10 @@ use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
 /**
  * What Vector::store() returns: the configured store, with every operation (document, search and
  * collection management) going through TraceSpan under the store's configured name. Alias and
- * migration calls throw VectorUnsupportedOperationException unless the store supports Aliases. A queued
- * ingest batch is an `upsert` span like any other.
+ * migration calls throw VectorUnsupportedOperationException unless the store supports Aliases, and
+ * rebuildIndex() unless it supports RebuildIndex. A queued ingest batch is an `upsert` span like any other.
  */
-final class InstrumentedStore implements AliasStoreContract, QueuedIngestStoreContract, VectorStoreContract
+final class InstrumentedStore implements AliasStoreContract, IndexStoreContract, VectorStoreContract
 {
     use InteractsWithBuilder;
 
@@ -83,22 +83,19 @@ final class InstrumentedStore implements AliasStoreContract, QueuedIngestStoreCo
         );
     }
 
-    public function ingestBatch(string $collection, array $documents, array $globalMetadata = []): void
+    public function rebuildIndex(string $collection): void
     {
-        TraceSpan::operation(
-            'upsert',
-            fn () => $this->store instanceof QueuedIngestStoreContract
-                ? $this->store->ingestBatch($collection, $documents, $globalMetadata)
-                : $this->store->upsert($collection, $documents, $globalMetadata),
-            VectorTraceContext::forWrite($collection, count($documents), store: $this->name),
-        );
-    }
-
-    public function completeIngest(string $collection): void
-    {
-        if ($this->store instanceof QueuedIngestStoreContract) {
-            $this->store->completeIngest($collection);
+        if (! $this->store instanceof IndexStoreContract || ! $this->store->capabilities()->supports(StoreCapability::RebuildIndex)) {
+            throw new VectorUnsupportedOperationException("Store [{$this->name}] has no index to rebuild.");
         }
+
+        $store = $this->store;
+
+        TraceSpan::operation(
+            'rebuild_index',
+            fn () => $store->rebuildIndex($collection),
+            VectorTraceContext::forCollection($collection, $this->name),
+        );
     }
 
     public function delete(string $collection, array|string|int $ids): void

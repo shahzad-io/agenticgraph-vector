@@ -16,7 +16,7 @@ final class CountingEmbeddingProvider implements EmbeddingProviderContract
 
     public int $embedBatchCallCount = 0;
 
-    /** From this embedBatch() call on (1-based), throw VectorEmbeddingException; null never fails. */
+    /** From this embedBatch() call on (1-based), throw a retryable VectorEmbeddingException (a provider outage); null never fails. */
     public ?int $failOnBatch = null;
 
     public function __construct(
@@ -35,7 +35,7 @@ final class CountingEmbeddingProvider implements EmbeddingProviderContract
         $this->embedBatchCallCount++;
 
         if ($this->failOnBatch !== null && $this->embedBatchCallCount >= $this->failOnBatch) {
-            throw new VectorEmbeddingException('Injected embedding failure.');
+            throw new VectorEmbeddingException('Injected embedding failure.', retryable: true);
         }
 
         return $this->inner->embedBatch($texts);

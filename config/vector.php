@@ -95,6 +95,15 @@ return [
                 'dimensions' => env('VECTOR_EMBEDDINGS_DIMENSIONS') ? (int) env('VECTOR_EMBEDDINGS_DIMENSIONS') : null,
                 // null when unset or empty: Prism then uses its own provider key (e.g. OPENAI_API_KEY).
                 'api_key' => env('VECTOR_EMBEDDINGS_API_KEY') ?: null,
+                // Seconds per request. A 429, a 5xx or a connection error or timeout is retried up to `retries`
+                // times, waiting retry_sleep_ms x 2^(retry - 1) with jitter (half to all of it), or the
+                // provider's Retry-After when longer, up to retry_after_max_ms; a longer Retry-After fails the
+                // request as retryable instead. Other errors (400, 401, 413) are not retried. Inside a queued
+                // ingest job retries are off: the job's tries and backoff retry the batch.
+                'timeout' => (int) env('VECTOR_EMBEDDINGS_TIMEOUT', 30),
+                'retries' => (int) env('VECTOR_EMBEDDINGS_RETRIES', 2),
+                'retry_sleep_ms' => (int) env('VECTOR_EMBEDDINGS_RETRY_SLEEP_MS', 500),
+                'retry_after_max_ms' => (int) env('VECTOR_EMBEDDINGS_RETRY_AFTER_MAX_MS', 2000),
             ],
 
             'deterministic' => [
@@ -135,7 +144,12 @@ return [
     | timeout (seconds per batch job) must be below the connection's
     | retry_after, or a slow batch can run twice at once; queue() refuses
     | otherwise. Dimension, metadata and missing-collection errors fail at
-    | once; connection and embedding errors retry after the backoff seconds.
+    | once, as do embedding errors that are not retryable (400, 401, 413);
+    | connection errors and retryable embedding errors (429, 5xx, timeouts)
+    | retry after the backoff seconds (the embedding provider's own retries
+    | are off inside the job). queue() also refuses when the collection's
+    | Prism provider timeout plus 5 s is not below timeout. For large
+    | batches raise the provider timeout, this timeout and retry_after.
     |
     */
 
@@ -214,8 +228,13 @@ return [
     |
     | fail_open: on a reranker error or timeout, the search returns its own
     | first take() hits (no rerank score) and fires VectorRerankFailed.
-    | false lets the exception through. timeout (seconds) applies to every
-    | reranker request; an entry's own timeout overrides it.
+    | false lets the exception through.
+    |
+    | timeout is the total seconds a rerank may take, retries included: a
+    | 429, a 5xx or a connection error or timeout is retried up to retries
+    | times (waits as for embeddings) while the budget lasts, then fail_open
+    | applies. An entry's own timeout, retries or retry_sleep_ms overrides
+    | these.
     |
     */
 
@@ -226,6 +245,10 @@ return [
         'fail_open' => (bool) env('VECTOR_RERANK_FAIL_OPEN', true),
 
         'timeout' => (int) env('VECTOR_RERANK_TIMEOUT', 5),
+
+        'retries' => (int) env('VECTOR_RERANK_RETRIES', 2),
+
+        'retry_sleep_ms' => (int) env('VECTOR_RERANK_RETRY_SLEEP_MS', 500),
 
         'providers' => [
 

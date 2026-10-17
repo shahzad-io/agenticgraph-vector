@@ -12,7 +12,8 @@ use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
  *
  * The requested options are kept in the registry (`index_options`). The real index in Postgres is
  * the check: its type and HNSW options are read back from the index definition. IVFFlat `lists` is
- * clamped to the row count and rebuilt after every ingest, so its requested value comes from the registry.
+ * clamped to the row count when the index is built (create, migration copy, rebuildIndex()), so its requested
+ * value comes from the registry.
  */
 final readonly class PgVectorIndex
 {
@@ -90,18 +91,33 @@ final readonly class PgVectorIndex
         return new self($type[1], $options);
     }
 
+    /**
+     * The index the registry recorded, for a collection whose index a killed rebuild dropped before its rename.
+     *
+     * @param  array{type?: string, options?: array<string, int>}|null  $registered
+     */
+    public static function fromRegistered(?array $registered, string $configuredType, int $configuredLists): self
+    {
+        $type = $registered['type'] ?? $configuredType;
+
+        return $type === 'ivfflat'
+            ? new self('ivfflat', ['lists' => (int) ($registered['options']['lists'] ?? $configuredLists)])
+            : new self($type, array_merge(self::HNSW_DEFAULTS, $registered['options'] ?? []));
+    }
+
     public function equals(self $other): bool
     {
         return $this->type === $other->type && $this->options == $other->options;
     }
 
-    public function createSql(string $storage, string $ops, int $rowCount = 0): string
+    public function createSql(string $storage, string $ops, int $rowCount = 0, bool $concurrently = false, ?string $name = null): string
     {
         $with = $this->type === 'ivfflat'
             ? 'lists = '.max(1, min($this->options['lists'], $rowCount))
             : "m = {$this->options['m']}, ef_construction = {$this->options['ef_construction']}";
+        $name ??= "{$storage}_embedding_idx";
 
-        return "CREATE INDEX {$storage}_embedding_idx ON {$storage} USING {$this->type} (embedding {$ops}) WITH ({$with})";
+        return 'CREATE INDEX '.($concurrently ? 'CONCURRENTLY ' : '')."{$name} ON {$storage} USING {$this->type} (embedding {$ops}) WITH ({$with})";
     }
 
     /**

@@ -22,6 +22,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static MigrationState rollbackMigration(string $alias, ?string $store = null)
  * @method static MigrationState dropOldCollection(string $alias, ?string $store = null)
  * @method static IngestRun|null ingestRun(string $id)
+ * @method static void rebuildIndex(string $collection, ?string $store = null)
  * @method static mixed driver(?string $driver = null)
  * @method static VectorManager extend(string $driver, \Closure(Container, array<string, mixed>, string): VectorStoreContract $callback)
  *

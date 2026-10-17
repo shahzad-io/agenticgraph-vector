@@ -19,4 +19,5 @@ enum StoreCapability: string
     case Keyword = 'keyword';
     case Aliases = 'aliases';
     case QueuedIngest = 'queued_ingest';
+    case RebuildIndex = 'rebuild_index';
 }

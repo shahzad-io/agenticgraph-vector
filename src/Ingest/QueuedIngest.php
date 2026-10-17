@@ -4,19 +4,18 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector\Ingest;
 
-use AgenticGraph\Vector\Contracts\QueuedIngestStoreContract;
 use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Events\VectorIngestCompleted;
 use AgenticGraph\Vector\Events\VectorIngestFailed;
 use AgenticGraph\Vector\Events\VectorIngestProgressed;
 use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
 use AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException;
+use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
 use AgenticGraph\Vector\Exceptions\VectorInvalidMetadataException;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Stores\InstrumentedStore;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\IngestRun;
-use AgenticGraph\Vector\VectorManager;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -26,14 +25,20 @@ use Throwable;
 /**
  * Builder::queue()->upsert(): one IngestBatchJob per batch through Bus::batch, recorded in `vector_ingest_runs`.
  * Batch state is set per batch index under a row lock, so a retried batch is counted once; the batch that
- * settles the last open index completes the run (one IVFFlat rebuild) or fails it. On the sync connection the
+ * settles the last open index completes the run or fails it. On the sync connection the
  * jobs run inline, one after another, and every batch runs even when an earlier one fails.
  */
 final class QueuedIngest
 {
     public const TABLE = 'vector_ingest_runs';
 
-    /** Errors a retry cannot fix: the job fails at once. Connection and embedding errors retry with backoff. */
+    /** Seconds a batch's job timeout keeps above its embedding request timeout, for the write. */
+    public const WRITE_MARGIN = 5;
+
+    /**
+     * Errors a retry cannot fix: the job fails at once, as it does for a VectorEmbeddingException that is not
+     * retryable (see failsAtOnce()). Connection errors and retryable embedding errors retry with backoff.
+     */
     public const NON_RETRYABLE = [
         VectorDimensionMismatchException::class,
         VectorInvalidMetadataException::class,
@@ -50,7 +55,7 @@ final class QueuedIngest
         $sync = config("queue.connections.{$connection}.driver") === 'sync';
 
         if (! $sync) {
-            self::assertCanQueue($store, $connection);
+            self::assertCanQueue($store, $collection, $connection);
         }
 
         $chunks = array_chunk($documents, max(1, $store->batchSize()));
@@ -158,6 +163,17 @@ final class QueuedIngest
         self::markBatch($runId, $index, 'failed', $attempts, $error);
     }
 
+    public static function failsAtOnce(Throwable $exception): bool
+    {
+        foreach (self::NON_RETRYABLE as $class) {
+            if ($exception instanceof $class) {
+                return true;
+            }
+        }
+
+        return $exception instanceof VectorEmbeddingException && ! $exception->retryable;
+    }
+
     public static function tries(): int
     {
         return max(1, (int) config('vector.queue.tries', 3));
@@ -176,7 +192,7 @@ final class QueuedIngest
         return array_values(array_map(intval(...), (array) config('vector.queue.backoff', [10, 30, 60])));
     }
 
-    private static function assertCanQueue(InstrumentedStore $store, string $connection): void
+    private static function assertCanQueue(InstrumentedStore $store, string $collection, string $connection): void
     {
         if (! $store->capabilities()->supports(StoreCapability::QueuedIngest)) {
             throw new VectorUnsupportedOperationException(
@@ -190,6 +206,40 @@ final class QueuedIngest
         if ($timeout < 1 || ($retryAfter !== null && $timeout >= (int) $retryAfter)) {
             throw new InvalidArgumentException(
                 "vector.queue.timeout (VECTOR_QUEUE_TIMEOUT, {$timeout} s) must be at least 1 and below the retry_after of queue connection [{$connection}] (".($retryAfter ?? 'unset').' s), or a slow batch can run twice at once.',
+            );
+        }
+
+        self::assertEmbeddingFitsTimeout($store, $collection, $timeout);
+    }
+
+    /**
+     * A batch's embedding request runs without provider retries on a worker (the job retries instead), so it
+     * takes at most the provider's timeout. That plus a margin for the write must stay below the job timeout,
+     * or the worker kills a slow batch before its request times out.
+     */
+    private static function assertEmbeddingFitsTimeout(InstrumentedStore $store, string $collection, int $timeout): void
+    {
+        try {
+            $provider = $store->describeCollection($collection)['embedding']['provider'] ?? null;
+        } catch (VectorCollectionNotFoundException) {
+            $provider = null; // the batch fails at once
+        }
+
+        $provider ??= (string) config('vector.embeddings.default', 'prism');
+        /** @var array<string, mixed> $entry */
+        $entry = (array) config("vector.embeddings.providers.{$provider}", []);
+
+        if (($entry['driver'] ?? $provider) !== 'prism') {
+            return;
+        }
+
+        $requestTimeout = max(1, (int) ($entry['timeout'] ?? 30));
+
+        if ($requestTimeout + self::WRITE_MARGIN >= $timeout) {
+            throw new InvalidArgumentException(
+                "Embedding provider [{$provider}] timeout ({$requestTimeout} s) plus ".self::WRITE_MARGIN." s for the write is not below vector.queue.timeout ({$timeout} s): "
+                ."the worker would kill a slow batch before its request times out. Lower vector.embeddings.providers.{$provider}.timeout, "
+                ."or raise vector.queue.timeout and the queue connection's retry_after.",
             );
         }
     }
@@ -229,8 +279,7 @@ final class QueuedIngest
     }
 
     /**
-     * Complete or fail the run once no batch is pending. Completion rebuilds IVFFlat first, so a run marked
-     * completed has a current index; a rebuild error fails the job, and its retry settles again.
+     * Complete or fail the run once no batch is pending.
      */
     private static function settle(string $runId): void
     {
@@ -251,12 +300,6 @@ final class QueuedIngest
             }
 
             return;
-        }
-
-        $store = app(VectorManager::class)->store($run->store);
-
-        if ($store instanceof QueuedIngestStoreContract && $run->totalDocuments > 0) {
-            $store->completeIngest($run->collection);
         }
 
         $changed = DB::table(self::TABLE)->where('id', $runId)->where('status', '!=', 'completed')

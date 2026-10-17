@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector;
 
+use AgenticGraph\Vector\Console\IndexRebuildCommand;
 use AgenticGraph\Vector\Console\IngestResumeCommand;
 use AgenticGraph\Vector\Console\MigrateCommand;
 use AgenticGraph\Vector\Support\MetadataValidator;
@@ -19,7 +20,8 @@ class VectorServiceProvider extends PackageServiceProvider
             ->hasConfigFile()
             ->hasMigration('create_vector_ingest_runs_table')
             ->hasCommand(MigrateCommand::class)
-            ->hasCommand(IngestResumeCommand::class);
+            ->hasCommand(IngestResumeCommand::class)
+            ->hasCommand(IndexRebuildCommand::class);
     }
 
     public function packageRegistered(): void

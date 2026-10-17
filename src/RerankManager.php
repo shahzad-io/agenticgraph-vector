@@ -17,7 +17,7 @@ use InvalidArgumentException;
 /**
  * Resolves named rerankers from `vector.rerank.providers`. Each entry names its `driver` (cohere, voyage, prism,
  * null, deterministic, or one registered with extend()). There is no default reranker. Every reranker comes
- * back wrapped in an InstrumentedReranker (events, fail-open, the timeout from `vector.rerank.timeout`).
+ * back wrapped in an InstrumentedReranker (events, fail-open, the timeout and retries from `vector.rerank`).
  */
 class RerankManager extends Manager
 {
@@ -50,7 +50,11 @@ class RerankManager extends Manager
             throw new InvalidArgumentException("Reranker [{$name}] is not defined in vector.rerank.providers.");
         }
 
-        $config = ($config ?? []) + ['timeout' => (int) $this->config->get('vector.rerank.timeout', 5)];
+        $config = ($config ?? []) + [
+            'timeout' => (int) $this->config->get('vector.rerank.timeout', 5),
+            'retries' => (int) $this->config->get('vector.rerank.retries', 2),
+            'retry_sleep_ms' => (int) $this->config->get('vector.rerank.retry_sleep_ms', 500),
+        ];
         $driverName = (string) ($config['driver'] ?? $name);
 
         $reranker = match (true) {

@@ -4,8 +4,7 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector\Ingest;
 
-use AgenticGraph\Vector\Contracts\QueuedIngestStoreContract;
-use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
+use AgenticGraph\Vector\Providers\PrismEmbeddingProvider;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\VectorManager;
 use Illuminate\Bus\Batchable;
@@ -57,20 +56,18 @@ final class IngestBatchJob implements ShouldQueue
      */
     public function middleware(): array
     {
-        return [new FailOnException(QueuedIngest::NON_RETRYABLE)];
+        return [new FailOnException(QueuedIngest::failsAtOnce(...))];
     }
 
     public function handle(VectorManager $vector): void
     {
         QueuedIngest::start($this->runId);
 
-        $store = $vector->store($this->store);
+        $upsert = fn () => $vector->store($this->store)->upsert($this->collection, $this->documents, $this->globalMetadata);
 
-        if (! $store instanceof QueuedIngestStoreContract) {
-            throw new VectorUnsupportedOperationException("Store [{$this->store}] does not support queued ingest.");
-        }
-
-        $store->ingestBatch($this->collection, $this->documents, $this->globalMetadata);
+        // On a worker the job's tries and backoff retry a failed batch, so each embedding request gets one try.
+        // Inline (the sync connection, no job) a batch runs once, so the provider keeps its own retries.
+        $this->job !== null ? PrismEmbeddingProvider::withoutRetries($upsert) : $upsert();
 
         QueuedIngest::batchDone($this->runId, $this->index, $this->attempts());
     }

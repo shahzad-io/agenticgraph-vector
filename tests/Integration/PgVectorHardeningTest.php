@@ -2,6 +2,7 @@
 
 use AgenticGraph\Vector\Exceptions\VectorExtensionMissingException;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
+use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Facades\Vector;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorExtensionGuard;
 use AgenticGraph\Vector\Tests\Support\PgvectorTestHelper;
@@ -114,7 +115,7 @@ it('matches a pre-B3 hnsw index without options to a default definition', functi
         ->toThrow(VectorQueryException::class, 'already exists with a different definition');
 });
 
-it('keeps the requested ivfflat lists across the clamp and the rebuild after ingest', function () {
+it('keeps the requested ivfflat lists across the clamp, upserts and rebuildIndex', function () {
     $this->store->createCollection(new CollectionDefinition($this->collection, dimensions: 3, index: 'ivfflat', indexOptions: ['lists' => 3]));
 
     expect(hardeningIndexDefinition($this->collection))->toContain('USING ivfflat')->toContain("lists='1'");
@@ -125,6 +126,9 @@ it('keeps the requested ivfflat lists across the clamp and the rebuild after ing
         Document::make('two', 'beta', vector: [0, 1, 0]),
     ]);
 
+    // An upsert no longer rebuilds: the empty collection's one list stays until rebuildIndex().
+    expect(hardeningIndexDefinition($this->collection))->toContain("lists='1'");
+    Vector::rebuildIndex($this->collection, 'pgvector');
     expect(hardeningIndexDefinition($this->collection))->toContain("lists='2'");
 
     $builder->upsert([
@@ -132,6 +136,7 @@ it('keeps the requested ivfflat lists across the clamp and the rebuild after ing
         Document::make('four', 'delta', vector: [0.7, 0.7, 0]),
         Document::make('five', 'epsilon', vector: [0.2, 0.8, 0]),
     ]);
+    Vector::rebuildIndex($this->collection, 'pgvector');
 
     expect(hardeningIndexDefinition($this->collection))->toContain("lists='3'");
 
@@ -249,6 +254,7 @@ it('adds index_options to a registry created before B3 and round-trips the reque
             fn (int $i) => Document::make("d{$i}", "d{$i}", vector: [1, $i, 0]),
             range(1, 9),
         ));
+        $store->rebuildIndex($this->collection);
 
         expect(hardeningIndexDefinition($this->collection))->toContain("lists='7'");
 
@@ -263,4 +269,91 @@ it('adds index_options to a registry created before B3 and round-trips the reque
     } finally {
         DB::connection('pgvector')->statement("DROP TABLE IF EXISTS {$table}");
     }
+});
+
+it('rebuilds the index concurrently under a temporary name and an advisory lock, then renames it', function () {
+    $this->store->createCollection(new CollectionDefinition($this->collection, dimensions: 3, index: 'ivfflat', indexOptions: ['lists' => 4]));
+    $this->store->collection($this->collection)->upsert(array_map(fn (int $i) => Document::make("d{$i}", "d{$i}", vector: [1, $i, 0]), range(1, 6)));
+    $storage = hardeningStorage($this->collection);
+
+    $executed = hardeningQueries(fn () => Vector::rebuildIndex($this->collection, 'pgvector'));
+    $ddl = array_values(array_filter($executed, fn (string $sql): bool => preg_match('/INDEX|advisory/', $sql) === 1));
+
+    expect($ddl)->toBe([
+        'SELECT pg_try_advisory_lock(hashtext(?))',
+        "DROP INDEX CONCURRENTLY IF EXISTS {$storage}_embedding_idx_rebuild",
+        "CREATE INDEX CONCURRENTLY {$storage}_embedding_idx_rebuild ON {$storage} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 4)",
+        "DROP INDEX CONCURRENTLY IF EXISTS {$storage}_embedding_idx",
+        "ALTER INDEX {$storage}_embedding_idx_rebuild RENAME TO {$storage}_embedding_idx",
+        'SELECT pg_advisory_unlock(hashtext(?))',
+    ])->and(hardeningIndexDefinition($this->collection))->toContain("lists='4'");
+});
+
+it('refuses a rebuild while another session rebuilds the same collection', function () {
+    $this->store->createCollection(new CollectionDefinition($this->collection, dimensions: 3));
+    config()->set('database.connections.pgvector_probe', config('database.connections.pgvector'));
+    $probe = DB::connection('pgvector_probe');
+    $probe->select('SELECT pg_advisory_lock(hashtext(?))', ['vector_index_rebuild:'.hardeningStorage($this->collection)]);
+
+    try {
+        expect(fn () => Vector::rebuildIndex($this->collection, 'pgvector'))->toThrow(VectorQueryException::class, 'already being rebuilt');
+        $this->artisan('vector:index:rebuild', ['collection' => $this->collection, '--store' => 'pgvector'])
+            ->expectsOutputToContain('already being rebuilt')
+            ->assertFailed();
+    } finally {
+        $probe->select('SELECT pg_advisory_unlock_all()');
+        DB::purge('pgvector_probe');
+    }
+
+    Vector::rebuildIndex($this->collection, 'pgvector');
+    expect(hardeningIndexDefinition($this->collection))->toContain('USING hnsw');
+});
+
+it('restores the index a killed rebuild dropped before its rename', function () {
+    $this->store->createCollection(new CollectionDefinition($this->collection, dimensions: 3, index: 'ivfflat', indexOptions: ['lists' => 2]));
+    $this->store->collection($this->collection)->upsert(array_map(fn (int $i) => Document::make("d{$i}", "d{$i}", vector: [1, $i, 0]), range(1, 3)));
+    $storage = hardeningStorage($this->collection);
+    DB::connection('pgvector')->statement("ALTER INDEX {$storage}_embedding_idx RENAME TO {$storage}_embedding_idx_rebuild");
+
+    Vector::rebuildIndex($this->collection, 'pgvector');
+
+    expect(hardeningIndexDefinition($this->collection))->toContain("lists='2'")
+        ->and(DB::connection('pgvector')->scalar('SELECT to_regclass(?)', ["{$storage}_embedding_idx_rebuild"]))->toBeNull();
+});
+
+it('refuses to rebuild inside a transaction, and on a store without an index', function () {
+    $this->store->createCollection(new CollectionDefinition($this->collection, dimensions: 3));
+
+    expect(fn () => DB::connection('pgvector')->transaction(fn () => Vector::rebuildIndex($this->collection, 'pgvector')))
+        ->toThrow(VectorQueryException::class, 'inside a database transaction')
+        ->and(fn () => Vector::rebuildIndex($this->collection, 'memory'))->toThrow(VectorUnsupportedOperationException::class);
+});
+
+it('rebuilds through vector:index:rebuild and names a missing collection', function () {
+    $this->store->createCollection(new CollectionDefinition($this->collection, dimensions: 3, index: 'ivfflat', indexOptions: ['lists' => 2]));
+    $this->store->collection($this->collection)->upsert(array_map(fn (int $i) => Document::make("d{$i}", "d{$i}", vector: [1, $i, 0]), range(1, 5)));
+
+    $this->artisan('vector:index:rebuild', ['collection' => $this->collection, '--store' => 'pgvector'])
+        ->expectsOutputToContain("Rebuilt the index of [{$this->collection}]")
+        ->assertSuccessful();
+    $this->artisan('vector:index:rebuild', ['collection' => 'missing_'.uniqid()])->assertFailed();
+
+    expect(hardeningIndexDefinition($this->collection))->toContain("lists='2'");
+});
+
+it('drops its temporary index and names maintenance_work_mem when the build runs out of memory', function () {
+    $this->store->createCollection(new CollectionDefinition($this->collection, dimensions: 1536, index: 'ivfflat', indexOptions: ['lists' => 100]));
+    $vector = fn (int $i): array => array_map(fn (int $d): float => sin($i * $d), range(1, 1536));
+    $this->store->upsert($this->collection, array_map(fn (int $i) => Document::make("d{$i}", "d{$i}", vector: $vector($i)), range(1, 400)));
+    $storage = hardeningStorage($this->collection);
+    DB::connection('pgvector')->statement("SET maintenance_work_mem = '1MB'");
+
+    try {
+        expect(fn () => Vector::rebuildIndex($this->collection, 'pgvector'))->toThrow(VectorQueryException::class, 'maintenance_work_mem');
+    } finally {
+        DB::connection('pgvector')->statement('RESET maintenance_work_mem');
+    }
+
+    expect(DB::connection('pgvector')->scalar('SELECT to_regclass(?)', ["{$storage}_embedding_idx_rebuild"]))->toBeNull()
+        ->and(hardeningIndexDefinition($this->collection))->toContain("lists='1'");
 });

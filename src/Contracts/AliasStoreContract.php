@@ -18,7 +18,8 @@ interface AliasStoreContract
     public function listAliases(): array;
 
     /**
-     * Remove the alias only; its collection stays.
+     * Remove the alias and its migration history; its collection stays. Throws VectorQueryException while the
+     * alias's latest migration is unfinished (copying or catching_up).
      */
     public function deleteAlias(string $alias): void;
 

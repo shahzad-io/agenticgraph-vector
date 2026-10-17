@@ -6,7 +6,7 @@ namespace AgenticGraph\Vector\Stores;
 
 use AgenticGraph\Vector\Concerns\InteractsWithBuilder;
 use AgenticGraph\Vector\Contracts\AliasStoreContract;
-use AgenticGraph\Vector\Contracts\QueuedIngestStoreContract;
+use AgenticGraph\Vector\Contracts\IndexStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\PgVectorMetric;
@@ -38,10 +38,11 @@ use AgenticGraph\Vector\ValueObjects\StoreCapabilities;
 use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
 use Illuminate\Database\Connection;
 use Illuminate\Database\DatabaseManager;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Throwable;
 
-final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContract, VectorStoreContract
+final class PgVectorStore implements AliasStoreContract, IndexStoreContract, VectorStoreContract
 {
     use InteractsWithBuilder;
 
@@ -108,6 +109,7 @@ final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContra
             StoreCapability::Keyword,
             StoreCapability::Aliases,
             StoreCapability::QueuedIngest,
+            StoreCapability::RebuildIndex,
         );
     }
 
@@ -304,26 +306,11 @@ final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContra
         );
     }
 
-    public function ingestBatch(string $collection, array $documents, array $globalMetadata = []): void
-    {
-        $this->ingestDocuments(
-            collection: $collection,
-            documents: $documents,
-            globalMetadata: $globalMetadata,
-            upsert: true,
-            onProgress: null,
-            rebuild: false,
-        );
-    }
-
-    /**
-     * The IVFFlat rebuild every upsert() call does, once for a whole queued ingest (on the collection the alias points at now).
-     */
-    public function completeIngest(string $collection): void
+    public function rebuildIndex(string $collection): void
     {
         $this->run(function () use ($collection): void {
             $this->preparePgVector();
-            $this->rebuildIfIvfflat($this->registry->resolve($collection));
+            $this->rebuildEmbeddingIndex($this->registry->resolve($collection));
         });
     }
 
@@ -568,7 +555,7 @@ final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContra
     {
         $this->run(function () use ($alias): void {
             $this->preparePgVector();
-            $this->registry->removeAlias($alias);
+            $this->connection()->transaction(fn () => $this->registry->removeAlias($alias));
         });
     }
 
@@ -658,8 +645,9 @@ final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContra
                 return $next;
             });
 
-            if ($next->phase === 'catching_up') {
-                $this->rebuildIfIvfflat($target);
+            // IVFFlat centroids come from the rows: build the target's lists once its copy is in.
+            if ($next->phase === 'catching_up' && $this->existingIndex($to, $target['index_options'])?->type === 'ivfflat') {
+                $this->rebuildEmbeddingIndex($target);
             }
 
             return $next;
@@ -840,23 +828,6 @@ final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContra
     }
 
     /**
-     * @param  array{storage_identifier: string, metric: PgVectorMetric, index_options: array{type?: string, options?: array<string, int>}|null}|null  $resolved
-     */
-    private function rebuildIfIvfflat(?array $resolved): void
-    {
-        if ($resolved === null) {
-            return;
-        }
-
-        $storage = $this->storage($resolved);
-        $index = $this->existingIndex($storage, $resolved['index_options']);
-
-        if ($index?->type === 'ivfflat') {
-            $this->rebuildIvfflatIndex($storage, $resolved['metric'], $index);
-        }
-    }
-
-    /**
      * @param  array{languages: array<string, string>, language_field: string}|null  $keyword
      */
     private function createStorage(string $storageIdentifier, int $dimensions, PgVectorMetric $metric, PgVectorIndex $index, ?array $keyword = null): void
@@ -952,7 +923,6 @@ final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContra
      * @param  list<Document>  $documents
      * @param  array<string, mixed>  $globalMetadata
      * @param  (callable(int, int): void)|null  $onProgress
-     * @param  bool  $rebuild  false for a queued batch: the run rebuilds IVFFlat once (completeIngest())
      */
     private function ingestDocuments(
         string $collection,
@@ -960,9 +930,8 @@ final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContra
         array $globalMetadata,
         bool $upsert,
         ?callable $onProgress,
-        bool $rebuild = true,
     ): void {
-        $this->run(function () use ($collection, $documents, $globalMetadata, $upsert, $onProgress, $rebuild): void {
+        $this->run(function () use ($collection, $documents, $globalMetadata, $upsert, $onProgress): void {
             $this->preparePgVector();
 
             if ($documents === []) {
@@ -971,16 +940,15 @@ final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContra
 
             $total = count($documents);
             $processed = 0;
-            $resolved = null;
 
             foreach ($this->chunkDocuments($documents) as $chunk) {
                 // Each chunk resolves the alias in its own transaction, so a switch mid-ingest moves the rest.
-                $resolved = $this->connection()->transaction(function () use (
+                $this->connection()->transaction(function () use (
                     $chunk,
                     $collection,
                     $globalMetadata,
                     $upsert,
-                ): array {
+                ): void {
                     $resolved = $this->resolveForWrite($collection);
                     $storage = $this->storage($resolved);
                     $embedded = $this->resolveDocumentsWithEmbeddings($chunk, $resolved['embedding']['provider'] ?? null);
@@ -994,7 +962,7 @@ final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContra
                             globalMetadata: $globalMetadata,
                         );
 
-                        return $resolved;
+                        return;
                     }
 
                     $this->bulkInsertDocuments(
@@ -1003,8 +971,6 @@ final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContra
                         dimensions: $resolved['dimensions'],
                         collection: $collection,
                     );
-
-                    return $resolved;
                 });
 
                 $processed += count($chunk);
@@ -1012,10 +978,6 @@ final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContra
                 if ($onProgress !== null) {
                     $onProgress($processed, $total);
                 }
-            }
-
-            if ($rebuild) {
-                $this->rebuildIfIvfflat($resolved);
             }
         });
     }
@@ -1234,15 +1196,53 @@ final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContra
     }
 
     /**
-     * IVFFlat centroids come from the rows, so the index is rebuilt after ingest with
-     * lists = min(requested lists, row count).
+     * Build a new embedding index under a temporary name, drop the old one, and give the new one the expected
+     * name, all CONCURRENTLY, so searches and writes go on (between the drop and the rename a search runs
+     * without the index). IVFFlat lists = min(registered lists, row count): centroids come from the rows. A
+     * session advisory lock per table makes a second rebuild refuse; a temporary index a killed rebuild left
+     * behind is dropped first, and a failed build drops its own. CONCURRENTLY cannot run inside a transaction.
+     *
+     * @param  array{name: string, storage_identifier: string, metric: PgVectorMetric, index_options: array{type?: string, options?: array<string, int>}|null}  $resolved
      */
-    private function rebuildIvfflatIndex(string $storage, PgVectorMetric $metric, PgVectorIndex $index): void
+    private function rebuildEmbeddingIndex(array $resolved): void
     {
-        $rowCount = (int) $this->connection()->scalar("SELECT COUNT(*) FROM {$storage}");
+        $storage = $this->storage($resolved);
+        $connection = $this->connection();
 
-        $this->connection()->statement("DROP INDEX IF EXISTS {$storage}_embedding_idx");
-        $this->connection()->statement($index->createSql($storage, $metric->indexOps(), $rowCount));
+        if ($connection->transactionLevel() > 0) {
+            throw new VectorQueryException('rebuildIndex() cannot run inside a database transaction (CREATE INDEX CONCURRENTLY).');
+        }
+
+        // Refuse rather than wait: a session waiting for the lock would hold a transaction open, which the running
+        // CREATE INDEX CONCURRENTLY waits for in turn (a deadlock Postgres breaks by aborting one of them).
+        if (! $connection->scalar('SELECT pg_try_advisory_lock(hashtext(?))', ["vector_index_rebuild:{$storage}"])) {
+            throw new VectorQueryException("The index of [{$resolved['name']}] is already being rebuilt. Run the rebuild again once that one ends.");
+        }
+
+        try {
+            $index = $this->existingIndex($storage, $resolved['index_options'])
+                ?? PgVectorIndex::fromRegistered($resolved['index_options'], $this->indexType(), $this->configuredIvfflatLists());
+            $rowCount = (int) $connection->scalar("SELECT COUNT(*) FROM {$storage}");
+            $temporary = "{$storage}_embedding_idx_rebuild";
+
+            $connection->statement("DROP INDEX CONCURRENTLY IF EXISTS {$temporary}");
+
+            try {
+                $connection->statement($index->createSql($storage, $resolved['metric']->indexOps(), $rowCount, concurrently: true, name: $temporary));
+            } catch (QueryException $exception) {
+                // A failed CONCURRENTLY build leaves an invalid index behind that every write would still maintain.
+                $connection->statement("DROP INDEX CONCURRENTLY IF EXISTS {$temporary}");
+
+                throw $exception->getCode() === '54000'
+                    ? new VectorQueryException("Rebuilding the index of [{$resolved['name']}] needs more memory than maintenance_work_mem allows: {$exception->getPrevious()?->getMessage()}. Raise maintenance_work_mem (postgresql.conf, or ALTER ROLE for the vector connection's user). The old index is unchanged.", previous: $exception)
+                    : $exception;
+            }
+
+            $connection->statement("DROP INDEX CONCURRENTLY IF EXISTS {$storage}_embedding_idx");
+            $connection->statement("ALTER INDEX {$temporary} RENAME TO {$storage}_embedding_idx");
+        } finally {
+            $connection->select('SELECT pg_advisory_unlock(hashtext(?))', ["vector_index_rebuild:{$storage}"]);
+        }
     }
 
     private function configuredIvfflatLists(): int

@@ -85,7 +85,7 @@ it('issues SET LOCAL session tuning when search options are supplied', function 
         ->and(collect($executed)->contains(fn (string $sql): bool => str_contains($sql, 'ivfflat.probes = 8')))->toBeTrue();
 });
 
-it('clamps ivfflat lists to the document count when the corpus is smaller than the configured lists', function () {
+it('clamps ivfflat lists to the document count on rebuildIndex when the corpus is smaller than the configured lists', function () {
     $collection = 'ivfflat_lists_'.uniqid();
     $this->collectionsToDelete = [$collection];
 
@@ -105,6 +105,7 @@ it('clamps ivfflat lists to the document count when the corpus is smaller than t
         Document::make('four', 'delta', vector: [0.7, 0.7, 0]),
         Document::make('five', 'epsilon', vector: [0.2, 0.8, 0]),
     ]);
+    Vector::rebuildIndex($collection, 'pgvector');
 
     $storage = 'vcol_'.substr(hash('sha256', $collection), 0, 32);
 

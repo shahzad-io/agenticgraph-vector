@@ -6,6 +6,7 @@ namespace AgenticGraph\Vector\Rerankers;
 
 use AgenticGraph\Vector\Contracts\RerankerContract;
 use AgenticGraph\Vector\Exceptions\VectorRerankException;
+use AgenticGraph\Vector\Support\HttpRetry;
 use AgenticGraph\Vector\Support\RerankOrder;
 use AgenticGraph\Vector\ValueObjects\RerankResult;
 use AgenticGraph\Vector\ValueObjects\SearchHit;
@@ -25,7 +26,7 @@ final class ApiReranker implements RerankerContract
 
     /**
      * @param  'cohere'|'voyage'  $vendor
-     * @param  array<string, mixed>  $config  the provider entry: model, api_key, timeout (seconds)
+     * @param  array<string, mixed>  $config  the provider entry: model, api_key, timeout (total seconds, retries included), retries, retry_sleep_ms
      */
     public function __construct(
         private readonly string $vendor,
@@ -48,18 +49,21 @@ final class ApiReranker implements RerankerContract
             throw new VectorRerankException("Reranker [{$this->name}] has no API key. Set {$vendor['key_env']} (vector.rerank.providers.{$this->name}.api_key).");
         }
 
-        $timeout = (int) ($this->config['timeout'] ?? 5);
-
         try {
-            $json = Http::withToken($key)->acceptJson()->timeout($timeout)->connectTimeout($timeout)
-                ->post($vendor['url'], [
-                    'model' => $model,
-                    'query' => $query,
-                    'documents' => array_map(static fn (SearchHit $hit): string => $hit->content, $hits),
-                    $vendor['top'] => min($topN, count($hits)),
-                ])
-                ->throw()
-                ->json();
+            $json = HttpRetry::withinBudget(
+                (float) ($this->config['timeout'] ?? 5),
+                (int) ($this->config['retries'] ?? 2),
+                (int) ($this->config['retry_sleep_ms'] ?? 500),
+                fn (float $seconds): mixed => Http::withToken($key)->acceptJson()->timeout($seconds)->connectTimeout($seconds)
+                    ->post($vendor['url'], [
+                        'model' => $model,
+                        'query' => $query,
+                        'documents' => array_map(static fn (SearchHit $hit): string => $hit->content, $hits),
+                        $vendor['top'] => min($topN, count($hits)),
+                    ])
+                    ->throw()
+                    ->json(),
+            );
         } catch (Throwable $exception) {
             throw new VectorRerankException("Reranker [{$this->name}] failed: {$exception->getMessage()}", previous: $exception);
         }

@@ -7,15 +7,39 @@ namespace AgenticGraph\Vector\Providers;
 use AgenticGraph\Vector\Contracts\EmbeddingProviderContract;
 use AgenticGraph\Vector\Events\VectorEmbeddingCompleted;
 use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
+use AgenticGraph\Vector\Support\HttpRetry;
 use Prism\Prism\Embeddings\Response as EmbeddingResponse;
-use Prism\Prism\Exceptions\PrismException;
 use Prism\Prism\Facades\Prism;
 use Prism\Prism\ValueObjects\Embedding;
 use Throwable;
 
 final class PrismEmbeddingProvider implements EmbeddingProviderContract
 {
+    // ponytail: process-wide switch, fine for one job per worker process; a per-request option if that changes.
+    private static bool $retriesOff = false;
+
     private ?int $resolvedDimensions = null;
+
+    /**
+     * Run $callback with every Prism provider's retries off (one try per request). A queued ingest job does this:
+     * its own tries and backoff are the retry layer, so one batch never outlasts the request timeout.
+     *
+     * @template TReturn
+     *
+     * @param  callable(): TReturn  $callback
+     * @return TReturn
+     */
+    public static function withoutRetries(callable $callback): mixed
+    {
+        $previous = self::$retriesOff;
+        self::$retriesOff = true;
+
+        try {
+            return $callback();
+        } finally {
+            self::$retriesOff = $previous;
+        }
+    }
 
     /**
      * @param  array<string, mixed>  $config
@@ -67,19 +91,35 @@ final class PrismEmbeddingProvider implements EmbeddingProviderContract
     }
 
     /**
-     * One Prism request. Its token usage goes out on VectorEmbeddingCompleted.
+     * One Prism request, with the entry's timeout (seconds) and up to `retries` retries on a retryable error
+     * (HttpRetry). Its token usage goes out on VectorEmbeddingCompleted, once, after the attempt that succeeded.
      *
      * @param  list<string>  $texts
      */
     private function requestEmbeddings(array $texts): EmbeddingResponse
     {
         [$provider, $model] = $this->parseProviderAndModel();
+        $timeout = max(1, (int) ($this->config['timeout'] ?? 30));
+        $retries = self::$retriesOff ? 0 : max(0, (int) ($this->config['retries'] ?? 2));
+        $sleepMs = max(0, (int) ($this->config['retry_sleep_ms'] ?? 500));
+        $retryAfterMaxMs = max(0, (int) ($this->config['retry_after_max_ms'] ?? 2000));
+        $lastHttpError = null;
         $started = hrtime(true);
 
         try {
             $request = Prism::embeddings()
                 ->using($provider, $model, $this->providerConfig())
-                ->fromArray($texts);
+                ->fromArray($texts)
+                ->withClientOptions(['timeout' => $timeout, 'connect_timeout' => $timeout])
+                ->withClientRetry(
+                    $retries + 1,
+                    static fn (int $attempt, Throwable $exception): int => HttpRetry::delayMs($attempt, $sleepMs, $exception),
+                    static function (Throwable $exception) use (&$lastHttpError, $retryAfterMaxMs): bool {
+                        $lastHttpError = $exception;
+
+                        return HttpRetry::shouldRetry($exception, $retryAfterMaxMs);
+                    },
+                );
 
             $providerOptions = $this->embeddingProviderOptions();
 
@@ -88,15 +128,14 @@ final class PrismEmbeddingProvider implements EmbeddingProviderContract
             }
 
             $response = $request->asEmbeddings();
-        } catch (PrismException $exception) {
-            throw new VectorEmbeddingException(
-                'Embedding generation failed: '.$exception->getMessage(),
-                previous: $exception,
-            );
         } catch (Throwable $exception) {
+            $cause = HttpRetry::cause($exception, $lastHttpError);
+
             throw new VectorEmbeddingException(
                 'Embedding generation failed: '.$exception->getMessage(),
                 previous: $exception,
+                retryable: HttpRetry::retryable($cause),
+                status: HttpRetry::status($cause),
             );
         }
 

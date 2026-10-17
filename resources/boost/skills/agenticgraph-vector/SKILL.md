@@ -48,19 +48,19 @@ Docs: `/docs/vector-installation`
 | `default` | `pgvector` | Store used by `Vector::store()`. `VECTOR_STORE` |
 | `stores.<name>.driver` | | Each named store names its driver: `pgvector`, `memory`, or one from `Vector::extend()` |
 | `stores.pgvector.connection` | `pgsql` | `VECTOR_DB_CONNECTION` |
-| `stores.pgvector.index` | `hnsw` | Or `ivfflat` (`ivfflat_lists`, 100). Applied at create when the definition sets no index. |
+| `stores.pgvector.index` | `hnsw` | Or `ivfflat` (`ivfflat_lists`, 100). Applied at create when the definition sets no index. IVFFlat is not rebuilt on write: run `php artisan vector:index:rebuild {collection}` (`Vector::rebuildIndex()`, non-blocking) after the first bulk load. |
 | `stores.pgvector.verify_extension` | `true` | Extension check once per process. `VECTOR_PGVECTOR_VERIFY_EXTENSION` |
 | `stores.pgvector.metric` | `cosine` | Or `l2`, `inner_product`. Frozen at create. |
 | `stores.pgvector.batch_size` | `100` | Wins over `batch.size` |
 | `stores.pgvector.registry_table` | `vector_collection_registry` | Name, dimensions, metric per collection |
-| `embeddings.default` | `prism` | Prism. No vendor default: set `VECTOR_EMBEDDINGS_PRISM_PROVIDER` and `VECTOR_EMBEDDINGS_MODEL` (example: `openai`, `text-embedding-3-small`), or the first embedding call throws. `dimensions` null (unset) asks the provider: one extra embed call per process when a collection is created without dimensions. Set `VECTOR_EMBEDDINGS_DIMENSIONS` to skip it. `api_key` null means Prism's provider key (e.g. `OPENAI_API_KEY`). |
+| `embeddings.default` | `prism` | Prism. No vendor default: set `VECTOR_EMBEDDINGS_PRISM_PROVIDER` and `VECTOR_EMBEDDINGS_MODEL` (example: `openai`, `text-embedding-3-small`), or the first embedding call throws. `dimensions` null (unset) asks the provider: one extra embed call per process when a collection is created without dimensions. Set `VECTOR_EMBEDDINGS_DIMENSIONS` to skip it. `api_key` null means Prism's provider key (e.g. `OPENAI_API_KEY`). Prism entries take `timeout` (30 s), `retries` (2, on 429, 5xx and connection errors only; `Retry-After` honored up to `retry_after_max_ms`, 2000, longer fails the request as retryable) and `retry_sleep_ms` (500, doubled per retry). |
 | `embeddings.providers.deterministic` | 8 dims | Local hashes for tests. Never tune scores on it. |
 | `events.enabled` | `true` | `VectorOperationCompleted` / `VectorOperationFailed` / `VectorEmbeddingCompleted` / `VectorRerankCompleted` / `VectorRerankFailed` |
 | `rerank.default` | none | Reranker used by `rerank()` without a name. `VECTOR_RERANK_PROVIDER`; unset, `rerank()` without `using:` throws. |
 | `rerank.fail_open` | `true` | On a reranker error or timeout, return the store order. `VECTOR_RERANK_FAIL_OPEN` |
-| `rerank.timeout` | `5` | Seconds per rerank request. `VECTOR_RERANK_TIMEOUT` |
+| `rerank.timeout`, `rerank.retries`, `rerank.retry_sleep_ms` | `5`, `2`, `500` | Total seconds per rerank, retries included (429, 5xx, timeouts), then fail-open. `VECTOR_RERANK_TIMEOUT`, `VECTOR_RERANK_RETRIES`, `VECTOR_RERANK_RETRY_SLEEP_MS` |
 | `queue.connection`, `queue.queue` | none | Queue for `queue()->upsert()`; unset uses the app's default. `VECTOR_QUEUE_CONNECTION`, `VECTOR_QUEUE` |
-| `queue.tries`, `queue.backoff`, `queue.timeout` | `3`, `[10, 30, 60]`, `60` | Per batch job. The timeout must be below the connection's `retry_after`. `VECTOR_QUEUE_TRIES`, `VECTOR_QUEUE_TIMEOUT` |
+| `queue.tries`, `queue.backoff`, `queue.timeout` | `3`, `[10, 30, 60]`, `60` | Per batch job. The timeout must be below the connection's `retry_after` and above the Prism provider's `timeout` + 5 s (defaults pass). Inside the job the provider's retries are off; tries and backoff retry the batch. `VECTOR_QUEUE_TRIES`, `VECTOR_QUEUE_TIMEOUT` |
 
 - `stores.memory` (driver `memory`) is a reference store in plain PHP: exact search, pgvector's score math and capabilities, data for the life of the process. For app tests: `VECTOR_STORE=memory` with `VECTOR_EMBEDDINGS_PROVIDER=deterministic`. Not for production.
 - The managers keep the first resolved store and provider, including on Octane and in long-lived workers. Static config is fine. After `config([...])` at runtime, reset them: [references/ingestion.md](references/ingestion.md#runtime-config).
@@ -108,7 +108,7 @@ Vector::store('pgvector')->listAliases();
 - Reads and writes stay on the old collection until the switch. Catch-up passes apply writes made during the copy; the final pass pauses writers (not searches) and switches in one transaction. `vector.migration.catch_up_threshold` (default 500), at most `vector.migration.catch_up_max_passes` unlocked passes (default 10).
 - Options left out of the migration definition come from the source collection (width, metric, index, index options, provider). `--dry-run` prints the resulting definition.
 - A failed or killed run resumes when rerun with the same definition. The old collection stays until `dropOldCollection()` / `--drop-old`.
-- Needs the `Aliases` capability (pgvector, memory). `deleteCollection()` on an alias, or on the collection behind one, throws; use `deleteAlias()` first.
+- Needs the `Aliases` capability (pgvector, memory). `deleteCollection()` on an alias, or on the collection behind one, throws; use `deleteAlias()` first. `deleteAlias()` also removes the alias's migration rows and refuses while its migration is unfinished.
 
 Docs: `/docs/vector-guide-changing-embedding-model`
 
@@ -334,7 +334,7 @@ All extend `VectorException` (`AgenticGraph\Vector\Exceptions`).
 | `VectorDuplicateDocumentException` | `insert()` with an existing or repeated id (a `VectorQueryException`) |
 | `VectorDimensionMismatchException` | Vector width differs from the collection's dimensions |
 | `VectorExtensionMissingException` | pgvector not installed and cannot be created |
-| `VectorEmbeddingException` | Embedding provider call failed (key, Prism config) |
+| `VectorEmbeddingException` | Embedding provider call failed (key, Prism config). `retryable` (429, 5xx, timeout) and `status` (HTTP status or null) |
 | `VectorInvalidMetadataException` | Non-scalar metadata |
 | `VectorInvalidFilterException` | Nested key, non-scalar or mixed-type value, unknown operator, range on a non-ISO string |
 | `VectorUnsupportedOperationException` | Store lacks the feature; check `capabilities()` |
