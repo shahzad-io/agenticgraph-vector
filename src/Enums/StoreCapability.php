@@ -18,4 +18,5 @@ enum StoreCapability: string
     case FilterRange = 'filter_range';
     case Keyword = 'keyword';
     case Aliases = 'aliases';
+    case QueuedIngest = 'queued_ingest';
 }

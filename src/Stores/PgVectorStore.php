@@ -6,6 +6,7 @@ namespace AgenticGraph\Vector\Stores;
 
 use AgenticGraph\Vector\Concerns\InteractsWithBuilder;
 use AgenticGraph\Vector\Contracts\AliasStoreContract;
+use AgenticGraph\Vector\Contracts\QueuedIngestStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\PgVectorMetric;
@@ -40,7 +41,7 @@ use Illuminate\Database\DatabaseManager;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Throwable;
 
-final class PgVectorStore implements AliasStoreContract, VectorStoreContract
+final class PgVectorStore implements AliasStoreContract, QueuedIngestStoreContract, VectorStoreContract
 {
     use InteractsWithBuilder;
 
@@ -106,6 +107,7 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
             StoreCapability::FilterRange,
             StoreCapability::Keyword,
             StoreCapability::Aliases,
+            StoreCapability::QueuedIngest,
         );
     }
 
@@ -302,6 +304,29 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
         );
     }
 
+    public function ingestBatch(string $collection, array $documents, array $globalMetadata = []): void
+    {
+        $this->ingestDocuments(
+            collection: $collection,
+            documents: $documents,
+            globalMetadata: $globalMetadata,
+            upsert: true,
+            onProgress: null,
+            rebuild: false,
+        );
+    }
+
+    /**
+     * The IVFFlat rebuild every upsert() call does, once for a whole queued ingest (on the collection the alias points at now).
+     */
+    public function completeIngest(string $collection): void
+    {
+        $this->run(function () use ($collection): void {
+            $this->preparePgVector();
+            $this->rebuildIfIvfflat($this->registry->resolve($collection));
+        });
+    }
+
     public function delete(string $collection, array|string|int $ids): void
     {
         $this->run(function () use ($collection, $ids): void {
@@ -314,7 +339,7 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
             }
 
             $this->connection()->transaction(function () use ($collection, $idList): void {
-                $storage = $this->storage($this->registry->resolve($collection, forWrite: true));
+                $storage = $this->storage($this->resolveForWrite($collection));
                 $placeholders = implode(', ', array_fill(0, count($idList), '?'));
 
                 $this->connection()->delete(
@@ -337,7 +362,7 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
             $translated = $this->filterTranslator->translate($filter);
 
             $this->connection()->transaction(function () use ($collection, $translated): void {
-                $storage = $this->storage($this->registry->resolve($collection, forWrite: true));
+                $storage = $this->storage($this->resolveForWrite($collection));
 
                 $this->connection()->delete(
                     "DELETE FROM {$storage} WHERE {$translated['sql']}",
@@ -389,7 +414,7 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
                 : 'changes.metadata';
 
             $this->connection()->transaction(function () use ($collection, $rows, $value, &$updated): void {
-                $storage = $this->storage($this->registry->resolve($collection, forWrite: true));
+                $storage = $this->storage($this->resolveForWrite($collection));
 
                 foreach (array_chunk($rows, max(1, $this->batchSize())) as $chunk) {
                     $placeholders = implode(', ', array_fill(0, count($chunk), '(?, ?::jsonb)'));
@@ -780,6 +805,33 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
     }
 
     /**
+     * Resolve a write target inside the caller's transaction, locked until it ends. Through an alias, the alias
+     * row's FOR SHARE lock holds off a migration's final pass. A plain collection has no alias row yet, so the
+     * table's ROW EXCLUSIVE lock (the one the write takes anyway, taken here before any embedding) holds it off:
+     * the final pass waits on it. A second, unlocked resolve then shows whether a migration adopting the
+     * collection switched it before the lock; only then is the new target resolved under the alias lock. The
+     * alias lock is never requested while holding a table its final pass waits on (it locks alias, then table).
+     *
+     * @return array{name: string, dimensions: int, metric: PgVectorMetric, storage_identifier: string, index_options: array{type?: string, options?: array<string, int>}|null, embedding: array{provider: string, model: string, dimensions: int}|null, keyword: array{languages: array<string, string>, language_field: string}|null}
+     */
+    private function resolveForWrite(string $collection): array
+    {
+        $resolved = $this->registry->resolve($collection, forWrite: true);
+
+        if ($resolved['name'] !== $collection) {
+            return $resolved;
+        }
+
+        $this->connection()->statement("LOCK TABLE {$this->storage($resolved)} IN ROW EXCLUSIVE MODE");
+
+        $current = $this->registry->resolve($collection);
+
+        return $current['storage_identifier'] === $resolved['storage_identifier']
+            ? $current
+            : $this->registry->resolve($collection, forWrite: true);
+    }
+
+    /**
      * @param  array{storage_identifier: string}  $resolved
      */
     private function storage(array $resolved): string
@@ -900,6 +952,7 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
      * @param  list<Document>  $documents
      * @param  array<string, mixed>  $globalMetadata
      * @param  (callable(int, int): void)|null  $onProgress
+     * @param  bool  $rebuild  false for a queued batch: the run rebuilds IVFFlat once (completeIngest())
      */
     private function ingestDocuments(
         string $collection,
@@ -907,8 +960,9 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
         array $globalMetadata,
         bool $upsert,
         ?callable $onProgress,
+        bool $rebuild = true,
     ): void {
-        $this->run(function () use ($collection, $documents, $globalMetadata, $upsert, $onProgress): void {
+        $this->run(function () use ($collection, $documents, $globalMetadata, $upsert, $onProgress, $rebuild): void {
             $this->preparePgVector();
 
             if ($documents === []) {
@@ -927,7 +981,7 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
                     $globalMetadata,
                     $upsert,
                 ): array {
-                    $resolved = $this->registry->resolve($collection, forWrite: true);
+                    $resolved = $this->resolveForWrite($collection);
                     $storage = $this->storage($resolved);
                     $embedded = $this->resolveDocumentsWithEmbeddings($chunk, $resolved['embedding']['provider'] ?? null);
 
@@ -960,7 +1014,9 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
                 }
             }
 
-            $this->rebuildIfIvfflat($resolved);
+            if ($rebuild) {
+                $this->rebuildIfIvfflat($resolved);
+            }
         });
     }
 

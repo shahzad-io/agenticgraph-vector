@@ -8,6 +8,7 @@ use AgenticGraph\Vector\Contracts\AliasStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
+use AgenticGraph\Vector\Ingest\QueuedIngest;
 use AgenticGraph\Vector\Migration\CollectionMigrator;
 use AgenticGraph\Vector\Rerankers\InstrumentedReranker;
 use AgenticGraph\Vector\Stores\InstrumentedStore;
@@ -17,6 +18,7 @@ use AgenticGraph\Vector\Support\MetadataValidator;
 use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\Tracing\VectorTraceContext;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
+use AgenticGraph\Vector\ValueObjects\IngestRun;
 use AgenticGraph\Vector\ValueObjects\MigrationState;
 use Illuminate\Database\DatabaseManager;
 use Illuminate\Support\Manager;
@@ -50,6 +52,14 @@ class VectorManager extends Manager
     public function rerankers(): RerankManager
     {
         return $this->container->make(RerankManager::class);
+    }
+
+    /**
+     * A queued ingest's run record (the id upsert() returned after queue()); null when unknown.
+     */
+    public function ingestRun(string $id): ?IngestRun
+    {
+        return QueuedIngest::find($id);
     }
 
     /**

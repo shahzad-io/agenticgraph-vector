@@ -11,6 +11,9 @@ use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\FilterOperator;
 use AgenticGraph\Vector\Enums\StoreCapability;
+use AgenticGraph\Vector\Events\VectorIngestCompleted;
+use AgenticGraph\Vector\Events\VectorIngestFailed;
+use AgenticGraph\Vector\Events\VectorIngestProgressed;
 use AgenticGraph\Vector\Events\VectorMigrationProgressed;
 use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
 use AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException;
@@ -20,6 +23,8 @@ use AgenticGraph\Vector\Exceptions\VectorInvalidFilterException;
 use AgenticGraph\Vector\Exceptions\VectorInvalidMetadataException;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
+use AgenticGraph\Vector\Ingest\IngestBatchJob;
+use AgenticGraph\Vector\Ingest\QueuedIngest;
 use AgenticGraph\Vector\Migration\CollectionMigrator;
 use AgenticGraph\Vector\Providers\DeterministicEmbeddingProvider;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
@@ -31,6 +36,8 @@ use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use Closure;
 use DateTimeImmutable;
 use DateTimeZone;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\After;
 use Throwable;
 
@@ -42,7 +49,8 @@ use Throwable;
  * The suite registers a deterministic, call-counting embedding driver (`conformance`, 8 dimensions)
  * and makes it the default for the test, plus a second one (`conformance_b`, another model) for
  * migrations. Collections it creates, their aliases and migrated copies are dropped after each test.
- * Alias and migration tests are skipped for a store without the Aliases capability.
+ * Alias and migration tests are skipped for a store without the Aliases capability. Queued ingest tests
+ * run on the sync connection (inline, any store) and create the `vector_ingest_runs` table when it is missing.
  */
 trait StoreConformanceTests
 {
@@ -384,6 +392,131 @@ trait StoreConformanceTests
 
         $this->assertSame(2, $builder->fetch(['doc-0', 'doc-'.($batchSize - 1)])->count());
         $this->assertSame(0, $builder->fetch(["doc-{$batchSize}", "doc-{$bad}"])->count());
+    }
+
+    // Queued ingest (sync connection: the batches run inline)
+
+    public function test_conformance_queued_upsert_writes_every_batch_and_completes_the_run(): void
+    {
+        $builder = $this->vectorBuilder(dimensions: 8);
+        $batchSize = $this->vectorStore()->batchSize();
+        $total = 2 * $batchSize + 1;
+        $events = $this->recordIngestEvents();
+        $documents = $this->contentDocuments($total);
+        // A repeated id keeps its last copy, so it is written once, in the last batch.
+        $documents[] = Document::make('doc-0', 'last copy of doc-0', ['index' => 0]);
+
+        $run = $this->queuedIngest($builder)->upsert($documents);
+
+        $this->assertNotNull($run);
+        $this->assertSame('completed', $run->status);
+        $this->assertNull($run->batchId);
+        $this->assertSame([$total, $total], [$run->totalDocuments, $run->processedDocuments]);
+        $this->assertSame([[$batchSize, 'done', 1], [$batchSize, 'done', 1], [1, 'done', 1]], array_map(
+            static fn (array $batch): array => [$batch['count'], $batch['status'], $batch['attempts']],
+            array_values($run->batches),
+        ));
+        $this->assertNotNull($run->startedAt);
+        $this->assertNotNull($run->finishedAt);
+        $this->assertSame(3, $this->countingEmbeddings()->embedBatchCallCount);
+        $this->assertSame($total, $builder->fetch(array_map(static fn (int $i): string => "doc-{$i}", range(0, $total - 1)))->count());
+        $this->assertSame('last copy of doc-0', $builder->fetch(['doc-0'])->hits[0]->content);
+        $this->assertSame([[$batchSize, $total, 0], [2 * $batchSize, $total, 0], [$total, $total, 0]], $events['progressed']);
+        $this->assertSame([[$total, $total, 0]], $events['completed']);
+        $this->assertSame([], $events['failed']);
+        $this->assertEquals($run, QueuedIngest::find($run->id));
+    }
+
+    public function test_conformance_a_failed_queued_batch_fails_the_run_and_the_other_batches_are_written(): void
+    {
+        $builder = $this->vectorBuilder(dimensions: 8);
+        $batchSize = $this->vectorStore()->batchSize();
+        $documents = $this->contentDocuments(3 * $batchSize);
+        $bad = $batchSize + intdiv($batchSize, 2);
+        $documents[$bad] = Document::make("doc-{$bad}", 'invalid metadata document', ['bad' => new \stdClass]);
+        $events = $this->recordIngestEvents();
+
+        $run = $this->queuedIngest($builder)->upsert($documents);
+
+        $this->assertNotNull($run);
+        $this->assertSame('failed', $run->status);
+        $this->assertSame(2 * $batchSize, $run->processedDocuments);
+        $this->assertSame(['done', 'failed', 'done'], array_column(array_values($run->batches), 'status'));
+        $this->assertSame([1], array_keys($run->failedBatches()));
+        $this->assertStringContainsString('Metadata at [bad]', (string) $run->batches[1]['error']);
+        // The batch after the failed one ran too; the failed batch wrote nothing.
+        $this->assertSame(2, $builder->fetch(['doc-0', 'doc-'.(3 * $batchSize - 1)])->count());
+        $this->assertSame(0, $builder->fetch(["doc-{$batchSize}", "doc-{$bad}"])->count());
+        $this->assertSame([2 * $batchSize, 3 * $batchSize, 1], $events['progressed'][2]);
+        $this->assertSame([[2 * $batchSize, 3 * $batchSize, 1]], $events['failed']);
+        $this->assertSame([], $events['completed']);
+    }
+
+    public function test_conformance_a_queued_batch_run_again_writes_and_counts_once(): void
+    {
+        $builder = $this->vectorBuilder(dimensions: 8);
+        $batchSize = $this->vectorStore()->batchSize();
+        $documents = $this->contentDocuments($batchSize + 1);
+        $run = $this->queuedIngest($builder)->upsert($documents);
+        $this->assertNotNull($run);
+
+        // A worker killed after the commit: the same job runs again with the same documents.
+        $job = new IngestBatchJob($run->store, $this->lastVectorCollection(), [], $run->id, 0, array_slice($documents, 0, $batchSize));
+        app()->call([$job, 'handle']);
+
+        $again = QueuedIngest::find($run->id);
+        $this->assertNotNull($again);
+        $this->assertSame('completed', $again->status);
+        $this->assertSame($batchSize + 1, $again->processedDocuments);
+        $this->assertSame([$batchSize, 1], array_column(array_values($again->batches), 'count'));
+        $this->assertCount($batchSize + 1, array_merge(...$this->allPages($builder, 1000)));
+    }
+
+    public function test_conformance_queued_batches_follow_an_alias_switch(): void
+    {
+        $store = $this->aliasStore();
+        $builder = $this->vectorBuilder(dimensions: 8);
+        $alias = $this->lastVectorCollection();
+        $state = $this->migrator()->migrate($alias, new CollectionDefinition($alias, dimensions: 8, metric: 'cosine'));
+        $batchSize = $store->batchSize();
+        $switched = false;
+
+        app('events')->listen(VectorIngestProgressed::class, function () use ($store, $alias, $state, &$switched): void {
+            if (! $switched) {
+                $switched = true;
+                $store->pointAlias($alias, $state->source);
+            }
+        });
+
+        $run = $this->queuedIngest($store->collection($alias))->upsert($this->contentDocuments(2 * $batchSize));
+
+        $this->assertSame('completed', $run?->status);
+        $this->assertSame(1, $store->collection($state->target)->fetch(['doc-0', "doc-{$batchSize}"])->count());
+        $this->assertSame(['doc-'.$batchSize], $store->collection($state->source)->fetch(['doc-0', "doc-{$batchSize}"])->pluck('id'));
+    }
+
+    public function test_conformance_queued_upsert_refuses_progress_callbacks_precomputed_vectors_and_insert(): void
+    {
+        $builder = $this->vectorBuilder(dimensions: 8);
+        $this->queuedIngestTable();
+
+        $this->assertConformanceThrows(
+            VectorUnsupportedOperationException::class,
+            fn () => $builder->onProgress(static function (): void {})->queue('sync')->upsert($this->contentDocuments(1)),
+            'VectorIngestProgressed',
+        );
+        $this->assertConformanceThrows(
+            VectorUnsupportedOperationException::class,
+            fn () => $builder->queue('sync')->upsert([Document::make('v', 'has a vector', vector: $this->vectorFor('has a vector'))]),
+            'precomputed vector',
+        );
+        $this->assertConformanceThrows(
+            VectorUnsupportedOperationException::class,
+            fn () => $builder->queue('sync')->insert($this->contentDocuments(1)),
+            'upsert() only',
+        );
+        $this->assertSame(0, DB::table(QueuedIngest::TABLE)->where('collection', $this->lastVectorCollection())->count());
+        $this->assertSame([], $builder->listIds()->ids);
     }
 
     // Search
@@ -1491,6 +1624,42 @@ trait StoreConformanceTests
         } while ($cursor !== null && count($pages) < 100);
 
         return $pages;
+    }
+
+    private function queuedIngest(Builder $builder): Builder
+    {
+        $this->queuedIngestTable();
+
+        return $builder->queue('sync');
+    }
+
+    private function queuedIngestTable(): void
+    {
+        if (! Schema::hasTable(QueuedIngest::TABLE)) {
+            (require __DIR__.'/../../database/migrations/create_vector_ingest_runs_table.php.stub')->up();
+        }
+    }
+
+    /**
+     * The ingest events of the last collection as [processed, total, failed batches], by event.
+     *
+     * @return \ArrayObject<string, array<mixed>>
+     */
+    private function recordIngestEvents(): \ArrayObject
+    {
+        /** @var \ArrayObject<string, array<mixed>> $events */
+        $events = new \ArrayObject(['progressed' => [], 'completed' => [], 'failed' => []]);
+        $collection = $this->lastVectorCollection();
+
+        foreach (['progressed' => VectorIngestProgressed::class, 'completed' => VectorIngestCompleted::class, 'failed' => VectorIngestFailed::class] as $key => $class) {
+            app('events')->listen($class, function (VectorIngestProgressed|VectorIngestCompleted|VectorIngestFailed $event) use ($events, $key, $collection): void {
+                if ($event->collection === $collection) {
+                    $events[$key] = [...$events[$key], [$event->processed, $event->total, $event->failedBatches]];
+                }
+            });
+        }
+
+        return $events;
     }
 
     /**

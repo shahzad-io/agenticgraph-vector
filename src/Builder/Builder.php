@@ -12,6 +12,7 @@ use AgenticGraph\Vector\Enums\FilterOperator;
 use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
+use AgenticGraph\Vector\Ingest\QueuedIngest;
 use AgenticGraph\Vector\Rerankers\InstrumentedReranker;
 use AgenticGraph\Vector\RerankManager;
 use AgenticGraph\Vector\Stores\InstrumentedStore;
@@ -20,6 +21,7 @@ use AgenticGraph\Vector\Tracing\VectorTraceContext;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\FilterCondition;
 use AgenticGraph\Vector\ValueObjects\IdPage;
+use AgenticGraph\Vector\ValueObjects\IngestRun;
 use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
 use AgenticGraph\Vector\ValueObjects\RerankResult;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
@@ -61,6 +63,9 @@ final class Builder
 
     /** @var (callable(int, int): void)|null */
     private $onProgress = null;
+
+    /** @var array{connection: string|null, queue: string|null}|null */
+    private ?array $queued = null;
 
     public function __construct(
         private readonly SearchStoreContract $store,
@@ -253,6 +258,19 @@ final class Builder
     }
 
     /**
+     * Make the next upsert() a queued ingest: one job per batch of the store's batchSize() (vector.queue
+     * config; null connection and queue use vector.queue, then the app's default). On the sync connection the
+     * batches run inline. Needs a store from Vector::store(); refuses onProgress() and precomputed vectors.
+     */
+    public function queue(?string $connection = null, ?string $queue = null): self
+    {
+        $clone = clone $this;
+        $clone->queued = ['connection' => $connection, 'queue' => $queue];
+
+        return $clone;
+    }
+
+    /**
      * @param  list<string|int>  $ids
      */
     public function fetch(array $ids): SearchResult
@@ -265,17 +283,21 @@ final class Builder
      */
     public function insert(array $documents): void
     {
+        if ($this->queued !== null) {
+            throw new VectorUnsupportedOperationException('queue() applies to upsert() only: a retried batch must be able to write its rows again.');
+        }
+
         $this->documentStore()->insert($this->collection, $documents, $this->onProgress);
     }
 
     /**
      * Insert or replace by id. An id given more than once keeps its last copy only (progress counts
-     * the remaining documents).
+     * the remaining documents). After queue() it dispatches the batches and returns their run.
      *
      * @param  list<Document>  $documents
      * @param  array<string, mixed>  $globalMetadata
      */
-    public function upsert(array $documents, array $globalMetadata = []): void
+    public function upsert(array $documents, array $globalMetadata = []): ?IngestRun
     {
         $lastCopies = [];
 
@@ -284,7 +306,13 @@ final class Builder
             $lastCopies[(string) $document->id] = $document;
         }
 
+        if ($this->queued !== null) {
+            return QueuedIngest::dispatch($this->queuedStore(array_values($lastCopies)), $this->collection, array_values($lastCopies), $globalMetadata, $this->queued['connection'], $this->queued['queue']);
+        }
+
         $this->documentStore()->upsert($this->collection, array_values($lastCopies), $globalMetadata, $this->onProgress);
+
+        return null;
     }
 
     /**
@@ -466,6 +494,28 @@ final class Builder
     {
         if (! $this->store instanceof DocumentStoreContract) {
             throw new VectorUnsupportedOperationException('This store does not support document operations.');
+        }
+
+        return $this->store;
+    }
+
+    /**
+     * @param  list<Document>  $documents
+     */
+    private function queuedStore(array $documents): InstrumentedStore
+    {
+        if (! $this->store instanceof InstrumentedStore) {
+            throw new VectorUnsupportedOperationException('queue() needs a named store from Vector::store(): each job resolves the store again by its name.');
+        }
+
+        if ($this->onProgress !== null) {
+            throw new VectorUnsupportedOperationException('queue() cannot call onProgress() from a worker; listen for VectorIngestProgressed instead.');
+        }
+
+        foreach ($documents as $document) {
+            if ($document->vector !== null) {
+                throw new VectorUnsupportedOperationException("Document [{$document->id}] has a precomputed vector: a queued ingest embeds in the worker. Use upsert() without queue() for precomputed vectors.");
+            }
         }
 
         return $this->store;

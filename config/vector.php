@@ -123,6 +123,38 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Queued ingest
+    |--------------------------------------------------------------------------
+    |
+    | ->queue()->upsert($documents) dispatches one job per batch (the store's
+    | batch_size) through Bus::batch and records the run in vector_ingest_runs
+    | (php artisan vendor:publish --tag=vector-migrations). connection and queue
+    | null: the app's default connection and that connection's default queue.
+    | On a sync connection the batches run inline.
+    |
+    | timeout (seconds per batch job) must be below the connection's
+    | retry_after, or a slow batch can run twice at once; queue() refuses
+    | otherwise. Dimension, metadata and missing-collection errors fail at
+    | once; connection and embedding errors retry after the backoff seconds.
+    |
+    */
+
+    'queue' => [
+
+        'connection' => env('VECTOR_QUEUE_CONNECTION') ?: null,
+
+        'queue' => env('VECTOR_QUEUE') ?: null,
+
+        'tries' => (int) env('VECTOR_QUEUE_TRIES', 3),
+
+        'backoff' => [10, 30, 60],
+
+        'timeout' => (int) env('VECTOR_QUEUE_TIMEOUT', 60),
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Migrations
     |--------------------------------------------------------------------------
     |

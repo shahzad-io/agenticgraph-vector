@@ -1,6 +1,6 @@
 # Ingestion and configuration examples
 
-Docs: `/docs/vector-installation`, `/docs/vector-configuration`, `/docs/vector-guide-batch-ingestion`, `/docs/vector-limitations`
+Docs: `/docs/vector-installation`, `/docs/vector-configuration`, `/docs/vector-guide-batch-ingestion`, `/docs/vector-guide-queued-ingest`, `/docs/vector-limitations`
 
 ## A dedicated connection
 
@@ -33,6 +33,23 @@ Vector::store('pgvector')->batchSize();   // effective chunk size
 ```
 
 With 120 documents and a batch size of 50, `onProgress` fires at 50, 100 and 120, with three `embedBatch()` calls.
+
+## Queued ingest
+
+Publish the run table (`php artisan vendor:publish --tag=vector-migrations`, then `migrate`); the app also needs `job_batches` and `failed_jobs`.
+
+```php
+use AgenticGraph\Vector\Facades\Vector;
+
+$run = Vector::store('pgvector')->collection('knowledge_base')->queue()->upsert($documents);
+
+Vector::ingestRun($run->id)->status; // pending, running, completed, failed
+```
+
+- One job per batch of `batchSize()` through `Bus::batch`; each job is one transaction. The job resolves the store by name and the alias per batch, so it follows `vector:migrate`.
+- Connection and embedding errors retry (`vector.queue.tries`, `backoff`); dimension, metadata and missing-collection errors fail the batch at once. `php artisan vector:ingest:resume {run}` retries the failed jobs.
+- Refused before dispatch: a store not from `Vector::store()`, `onProgress()`, precomputed vectors, `insert()`, the memory store off `sync`, and `vector.queue.timeout` at or above the connection's `retry_after`.
+- Rows are idempotent by id and counters by batch index. Stale overwrites are not: an older run's retried batch overwrites a newer run's rows. One ingest of a set of ids at a time.
 
 ## Precomputed vectors
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector;
 
+use AgenticGraph\Vector\Console\IngestResumeCommand;
 use AgenticGraph\Vector\Console\MigrateCommand;
 use AgenticGraph\Vector\Support\MetadataValidator;
 use Spatie\LaravelPackageTools\Package;
@@ -16,7 +17,9 @@ class VectorServiceProvider extends PackageServiceProvider
         $package
             ->name('vector')
             ->hasConfigFile()
-            ->hasCommand(MigrateCommand::class);
+            ->hasMigration('create_vector_ingest_runs_table')
+            ->hasCommand(MigrateCommand::class)
+            ->hasCommand(IngestResumeCommand::class);
     }
 
     public function packageRegistered(): void

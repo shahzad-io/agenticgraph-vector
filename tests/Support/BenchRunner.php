@@ -75,7 +75,7 @@ final class BenchRunner
       --warmup=20                untimed queries before the timed runs
       --queries=N --docs=N       fixed smaller run (default: the whole dataset)
       --truncate=N               cut documents to N characters (0: none)
-      --out=/tmp/ag2/bench       report folder (never inside a repo)
+      --out=~/ag2-scratch/bench  report folder (never inside a repo)
       --compare[=file]           fail on a quality drop against the baseline
                                  (default benchmarks/baselines/<dataset>/<model-slug>.json)
       --tolerance=0.01           allowed absolute quality drop for --compare
@@ -478,7 +478,7 @@ final class BenchRunner
         $rerankSearchPrice = isset($options['rerank-price-per-1k-searches']) ? (float) $options['rerank-price-per-1k-searches'] : null;
         $rerankTokenPrice = isset($options['rerank-price-per-1m-tokens']) ? (float) $options['rerank-price-per-1m-tokens'] : null;
         $slug = trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower($model)), '-');
-        $out = rtrim((string) ($options['out'] ?? '/tmp/ag2/bench'), '/');
+        $out = rtrim((string) ($options['out'] ?? self::defaultOut()), '/');
 
         if (array_diff($modes, self::MODES) !== []) {
             throw new RuntimeException('Unknown --mode='.implode(',', array_diff($modes, self::MODES)).'. Available: '.implode(', ', self::MODES).'.');
@@ -511,7 +511,7 @@ final class BenchRunner
         }
 
         if (str_starts_with(($out[0] === '/' ? $out : getcwd().'/'.$out).'/', (string) realpath(self::ROOT).'/')) {
-            throw new RuntimeException("--out={$out} is inside the package repo. Use a folder outside version control, for example /tmp/ag2/bench.");
+            throw new RuntimeException("--out={$out} is inside the package repo. Use a folder outside version control, for example ~/ag2-scratch/bench.");
         }
 
         @mkdir($out.'/cache', 0777, true);
@@ -1002,6 +1002,14 @@ final class BenchRunner
         if (preg_match('/^([\d.]+)\s*([KMG]i?B)/', trim($usage), $match)) {
             $this->memory[] = (float) $match[1] * ['KiB' => 1 / 1024, 'KB' => 1 / 1024, 'MiB' => 1, 'MB' => 1, 'GiB' => 1024, 'GB' => 1024][$match[2]];
         }
+    }
+
+    /**
+     * Reports and caches are long-lived, so they live outside /tmp and every repo.
+     */
+    public static function defaultOut(): string
+    {
+        return rtrim((string) (getenv('HOME') ?: sys_get_temp_dir()), '/').'/ag2-scratch/bench';
     }
 
     /**

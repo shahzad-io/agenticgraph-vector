@@ -60,7 +60,7 @@ it('resolves pgvector store and prism embedding provider via facades', function 
         ->and(Embeddings::using('prism'))->toBeInstanceOf(PrismEmbeddingProvider::class);
 });
 
-it('declares pgvector and memory capabilities', function (string $store) {
+it('declares pgvector and memory capabilities', function (string $store, array $extra) {
     $caps = Vector::store($store)->capabilities();
 
     expect($caps->capabilities)->toBe([
@@ -72,8 +72,13 @@ it('declares pgvector and memory capabilities', function (string $store) {
         StoreCapability::FilterRange,
         StoreCapability::Keyword,
         StoreCapability::Aliases,
+        ...$extra,
     ]);
-})->with(['pgvector', 'memory']);
+})->with([
+    // The memory store's data lives in one process, so it has no queued ingest (sync runs inline).
+    'pgvector' => ['pgvector', [StoreCapability::QueuedIngest]],
+    'memory' => ['memory', []],
+]);
 
 it('returns a sensible pgvector batch size', function () {
     expect(Vector::store('pgvector')->batchSize())->toBe(100);

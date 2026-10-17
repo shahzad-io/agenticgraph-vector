@@ -4,6 +4,21 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 
 ## Unreleased
 
+### Added (B8: queued ingest)
+- **`Builder::queue(?string $connection = null, ?string $queue = null)`**: the next `upsert()` dispatches one `IngestBatchJob` per batch of the store's `batchSize()` through `Bus::batch` (failures allowed, named `vector-ingest:<run id>`) after the builder drops repeated ids, and returns an `IngestRun`. `upsert()` returns `?IngestRun` (null without `queue()`). On a `sync` connection the batches run inline, one after another, every batch even after a failure.
+- **Run record.** Publishable migration `create_vector_ingest_runs_table` (`vendor:publish --tag=vector-migrations`) on the app's default connection: id, batch id, store, collection, status (`pending`, `running`, `completed`, `failed`), total and processed documents, per-batch state (status, count, attempts, error), timestamps. Batch state is set per index under a row lock, never incremented. `Vector::ingestRun($id)` and the `IngestRun` value object read it.
+- **`vector.queue` config:** `connection` (`VECTOR_QUEUE_CONNECTION`), `queue` (`VECTOR_QUEUE`), `tries` (`VECTOR_QUEUE_TRIES`, 3), `backoff` (`[10, 30, 60]`) and `timeout` (`VECTOR_QUEUE_TIMEOUT`, 60). `VectorDimensionMismatchException`, `VectorInvalidMetadataException` and `VectorCollectionNotFoundException` fail a batch without a retry (`FailOnException`); connection and embedding errors retry.
+- **Refusals before dispatch:** a builder over a store not from `Vector::store()`, `onProgress()`, documents with a precomputed vector, `queue()->insert()`, a store without the new **`StoreCapability::QueuedIngest`** on a connection other than `sync` (pgvector declares it; the memory store does not), and a job timeout below 1 or not below the connection's `retry_after` (`InvalidArgumentException`).
+- **`QueuedIngestStoreContract`** (`ingestBatch()`, `completeIngest()`): pgvector skips the per-call IVFFlat rebuild for a queued batch and rebuilds once when the run's last batch is written. A store without the contract gets a plain upsert per batch.
+- **Events:** `VectorIngestProgressed`, `VectorIngestCompleted`, `VectorIngestFailed` (store, collection, runId, processed, total, failedBatches), gated on `vector.events.enabled`. Each batch keeps its `upsert` span and `VectorOperationCompleted`; span schema stays v4.
+- **`php artisan vector:ingest:resume {run}`** retries a run's failed jobs (from its job batch) through `queue:retry` and reopens the run.
+- **Conformance:** queued ingest on `sync` (every batch written and the last copy kept, a failed batch fails the run and leaves the others, a batch run twice is written and counted once, batches follow an alias switch, refusals).
+- Benchmark runner: reports and caches default to `~/ag2-scratch/bench` (long-lived, outside `/tmp`).
+
+### Fixed (B8 Step 3 validation)
+- **pgvector: a write to a plain collection could be lost when `vector:migrate` adopted it.** A writer that resolved the collection before adoption took no lock (no alias row existed yet), embedded, and wrote after the switch, into the old collection. Writes now take the table's `ROW EXCLUSIVE` lock right after resolving a plain collection, so the migration's final pass waits for them, then resolve again (unlocked) to follow a switch made before the lock. Lock order stays alias row, then table. Found by a queued ingest during a first migration (100 of 3,300 documents only in the old collection); B5 behavior for aliased collections is unchanged.
+- **`vector:ingest:resume`** retries only failed jobs still in the failed job store, and refuses without reopening the run when none are left (pruned or deleted). Before, `queue:retry` skipped the missing ids, the command succeeded, and the run stayed `running`.
+
 ### BREAKING (B7: reranking)
 - **`hybrid(candidates:)` is now `hybrid(depth:)`** (candidates per list before fusion), and `SearchQuery::$candidates` is `SearchQuery::$depth`. `rerank(candidates:)` is the count sent to a reranker. Callers passing `candidates:` by name to `hybrid()` must rename it.
 - **`SearchHit::$scores`** is no longer hybrid-only: its shape is `{vector, keyword?, fused?, rerank?}`. Reranked dense hits carry `['vector' => ..., 'rerank' => ...]`.

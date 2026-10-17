@@ -1,11 +1,16 @@
 <?php
 
+use AgenticGraph\Vector\Contracts\EmbeddingProviderContract;
+use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Facades\Vector;
+use AgenticGraph\Vector\Providers\DeterministicEmbeddingProvider;
+use AgenticGraph\Vector\Testing\CountingEmbeddingProvider;
 use AgenticGraph\Vector\Tests\Support\PgvectorTestHelper;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\VectorManager;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 beforeEach(function () {
@@ -119,3 +124,65 @@ it('rebuilds an IVFFlat target index once the copy ends', function () {
 
     expect(DB::connection('pgvector')->scalar('SELECT pg_get_indexdef(to_regclass(?))', ["{$storage}_embedding_idx"]))->toContain("lists='3'");
 });
+
+it('holds off a migration final pass while a write to a plain collection is embedding', function (bool $alias) {
+    Vector::store('pgvector')->createCollection(new CollectionDefinition($this->collection, dimensions: 3));
+    $storage = DB::connection('pgvector')->scalar("SELECT storage_identifier FROM {$this->registry} WHERE name = ?", [$this->collection]);
+
+    if ($alias) {
+        Vector::migrate($this->collection, new CollectionDefinition($this->collection, dimensions: 3), mode: 'copy');
+        $storage = DB::connection('pgvector')->scalar("SELECT storage_identifier FROM {$this->registry} WHERE name = ?", [Vector::store('pgvector')->listAliases()[$this->collection]]);
+    }
+
+    // A second session tries the final pass's locks (alias row FOR UPDATE, then the table) while the write embeds.
+    config()->set('database.connections.pgvector_probe', config('database.connections.pgvector'));
+    $blocked = null;
+    $embeddings = new CountingEmbeddingProvider(new DeterministicEmbeddingProvider(dimensions: 3));
+    [$aliases, $alias] = [$this->registry.'_aliases', $this->collection];
+    // Manager::extend() rebinds the closure to the manager, so capture values, not $this.
+    app(EmbeddingsManager::class)->extend('probe', function () use ($embeddings, $storage, $aliases, $alias, &$blocked) {
+        return new class($embeddings, $storage, $aliases, $alias, $blocked) implements EmbeddingProviderContract
+        {
+            public function __construct(private CountingEmbeddingProvider $inner, private string $storage, private string $aliases, private string $alias, private ?bool &$blocked) {}
+
+            public function embed(string $text): array
+            {
+                return $this->inner->embed($text);
+            }
+
+            public function embedBatch(array $texts): array
+            {
+                $probe = DB::connection('pgvector_probe');
+                $probe->beginTransaction();
+
+                try {
+                    $probe->select("SELECT alias FROM {$this->aliases} WHERE alias = ? FOR UPDATE NOWAIT", [$this->alias]);
+                    $probe->statement("LOCK TABLE {$this->storage} IN SHARE ROW EXCLUSIVE MODE NOWAIT");
+                    $this->blocked = false;
+                } catch (QueryException $e) {
+                    $this->blocked = str_contains($e->getMessage(), '55P03');
+                } finally {
+                    $probe->rollBack();
+                }
+
+                return $this->inner->embedBatch($texts);
+            }
+
+            public function dimensions(): int
+            {
+                return 3;
+            }
+
+            public function model(): string
+            {
+                return 'probe';
+            }
+        };
+    });
+    config()->set('vector.embeddings.default', 'probe');
+    DB::connection('pgvector')->table($this->registry)->update(['embedding' => null]);
+
+    Vector::store('pgvector')->collection($this->collection)->upsert([Document::make('a', 'written while a migration would finish')]);
+
+    expect($blocked)->toBeTrue();
+})->with(['plain collection' => false, 'alias (guard: B5 alias lock)' => true]);

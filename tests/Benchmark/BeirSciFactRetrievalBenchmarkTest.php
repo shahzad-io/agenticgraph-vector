@@ -13,6 +13,7 @@ use AgenticGraph\Vector\Facades\Embeddings;
 use AgenticGraph\Vector\Facades\Vector;
 use AgenticGraph\Vector\Tests\Support\BeirSciFactDataset;
 use AgenticGraph\Vector\Tests\Support\BenchReport;
+use AgenticGraph\Vector\Tests\Support\BenchRunner;
 use AgenticGraph\Vector\Tests\Support\OllamaBenchmarkHelper;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
@@ -142,7 +143,7 @@ describe('BEIR SciFact retrieval benchmark', function (): void {
             'score_samples' => $scoreSamples,
         ];
 
-        $resultsPath = '/tmp/ag2/bench/scifact-results.json';
+        $resultsPath = BenchRunner::defaultOut().'/scifact-results.json';
         @mkdir(dirname($resultsPath), 0777, true);
         file_put_contents($resultsPath, json_encode($report, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
 

@@ -49,7 +49,7 @@ PRISM_REQUEST_TIMEOUT=120 bin/vector-bench --dataset=scifact --model=openai:text
 | `--warmup` | `20` | Untimed queries before the timed runs |
 | `--queries`, `--docs` | whole dataset | A fixed smaller run; the corpus keeps the relevant documents of the kept queries |
 | `--truncate` | `0` (none) | Cut documents to N characters, recorded in the report |
-| `--out` | `/tmp/ag2/bench` | Report folder. A folder inside this repo is refused |
+| `--out` | `~/ag2-scratch/bench` | Report folder (long-lived, survives a reboot). A folder inside this repo is refused |
 | `--compare[=file]` | `baselines/<dataset>/<model-slug>.json` | Exit 1 on a quality drop beyond the tolerance |
 | `--tolerance` | `0.01` | Absolute drop allowed per quality metric |
 | `--price-per-1m-tokens` | none | Embedding price for the cost section; never built in |

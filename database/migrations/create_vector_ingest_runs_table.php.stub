@@ -1,0 +1,39 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+/**
+ * One row per queued ingest (Builder::queue()->upsert()). Bookkeeping on the app's default connection,
+ * next to Laravel's job_batches; the vectors stay on the store's connection.
+ */
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('vector_ingest_runs', function (Blueprint $table) {
+            $table->uuid('id')->primary();
+            // Laravel job batch id; null for a run that ran inline on the sync connection.
+            $table->string('batch_id')->nullable();
+            $table->string('store');
+            $table->string('collection');
+            // pending, running, completed or failed.
+            $table->string('status', 16)->default('pending');
+            $table->unsignedInteger('total_documents');
+            $table->unsignedInteger('processed_documents')->default(0);
+            // Batch index => {status: pending|done|failed, count, attempts, error}; set per index, never incremented.
+            $table->json('batches');
+            $table->timestamp('started_at')->nullable();
+            $table->timestamp('finished_at')->nullable();
+            $table->timestamps();
+
+            $table->index('status');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('vector_ingest_runs');
+    }
+};

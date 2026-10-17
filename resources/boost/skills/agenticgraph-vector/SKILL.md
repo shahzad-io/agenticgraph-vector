@@ -1,6 +1,6 @@
 ---
 name: agenticgraph-vector
-description: "Use AgenticGraph vector search: named stores and configuration, the memory store for tests, ingestion and batch ingestion, metadata updates, retrieval, filters and SearchQuery, listing ids, building RAG nodes, score handling, capability discovery, the store conformance suite, aliases and zero-downtime collection migration (vector:migrate), hybrid search (keyword plus vector, hybrid(), keywords()), reranking (rerank(), Vector::reranker(), Cohere, Voyage, an LLM through Prism), HNSW iterative scan, vector span attributes, and vector exceptions."
+description: "Use AgenticGraph vector search: named stores and configuration, the memory store for tests, ingestion and batch ingestion, queued ingest (queue()->upsert(), vector:ingest:resume), metadata updates, retrieval, filters and SearchQuery, listing ids, building RAG nodes, score handling, capability discovery, the store conformance suite, aliases and zero-downtime collection migration (vector:migrate), hybrid search (keyword plus vector, hybrid(), keywords()), reranking (rerank(), Vector::reranker(), Cohere, Voyage, an LLM through Prism), HNSW iterative scan, vector span attributes, and vector exceptions."
 ---
 
 # AgenticGraph Vector
@@ -59,6 +59,8 @@ Docs: `/docs/vector-installation`
 | `rerank.default` | none | Reranker used by `rerank()` without a name. `VECTOR_RERANK_PROVIDER`; unset, `rerank()` without `using:` throws. |
 | `rerank.fail_open` | `true` | On a reranker error or timeout, return the store order. `VECTOR_RERANK_FAIL_OPEN` |
 | `rerank.timeout` | `5` | Seconds per rerank request. `VECTOR_RERANK_TIMEOUT` |
+| `queue.connection`, `queue.queue` | none | Queue for `queue()->upsert()`; unset uses the app's default. `VECTOR_QUEUE_CONNECTION`, `VECTOR_QUEUE` |
+| `queue.tries`, `queue.backoff`, `queue.timeout` | `3`, `[10, 30, 60]`, `60` | Per batch job. The timeout must be below the connection's `retry_after`. `VECTOR_QUEUE_TRIES`, `VECTOR_QUEUE_TIMEOUT` |
 
 - `stores.memory` (driver `memory`) is a reference store in plain PHP: exact search, pgvector's score math and capabilities, data for the life of the process. For app tests: `VECTOR_STORE=memory` with `VECTOR_EMBEDDINGS_PROVIDER=deterministic`. Not for production.
 - The managers keep the first resolved store and provider, including on Octane and in long-lived workers. Static config is fine. After `config([...])` at runtime, reset them: [references/ingestion.md](references/ingestion.md#runtime-config).
@@ -132,9 +134,10 @@ Vector::store('pgvector')
 - Metadata-only changes: `->updateMetadata(['doc-1' => ['last_updated' => now()]])` (one payload per id, shallow merge; `merge: false` replaces). No re-embedding. Returns `UpdateMetadataResult` with `updated` and `unknown` ids. Prefer it to `upsert()` when only metadata changed.
 - Do not call `embed()` per document in a loop; upsert already batches.
 - Store-level form for seeders: `Vector::store('pgvector')->upsert('articles', $documents)`.
+- Large corpus in the background: `->queue()->upsert($documents)` returns an `IngestRun` (one job per batch, `Vector::ingestRun($id)`, `VectorIngestProgressed` / `VectorIngestCompleted` / `VectorIngestFailed`, `php artisan vector:ingest:resume {run}`). It refuses `onProgress()` and precomputed vectors; `queue('sync')` runs inline, also on the memory store. Do not run two queued ingests of the same ids at once: [references/ingestion.md](references/ingestion.md#queued-ingest).
 - More: [references/ingestion.md](references/ingestion.md).
 
-Docs: `/docs/vector-guide-batch-ingestion`, `/docs/vector-quick-start`
+Docs: `/docs/vector-guide-batch-ingestion`, `/docs/vector-guide-queued-ingest`, `/docs/vector-quick-start`
 
 ## Retrieval
 
