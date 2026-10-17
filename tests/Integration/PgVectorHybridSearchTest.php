@@ -1,6 +1,7 @@
 <?php
 
 use AgenticGraph\Vector\Events\VectorMigrationProgressed;
+use AgenticGraph\Vector\Events\VectorRerankCompleted;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Facades\Vector;
 use AgenticGraph\Vector\Tests\Support\PgvectorTestHelper;
@@ -155,4 +156,49 @@ it('builds the keyword index after the copy when a migration adds keyword search
     expect($during)->not->toBeEmpty()->not->toContain(true)
         ->and(DB::connection('pgvector')->scalar('SELECT pg_get_indexdef(to_regclass(?))', ["{$target}_keyword_idx"]))->toContain('USING gin (keywords)')
         ->and(keywordMatchIds($this->collection, '"document 4"', 'websearch'))->toBe(['d4']);
+});
+
+it('raises hnsw.ef_search so an unfiltered HNSW search returns more than 40 hits, unless the caller sets it', function () {
+    $store = Vector::store('pgvector');
+    $store->createCollection(new CollectionDefinition($this->collection, dimensions: 16, keyword: true));
+    $vector = fn (int $i): array => array_map(fn (int $j): float => sin($i * 7.1 + $j * 1.3), range(0, 15));
+    $store->collection($this->collection)->upsert(array_map(
+        fn (int $i): Document => Document::make("d{$i}", "document {$i}", [], $vector($i)),
+        range(1, 300),
+    ));
+
+    // Force the HNSW index (a table this small would otherwise be scanned exactly).
+    $search = fn (Closure $build) => DB::connection('pgvector')->transaction(function () use ($build) {
+        DB::connection('pgvector')->statement('SET LOCAL enable_seqscan = off');
+
+        return $build(Vector::store('pgvector')->collection($this->collection))->get();
+    });
+    $dense = fn ($builder) => $builder->usingVector($vector(7));
+
+    Event::fake([VectorRerankCompleted::class]);
+
+    expect($search(fn ($b) => $dense($b)->take(100))->count())->toBe(100)
+        ->and($search(fn ($b) => $dense($b)->rerank(using: 'null', candidates: 80, query: 'q')->take(5))->count())->toBe(5)
+        ->and(Event::dispatched(VectorRerankCompleted::class)[0][0]->documentCount)->toBe(80)
+        ->and($search(fn ($b) => $dense($b)->options(['hnsw.ef_search' => 20])->take(100))->count())->toBe(20)
+        // Hybrid: the vector list holds depth (80) candidates; no keyword matches, so the fused list is that list.
+        ->and($search(fn ($b) => $dense($b)->keywords('zzzz')->hybrid(depth: 80)->take(80))->count())->toBe(80);
+});
+
+it('guard: never lowers a higher hnsw.ef_search setting', function () {
+    $store = Vector::store('pgvector');
+    $store->createCollection(new CollectionDefinition($this->collection, dimensions: 16));
+    $vector = fn (int $i): array => array_map(fn (int $j): float => sin($i * 7.1 + $j * 1.3), range(0, 15));
+    $store->collection($this->collection)->upsert(array_map(fn (int $i): Document => Document::make("d{$i}", "document {$i}", [], $vector($i)), range(1, 300)));
+
+    $count = DB::connection('pgvector')->transaction(function () use ($vector) {
+        DB::connection('pgvector')->statement('SET LOCAL enable_seqscan = off');
+        DB::connection('pgvector')->statement('SET LOCAL hnsw.ef_search = 200');
+
+        $count = Vector::store('pgvector')->collection($this->collection)->usingVector($vector(7))->take(150)->get()->count();
+
+        return [$count, DB::connection('pgvector')->scalar('SHOW hnsw.ef_search')];
+    });
+
+    expect($count)->toBe([150, '200']);
 });

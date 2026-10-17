@@ -7,6 +7,7 @@ use AgenticGraph\Vector\Tests\Support\BenchRunner;
 use AgenticGraph\Vector\Tests\Support\RetrievalMetrics;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
+use AgenticGraph\Vector\ValueObjects\SearchHit;
 
 function benchReport(array $quality = [], array $overrides = []): array
 {
@@ -222,7 +223,66 @@ it('reports same-budget candidate recall, paired intervals and the raw union sep
 
     expect($markdown)->toContain('Hybrid settings: hybrid:any:0.25 match any, keyword weight 0.25.')
         ->and($markdown)->toContain('| hybrid:any:0.25 | 0.9000 (+0.0200) | 0.9500 (+0.0200) | 0.9700 (+0.0100) |')
-        ->and($markdown)->toContain('| hybrid:any:0.25 | -0.0100 [-0.0200, +0.0050] | +0.0200 [+0.0100, +0.0300] |')
+        ->and($markdown)->toContain('| hybrid:any:0.25 | dense | -0.0100 [-0.0200, +0.0050] | n/a | +0.0200 [+0.0100, +0.0300] |')
         ->and($markdown)->toContain('not a same-budget comparison')
         ->and($markdown)->toContain('| any | 30 | 0.9500 | 51.5, 60 |');
+});
+
+it('keys reranked twins and pairs them against dense+rerank', function () {
+    expect(BenchRunner::rerankKey('dense', null))->toBe('dense+rerank')
+        ->and(BenchRunner::rerankKey('hybrid:any:0.25', 'off'))->toBe('hybrid:any:0.25+rerank@off')
+        ->and(BenchRunner::pairedReference('hybrid:any:0.25+rerank'))->toBe('dense+rerank')
+        ->and(BenchRunner::pairedReference('hybrid:any:0.25+rerank@off'))->toBe('dense+rerank@off')
+        ->and(BenchRunner::pairedReference('hybrid:any:0.25'))->toBe('dense')
+        ->and(BenchRunner::pairedReference('dense+rerank'))->toBe('dense')
+        ->and(BenchRunner::pairedReference('dense+rerank@off'))->toBe('dense@off')
+        ->and(BenchRunner::pairedReference('hybrid@relaxed_order'))->toBe('dense@relaxed_order')
+        ->and(BenchRunner::RERANK_CANDIDATES)->toBe(BenchRunner::CANDIDATE_KS[0]);
+});
+
+it('reranks each query to the top 10 once and caches per query and ordered candidate ids', function () {
+    $cacheFile = sys_get_temp_dir().'/ag2-rerank-cache-'.getmypid().'.json';
+    @unlink($cacheFile);
+    $hits = array_map(fn (int $i): SearchHit => new SearchHit("d{$i}", 1 - $i / 100, $i % 4 === 0 ? 'password reset' : "other {$i}"), range(0, 11));
+    $queries = [['id' => 'q1', 'text' => 'password reset'], ['id' => 'q2', 'text' => 'nothing matches']];
+    $byQuery = ['q1' => $hits, 'q2' => $hits];
+
+    try {
+        $first = BenchRunner::rerankRanked('deterministic', $byQuery, $queries, $cacheFile);
+        $again = BenchRunner::rerankRanked('deterministic', $byQuery, $queries, $cacheFile);
+        $otherOrder = BenchRunner::rerankRanked('deterministic', ['q1' => array_reverse($hits), 'q2' => $hits], $queries, $cacheFile);
+    } finally {
+        @unlink($cacheFile);
+    }
+
+    expect($first['ranked']['q1'])->toBe(['d0', 'd4', 'd8', 'd1', 'd2', 'd3', 'd5', 'd6', 'd7', 'd9'])
+        ->and($first['ranked']['q2'])->toBe(array_map(fn (int $i): string => "d{$i}", range(0, 9)))
+        ->and([$first['stats']['calls'], $first['stats']['cached']])->toBe([2, 0])
+        ->and($again['ranked'])->toBe($first['ranked'])
+        ->and([$again['stats']['calls'], $again['stats']['cached'], $again['stats']['run_units']])->toBe([0, 2, null])
+        ->and([$otherOrder['stats']['calls'], $otherOrder['stats']['cached']])->toBe([1, 1])
+        ->and($first['stats']['p50_ms'])->toBeInt();
+});
+
+it('prices rerank units and tokens from the flags', function () {
+    expect(BenchRunner::rerankCost(3, null, 2.5, null))->toBe(0.0075)
+        ->and(BenchRunner::rerankCost(null, 2_000_000, null, 0.05))->toBe(0.1)
+        ->and(BenchRunner::rerankCost(3, null, null, 0.05))->toBeNull()
+        ->and(BenchRunner::rerankCost(null, null, 2.5, 0.05))->toBeNull();
+});
+
+it('renders the rerank table, the reference column and the rerank cost', function () {
+    $twin = benchReport()['modes']['dense'];
+    $twin['concurrency'] = [];
+    $twin['paired'] = ['reference' => 'dense', 'ndcg_at_10' => ['mean' => 0.05, 'low' => 0.02, 'high' => 0.08], 'recall_at_5' => ['mean' => 0.07, 'low' => 0.04, 'high' => 0.1], 'candidate_recall_at_30' => ['mean' => 0.0, 'low' => 0.0, 'high' => 0.0]];
+    $twin['rerank'] = ['reranker' => 'cohere', 'model' => 'rerank-v4.0-pro', 'candidates' => 30, 'calls' => 290, 'cached' => 10, 'p50_ms' => 180, 'p95_ms' => 320, 'units' => 300, 'tokens' => null, 'run_units' => 290, 'run_tokens' => null];
+    $report = benchReport();
+    $report['modes']['dense+rerank'] = $twin;
+    $report['cost']['rerank'] = ['reranker' => 'cohere', 'model' => 'rerank-v4.0-pro', 'price_per_1k_searches' => 2.5, 'price_per_1m_tokens' => null, 'calls' => 290, 'units' => 290, 'tokens' => null, 'run' => 0.725, 'per_query' => 0.0025];
+
+    $markdown = BenchReport::markdown($report);
+
+    expect($markdown)->toContain('| dense+rerank | dense | +0.0500 [+0.0200, +0.0800] | +0.0700 [+0.0400, +0.1000] |')
+        ->and($markdown)->toContain('| dense+rerank | cohere (`rerank-v4.0-pro`) | 30 | 290 (10) | 180 | 320 | 300 | n/a |')
+        ->and($markdown)->toContain('- Rerank (cohere, `rerank-v4.0-pro`): 290 requests this run (290 units, n/a tokens), cost 0.725; per query 0.0025');
 });

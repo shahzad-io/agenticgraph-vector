@@ -16,6 +16,7 @@ final readonly class VectorTraceContext
         public ?int $topK = null,
         public int $filterCount = 0,
         public ?string $searchMode = null,
+        public ?string $reranker = null,
     ) {}
 
     public static function forSearch(SearchQuery $query, ?string $store = null): self

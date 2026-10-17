@@ -212,10 +212,20 @@ final class BenchReport
 
         if ($paired !== []) {
             $interval = static fn (array $d): string => sprintf('%+.4f [%+.4f, %+.4f]', $d['mean'], $d['low'], $d['high']);
-            $lines = [...$lines, '', '## Paired differences against dense (per query, bootstrap 95% interval)', '', '| Mode | nDCG@10 | candidate recall@30 |', '|---|---|---|'];
+            $lines = [...$lines, '', '## Paired differences (per query, bootstrap 95% interval)', '', '| Mode | Reference | nDCG@10 | recall@5 | candidate recall@30 |', '|---|---|---|---|---|'];
 
             foreach ($paired as $mode => $p) {
-                $lines[] = "| {$mode} | {$interval($p['ndcg_at_10'])} | {$interval($p['candidate_recall_at_30'])} |";
+                $lines[] = "| {$mode} | {$p['reference']} | {$interval($p['ndcg_at_10'])} | ".(isset($p['recall_at_5']) ? $interval($p['recall_at_5']) : 'n/a')." | {$interval($p['candidate_recall_at_30'])} |";
+            }
+        }
+
+        $reranked = array_filter(array_map(static fn (array $data): ?array => $data['rerank'] ?? null, $modes));
+
+        if ($reranked !== []) {
+            $lines = [...$lines, '', '## Reranking (one client; latency added on top of the store time)', '', '| Mode | Reranker | Candidates | Requests (cached) | p50 ms | p95 ms | Units | Tokens |', '|---|---|---|---|---|---|---|---|'];
+
+            foreach ($reranked as $mode => $r) {
+                $lines[] = sprintf('| %s | %s (`%s`) | %d | %d (%d) | %s | %s | %s | %s |', $mode, $r['reranker'], $r['model'], $r['candidates'], $r['calls'], $r['cached'], $r['p50_ms'] ?? 'n/a', $r['p95_ms'] ?? 'n/a', $r['units'] ?? 'n/a', $r['tokens'] ?? 'n/a');
             }
         }
 
@@ -266,6 +276,11 @@ final class BenchReport
             $cost['price_per_1m_tokens'] === null
                 ? '- No price given (`--price-per-1m-tokens`).'
                 : sprintf('- At %s per 1M tokens: ingest %s, queries %s', $cost['price_per_1m_tokens'], $cost['ingest'] ?? 'n/a (no token usage)', $cost['queries'] ?? 'n/a (no token usage)'),
+            ...(empty($cost['rerank']) ? [] : [sprintf(
+                '- Rerank (%s, `%s`): %d requests this run (%s units, %s tokens), cost %s; per query %s (prices: %s per 1K searches, %s per 1M tokens)',
+                $cost['rerank']['reranker'], $cost['rerank']['model'], $cost['rerank']['calls'], $cost['rerank']['units'] ?? 'n/a', $cost['rerank']['tokens'] ?? 'n/a',
+                $cost['rerank']['run'] ?? 'n/a', $cost['rerank']['per_query'] ?? 'n/a', $cost['rerank']['price_per_1k_searches'] ?? 'none', $cost['rerank']['price_per_1m_tokens'] ?? 'none',
+            )]),
             '',
             isset($report['runtime_ms']) ? sprintf('Runtime: %.1f s for the whole run.', $report['runtime_ms'] / 1000) : 'Runtime: not recorded.',
             '',

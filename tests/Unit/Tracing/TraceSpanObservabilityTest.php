@@ -21,8 +21,8 @@ use AgenticGraph\Vector\ValueObjects\SearchResult;
 use Illuminate\Support\Facades\Event;
 use Shahzad\AgenticGraph\Tracing\Tracer;
 
-test('contract freeze guard: vector span schema v3 attribute keys are frozen', function () {
-    expect(VectorSpanSchema::VERSION)->toBe('v3')
+test('contract freeze guard: vector span schema v4 attribute keys are frozen', function () {
+    expect(VectorSpanSchema::VERSION)->toBe('v4')
         ->and(VectorSpanSchema::FROZEN_ATTRIBUTE_KEYS)->toBe([
             'vector.store',
             'vector.collection',
@@ -35,6 +35,10 @@ test('contract freeze guard: vector span schema v3 attribute keys are frozen', f
             'vector.filter_count',
             'vector.embedding_ms',
             'vector.search_mode',
+            'vector.reranker',
+            'vector.rerank_ms',
+            'vector.rerank_candidates',
+            'vector.rerank_status',
         ]);
 });
 

@@ -9,6 +9,7 @@ use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Migration\CollectionMigrator;
+use AgenticGraph\Vector\Rerankers\InstrumentedReranker;
 use AgenticGraph\Vector\Stores\InstrumentedStore;
 use AgenticGraph\Vector\Stores\MemoryStore;
 use AgenticGraph\Vector\Stores\PgVectorStore;
@@ -35,6 +36,20 @@ class VectorManager extends Manager
     public function store(?string $name = null): VectorStoreContract
     {
         return $this->driver($name);
+    }
+
+    /**
+     * A named reranker from `vector.rerank.providers` (null: `vector.rerank.default`), for reranking hits merged
+     * from several searches. Fail-open and events apply as in rerank() on the builder.
+     */
+    public function reranker(?string $name = null): InstrumentedReranker
+    {
+        return $this->rerankers()->reranker($name);
+    }
+
+    public function rerankers(): RerankManager
+    {
+        return $this->container->make(RerankManager::class);
     }
 
     /**

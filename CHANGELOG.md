@@ -4,6 +4,24 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 
 ## Unreleased
 
+### BREAKING (B7: reranking)
+- **`hybrid(candidates:)` is now `hybrid(depth:)`** (candidates per list before fusion), and `SearchQuery::$candidates` is `SearchQuery::$depth`. `rerank(candidates:)` is the count sent to a reranker. Callers passing `candidates:` by name to `hybrid()` must rename it.
+- **`SearchHit::$scores`** is no longer hybrid-only: its shape is `{vector, keyword?, fused?, rerank?}`. Reranked dense hits carry `['vector' => ..., 'rerank' => ...]`.
+- **Span schema v4.** `VectorSpanSchema::VERSION` is `v4`; adds `vector.reranker`, `vector.rerank_ms`, `vector.rerank_candidates` and `vector.rerank_status` (`ok`, `failed_open`) on reranked search spans. `VectorOperationCompleted` and `VectorOperationFailed` gain `rerankMs`.
+- `illuminate/http` is an explicit requirement.
+
+### Added (B7)
+- **Measured (B7).** Reranking the top 30 raised nDCG@10 by 0.06 to 0.20 over dense on SciFact and both WixQA sets (Cohere `rerank-v4.0-pro`, Voyage `rerank-3`); reranked hybrid (keyword weight 0.25 or 0.5) matched reranked dense within noise on WixQA, so the hybrid default stays 0.25 and the recommended pipeline is dense plus a reranker. Benchmark baselines now include `dense+rerank` and `hybrid+rerank` (Cohere).
+- **pgvector raises `hnsw.ef_search`** for a search that needs more than 40 rows: to `max(take, hybrid depth)` (at most 1000), unless `options()` sets it, and never below the session's value. Before, an unfiltered HNSW search returned at most 40 hits, so `take(100)`, 30+ rerank candidates beyond 40, and hybrid's default depth of 50 were silently cut to 40.
+- **Reranking.** `Builder::rerank(?string $using = null, int $candidates = 30, ?string $query = null)`: the store returns `max(candidates, take)` hits (`minScore()` applies before reranking, to the vector similarity), the named reranker orders them, and the top `take` come back. `score` stays the vector similarity; hits are ordered by `scores['rerank']`. The rerank query is `$query`, else the `similarTo()` text, else the hybrid keywords; `usingVector()` needs `$query`.
+- **`Vector::reranker(?string $name)`** (and `Vector::rerankers()`, the `RerankManager`) reranks hits merged from several searches, with the same fail-open policy and events.
+- **`RerankerContract::rerank(string $query, array $hits, int $topN): RerankResult`** and `RerankResult` (`hits`, `model`, `units`, `tokens`, `failedOpen`).
+- **Drivers** in `vector.rerank.providers`: `cohere` (Rerank API v2, search units), `voyage` (tokens), `prism` (an LLM through `Prism::structured()`: rankings validated, out-of-range and repeated indices dropped, missing ones appended in input order with a null score, passages cut to `max_characters`), `null` (input order) and `deterministic` (query word overlap). No default reranker: `rerank()` without a name throws `VectorRerankException` naming `VECTOR_RERANK_PROVIDER`; missing models and keys name their env keys.
+- **Failure policy.** `vector.rerank.fail_open` (`VECTOR_RERANK_FAIL_OPEN`, default true): on an error or timeout the store's first `take` hits come back without a rerank score and `VectorRerankFailed` fires; false throws (and `VectorOperationFailed` fires for the search). `vector.rerank.timeout` (`VECTOR_RERANK_TIMEOUT`, default 5 seconds, per entry overridable).
+- **Events.** `VectorRerankCompleted` (reranker, model, documentCount, units, tokens, durationMs) and `VectorRerankFailed` (with the exception and `failedOpen`). `VectorRerankException`.
+- **`AgenticGraph\Vector\Testing\RerankerConformanceTests`**: at most topN, a subset without duplicates, non-increasing rerank scores, hits unchanged except the rerank score, no request for empty input, topN above the count, stable ties. Run on `null` and `deterministic`, and (gated) on Cohere, Voyage and Prism.
+- **Benchmark runner.** `--rerank=<config name>` adds a `+rerank` twin of every mode: its top 30 reranked to the top 10 (one client), cached per query and ordered candidate ids. Paired intervals of `+rerank` modes use `dense+rerank` as reference. Rerank latency p50/p95, requests, units and tokens per mode; `--rerank-price-per-1k-searches` and `--rerank-price-per-1m-tokens` price them in the cost section.
+
 ### BREAKING (B6: hybrid search and iterative scan)
 - **Contracts.** `describeCollection()` also returns `keyword` (`['languages' => [...], 'language_field' => ...]`, or null). Custom stores must return it. A store that runs `SearchQuery::$keywords` should declare `StoreCapability::Keyword`.
 - **Filtered pgvector searches use HNSW iterative scan** (`relaxed_order` by default, pgvector 0.8 or later), so a selective filter returns up to `take()` hits instead of the few the first HNSW candidates hold. On pgvector before 0.8 set `vector.stores.pgvector.iterative_scan` to `off`.

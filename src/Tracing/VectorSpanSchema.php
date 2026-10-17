@@ -11,17 +11,19 @@ use AgenticGraph\Vector\ValueObjects\SearchResult;
 use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
 
 /**
- * Frozen vector span attribute contract (v3).
+ * Frozen vector span attribute contract (v4).
  *
  * v2 (pre-release amendment of v1): adds `vector.embedding_ms`, and `vector.store` is the
  * name of the store actually used, not `vector.default`.
  * v3 (pre-release amendment of v2): adds `vector.search_mode` (`dense` or `hybrid`) on search spans.
+ * v4 (pre-release amendment of v3): adds `vector.reranker` (config name), `vector.rerank_ms`,
+ * `vector.rerank_candidates` (hits sent) and `vector.rerank_status` (`ok` or `failed_open`) on reranked searches.
  *
  * @see docs/PRD.md Section 6
  */
 final class VectorSpanSchema
 {
-    public const VERSION = 'v3';
+    public const VERSION = 'v4';
 
     /** @var list<string> */
     public const FROZEN_ATTRIBUTE_KEYS = [
@@ -36,6 +38,10 @@ final class VectorSpanSchema
         'vector.filter_count',
         'vector.embedding_ms',
         'vector.search_mode',
+        'vector.reranker',
+        'vector.rerank_ms',
+        'vector.rerank_candidates',
+        'vector.rerank_status',
     ];
 
     /**
@@ -61,6 +67,10 @@ final class VectorSpanSchema
             $attributes['vector.search_mode'] = $context->searchMode;
         }
 
+        if ($context->reranker !== null) {
+            $attributes['vector.reranker'] = $context->reranker;
+        }
+
         self::assertOnlyFrozenKeys($attributes);
 
         return $attributes;
@@ -68,13 +78,20 @@ final class VectorSpanSchema
 
     /**
      * @param  array<string, int|string|float>  $attributes
+     * @param  array{ms: int, candidates: int, status: string}|null  $rerank
      */
-    public static function enrichFromResult(array &$attributes, string $operation, mixed $result, int $latencyMs, ?int $embeddingMs = null): void
+    public static function enrichFromResult(array &$attributes, string $operation, mixed $result, int $latencyMs, ?int $embeddingMs = null, ?array $rerank = null): void
     {
         $attributes['vector.latency_ms'] = $latencyMs;
 
         if ($embeddingMs !== null) {
             $attributes['vector.embedding_ms'] = $embeddingMs;
+        }
+
+        if ($rerank !== null) {
+            $attributes['vector.rerank_ms'] = $rerank['ms'];
+            $attributes['vector.rerank_candidates'] = $rerank['candidates'];
+            $attributes['vector.rerank_status'] = $rerank['status'];
         }
 
         $resultCount = self::resultCount($result);
@@ -117,7 +134,7 @@ final class VectorSpanSchema
     {
         foreach (array_keys($attributes) as $key) {
             if (! in_array($key, self::FROZEN_ATTRIBUTE_KEYS, true)) {
-                throw new \InvalidArgumentException("Vector span attribute [{$key}] is not part of the frozen v3 schema.");
+                throw new \InvalidArgumentException("Vector span attribute [{$key}] is not part of the frozen ".self::VERSION.' schema.');
             }
         }
     }

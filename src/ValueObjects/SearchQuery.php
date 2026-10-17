@@ -17,7 +17,7 @@ namespace AgenticGraph\Vector\ValueObjects;
  * - hnsw.max_scan_tuples (int): the most rows an iterative scan visits
  * - ivfflat.probes (int): IVFFlat recall vs latency
  *
- * A non-null `$keywords` makes it a hybrid search (capability Keyword): up to max(candidates, topK) vector and
+ * A non-null `$keywords` makes it a hybrid search (capability Keyword): up to max(depth, topK) vector and
  * keyword candidates each, fused by reciprocal rank fusion with `$fusionK`. `$keywordMatch` is how the keywords
  * match: `any` (documents with any of the query's words, ranked by how many and how close) or `websearch`
  * (every word, "quoted phrases", -excluded words, or). `$keywordWeight` multiplies the keyword side's fusion term
@@ -44,7 +44,7 @@ final readonly class SearchQuery
         public ?float $minScore = null,
         public array $options = [],
         public ?string $keywords = null,
-        public int $candidates = 50,
+        public int $depth = 50,
         public int $fusionK = 60,
         public string $keywordMatch = self::KEYWORD_MATCH_ANY,
         public float $keywordWeight = 0.25,

@@ -652,7 +652,7 @@ trait StoreConformanceTests
         $this->assertConformanceThrows(VectorQueryException::class, fn () => $plain->usingVector([1.0, 0.0, 0.0])->hybrid()->get(), 'needs keywords(text)');
         $this->assertConformanceThrows(VectorQueryException::class, fn () => $plain->usingVector([1.0, 0.0, 0.0])->keywords('print')->get(), 'needs hybrid()');
         $this->assertConformanceThrows(VectorQueryException::class, fn () => $plain->usingVector([1.0, 0.0, 0.0])->keywords('print')->hybrid()->get(), "Collection [{$name}] has no keyword index");
-        $this->assertConformanceThrows(VectorQueryException::class, fn () => $plain->usingVector([1.0, 0.0, 0.0])->keywords('print')->hybrid(candidates: 0)->get(), 'at least 1');
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $plain->usingVector([1.0, 0.0, 0.0])->keywords('print')->hybrid(depth: 0)->get(), 'at least 1');
     }
 
     public function test_conformance_similar_to_text_is_the_default_keyword_query(): void
@@ -1439,7 +1439,7 @@ trait StoreConformanceTests
      */
     private function keywordMatches(Builder $builder, string $keywords, ?string $match = null): array
     {
-        $hits = $builder->usingVector([1.0, 0.0, 0.0])->keywords($keywords)->hybrid(candidates: 100, match: $match)->take(100)->get()->hits;
+        $hits = $builder->usingVector([1.0, 0.0, 0.0])->keywords($keywords)->hybrid(depth: 100, match: $match)->take(100)->get()->hits;
 
         return $this->sortedIds(array_values(array_map(
             static fn ($hit): string => (string) $hit->id,

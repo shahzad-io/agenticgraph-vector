@@ -47,6 +47,25 @@ final class PgVectorSearchOptions
     }
 
     /**
+     * An HNSW scan returns at most `hnsw.ef_search` rows (pgvector's default 40), so a search that needs more (a
+     * large take(), a reranker's candidates, a hybrid list depth) raises it to $rows for this transaction. Never
+     * lowers a higher setting, and leaves a caller's own `hnsw.ef_search` option alone.
+     *
+     * @param  array<string, mixed>  $options
+     */
+    public static function raiseEfSearch(Connection $connection, array $options, int $rows): void
+    {
+        if ($rows <= 40 || array_key_exists(self::HNSW_EF_SEARCH, $options)) {
+            return;
+        }
+
+        $connection->select(
+            "SELECT set_config('hnsw.ef_search', GREATEST(COALESCE(current_setting('hnsw.ef_search', true), '40')::int, ?)::text, true)",
+            [min($rows, 1000)],
+        );
+    }
+
+    /**
      * @param  array<string, mixed>  $options
      */
     public static function apply(Connection $connection, array $options): void

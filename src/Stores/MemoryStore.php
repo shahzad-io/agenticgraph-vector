@@ -126,7 +126,7 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
             return new SearchResult(hits: $hits, count: count($hits));
         }
 
-        $limit = max($query->candidates, $query->topK);
+        $limit = max($query->depth, $query->topK);
         $keywordIds = array_map(strval(...), array_keys($keywordScores));
         usort($keywordIds, static fn (string $a, string $b): int => $keywordScores[$b] <=> $keywordScores[$a] ?: strcmp($a, $b));
         $hits = [];

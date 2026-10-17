@@ -83,6 +83,7 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
 
             return $this->connection()->transaction(function () use ($query): SearchResult {
                 PgVectorSearchOptions::apply($this->connection(), PgVectorSearchOptions::forSearch($this->config, $query->options, $query->filter !== null && $query->filter->conditions !== []));
+                PgVectorSearchOptions::raiseEfSearch($this->connection(), $query->options, $query->keywords === null ? $query->topK : max($query->topK, $query->depth));
 
                 $collection = $this->registry->resolve($query->collection);
                 $this->assertVectorDimensions($query->vector, $collection['dimensions'], $query->collection);
@@ -153,7 +154,7 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
     }
 
     /**
-     * One statement: up to max(candidates, topK) dense and keyword candidates under the same filter, with the
+     * One statement: up to max(depth, topK) dense and keyword candidates under the same filter, with the
      * vector distance of every candidate. Fusion, minScore and topK follow in PHP.
      *
      * @param  array{name: string, metric: PgVectorMetric, storage_identifier: string, keyword: array{languages: array<string, string>, language_field: string}|null}  $collection
@@ -171,7 +172,7 @@ final class PgVectorStore implements AliasStoreContract, VectorStoreContract
         $distance = "embedding {$metric->distanceOperator()} ?::vector";
         $vector = PgVectorVectorFormatter::format($query->vector);
         $filter = $this->filterTranslator->translate($query->filter);
-        $limit = max($query->candidates, $query->topK);
+        $limit = max($query->depth, $query->topK);
         $configurations = array_values(array_unique([...array_values($keyword['languages']), 'simple']));
         $parse = match ($query->keywordMatch) {
             // Any of the words: the AND of plainto_tsquery turned into an OR (lexemes are quoted, so only operators change).

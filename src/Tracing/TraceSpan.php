@@ -8,6 +8,7 @@ use AgenticGraph\Vector\Events\VectorOperationCompleted;
 use AgenticGraph\Vector\Events\VectorOperationFailed;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
+use AgenticGraph\Vector\ValueObjects\RerankResult;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use Closure;
 use Throwable;
@@ -29,6 +30,9 @@ final class TraceSpan
     private static int $depth = 0;
 
     private static ?int $embeddingMs = null;
+
+    /** @var array{ms: int, candidates: int, status: string}|null */
+    private static ?array $rerank = null;
 
     /**
      * @template TReturn
@@ -128,6 +132,7 @@ final class TraceSpan
 
         self::$depth++;
         self::$embeddingMs = null;
+        self::$rerank = null;
 
         try {
             $result = self::executeWithOptionalAgenticGraphSpan(
@@ -169,6 +174,27 @@ final class TraceSpan
     }
 
     /**
+     * Run a search's rerank. Inside an operation its time, the hits sent and `ok` or `failed_open` land on the
+     * span (`vector.rerank_*`), and the time on the event (`rerankMs`), also when the reranker throws.
+     *
+     * @param  Closure(): RerankResult  $rerank
+     */
+    public static function rerank(int $candidates, Closure $rerank): RerankResult
+    {
+        $started = hrtime(true);
+        $status = 'failed';
+
+        try {
+            $result = $rerank();
+            $status = $result->failedOpen ? 'failed_open' : 'ok';
+
+            return $result;
+        } finally {
+            self::$rerank = ['ms' => self::elapsedMilliseconds($started), 'candidates' => $candidates, 'status' => $status];
+        }
+    }
+
+    /**
      * @template TReturn
      *
      * @param  array<string, int|string|float>  $attributes
@@ -199,6 +225,7 @@ final class TraceSpan
                     $result,
                     self::elapsedMilliseconds($started),
                     self::$embeddingMs,
+                    self::$rerank,
                 );
 
                 return $result;
@@ -227,6 +254,7 @@ final class TraceSpan
             documentCount: self::documentCount($operation, $context),
             embeddingMs: self::$embeddingMs,
             searchMode: $context->searchMode,
+            rerankMs: self::$rerank['ms'] ?? null,
         ));
     }
 
@@ -249,6 +277,7 @@ final class TraceSpan
             documentCount: self::documentCount($operation, $context),
             embeddingMs: self::$embeddingMs,
             searchMode: $context->searchMode,
+            rerankMs: self::$rerank['ms'] ?? null,
         ));
     }
 

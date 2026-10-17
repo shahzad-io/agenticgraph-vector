@@ -154,8 +154,9 @@ return [
     |
     | keyword_weight multiplies the keyword side's fusion term (dense 1; 0
     | gives the dense results). 0.25 is the B6 benchmark value: it adds
-    | relevant candidates at the same budget, but lowers top-10 quality, so
-    | use hybrid as candidates for a reranker. Dense is the recommended baseline.
+    | relevant candidates at the same budget, but lowers top-10 quality, and
+    | reranked (B7) it matched reranked dense within noise. Dense plus a
+    | reranker is the recommended pipeline.
     |
     */
 
@@ -164,6 +165,72 @@ return [
         'match' => env('VECTOR_HYBRID_MATCH', 'any'),
 
         'keyword_weight' => (float) env('VECTOR_HYBRID_KEYWORD_WEIGHT', 0.25),
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Reranking
+    |--------------------------------------------------------------------------
+    |
+    | Named rerankers for ->rerank(using: 'name') and Vector::reranker('name').
+    | Each entry names its driver: cohere, voyage, prism (an LLM through
+    | Prism), null (input order), deterministic (query word overlap, for
+    | tests), or one registered with Vector::rerankers()->extend(). There is
+    | no default: rerank() without a name needs VECTOR_RERANK_PROVIDER.
+    | The entry names below are examples; pick your own.
+    |
+    | fail_open: on a reranker error or timeout, the search returns its own
+    | first take() hits (no rerank score) and fires VectorRerankFailed.
+    | false lets the exception through. timeout (seconds) applies to every
+    | reranker request; an entry's own timeout overrides it.
+    |
+    */
+
+    'rerank' => [
+
+        'default' => env('VECTOR_RERANK_PROVIDER') ?: null,
+
+        'fail_open' => (bool) env('VECTOR_RERANK_FAIL_OPEN', true),
+
+        'timeout' => (int) env('VECTOR_RERANK_TIMEOUT', 5),
+
+        'providers' => [
+
+            'cohere' => [
+                'driver' => 'cohere',
+                // No default model: set one, for example rerank-v4.0-pro.
+                'model' => env('VECTOR_RERANK_COHERE_MODEL'),
+                'api_key' => env('COHERE_API_KEY'),
+            ],
+
+            'voyage' => [
+                'driver' => 'voyage',
+                // No default model: set one, for example rerank-3.
+                'model' => env('VECTOR_RERANK_VOYAGE_MODEL'),
+                'api_key' => env('VOYAGE_API_KEY'),
+            ],
+
+            'llm' => [
+                'driver' => 'prism',
+                // No vendor default: set both (example: openai, gpt-4.1-mini), or provider:model in VECTOR_RERANK_PRISM_MODEL.
+                'provider' => env('VECTOR_RERANK_PRISM_PROVIDER'),
+                'model' => env('VECTOR_RERANK_PRISM_MODEL'),
+                // null when unset or empty: Prism then uses its own provider key.
+                'api_key' => env('VECTOR_RERANK_PRISM_API_KEY') ?: null,
+                // Each passage is cut to this many characters in the prompt.
+                'max_characters' => (int) env('VECTOR_RERANK_PRISM_MAX_CHARACTERS', 1500),
+            ],
+
+            'null' => [
+                'driver' => 'null',
+            ],
+
+            'deterministic' => [
+                'driver' => 'deterministic',
+            ],
+
+        ],
 
     ],
 

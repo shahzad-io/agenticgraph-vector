@@ -12,6 +12,8 @@ use AgenticGraph\Vector\Enums\FilterOperator;
 use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
+use AgenticGraph\Vector\Rerankers\InstrumentedReranker;
+use AgenticGraph\Vector\RerankManager;
 use AgenticGraph\Vector\Stores\InstrumentedStore;
 use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\Tracing\VectorTraceContext;
@@ -19,6 +21,7 @@ use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\FilterCondition;
 use AgenticGraph\Vector\ValueObjects\IdPage;
 use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
+use AgenticGraph\Vector\ValueObjects\RerankResult;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use AgenticGraph\Vector\ValueObjects\SearchResult;
 use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
@@ -50,8 +53,11 @@ final class Builder
 
     private ?string $keywords = null;
 
-    /** @var array{candidates: int, k: int, match: string, keyword_weight: float}|null */
+    /** @var array{depth: int, k: int, match: string, keyword_weight: float}|null */
     private ?array $hybrid = null;
+
+    /** @var array{reranker: InstrumentedReranker, candidates: int, query: string|null}|null */
+    private ?array $rerank = null;
 
     /** @var (callable(int, int): void)|null */
     private $onProgress = null;
@@ -60,6 +66,7 @@ final class Builder
         private readonly SearchStoreContract $store,
         private string $collection,
         private readonly EmbeddingsManager $embeddings,
+        private readonly ?RerankManager $rerankers = null,
     ) {}
 
     public function collection(string $collection): self
@@ -162,7 +169,7 @@ final class Builder
     }
 
     /**
-     * Hybrid search (capability Keyword): up to max($candidates, take()) vector and keyword candidates each, fused
+     * Hybrid search (capability Keyword): up to max($depth, take()) vector and keyword candidates each, fused
      * by reciprocal rank fusion with $k. Hits come in fused order; their `score` stays the vector similarity, and
      * minScore() applies to it for every hit. The keyword query is the similarTo() text unless keywords() sets one.
      *
@@ -173,10 +180,10 @@ final class Builder
      * $keywordWeight multiplies the keyword side's fusion term (dense weight 1). At 0 the hits are exactly the
      * dense results. Null takes `vector.hybrid.keyword_weight`.
      */
-    public function hybrid(int $candidates = 50, int $k = 60, ?string $match = null, ?float $keywordWeight = null): self
+    public function hybrid(int $depth = 50, int $k = 60, ?string $match = null, ?float $keywordWeight = null): self
     {
-        if ($candidates < 1 || $k < 1) {
-            throw new VectorQueryException('hybrid() candidates and k must be at least 1.');
+        if ($depth < 1 || $k < 1) {
+            throw new VectorQueryException('hybrid() depth and k must be at least 1.');
         }
 
         $match ??= (string) config('vector.hybrid.match', SearchQuery::KEYWORD_MATCH_ANY);
@@ -192,7 +199,32 @@ final class Builder
         }
 
         $clone = clone $this;
-        $clone->hybrid = ['candidates' => $candidates, 'k' => $k, 'match' => $match, 'keyword_weight' => $keywordWeight];
+        $clone->hybrid = ['depth' => $depth, 'k' => $k, 'match' => $match, 'keyword_weight' => $keywordWeight];
+
+        return $clone;
+    }
+
+    /**
+     * Rerank the search: the store returns max($candidates, take()) hits (dense or hybrid, minScore() already
+     * applied to the vector similarity), the reranker named $using (null: `vector.rerank.default`) orders them,
+     * and the top take() are returned. `score` stays the vector similarity; the order is `scores['rerank']`.
+     * On a reranker error or timeout with `vector.rerank.fail_open` (default true), the store's first take()
+     * hits come back and VectorRerankFailed fires.
+     *
+     * The rerank query is $query, else the similarTo() text, else the hybrid keywords() text; with usingVector() pass one.
+     */
+    public function rerank(?string $using = null, int $candidates = 30, ?string $query = null): self
+    {
+        if ($candidates < 1) {
+            throw new VectorQueryException("rerank() candidates must be at least 1. Got [{$candidates}].");
+        }
+
+        $clone = clone $this;
+        $clone->rerank = [
+            'reranker' => ($this->rerankers ?? app(RerankManager::class))->reranker($using),
+            'candidates' => $candidates,
+            'query' => $query,
+        ];
 
         return $clone;
     }
@@ -353,15 +385,17 @@ final class Builder
             $vector = TraceSpan::embedding(fn (): array => $this->embeddings->driver($provider)->embed($text));
         }
 
+        $topK = $this->rerank === null ? $this->topK : max($this->rerank['candidates'], $this->topK);
+
         return new SearchQuery(
             collection: $collection,
             vector: $vector,
             filter: $this->filter(),
-            topK: $this->topK,
+            topK: $topK,
             minScore: $this->minScore,
             options: $this->options,
             keywords: $this->hybrid === null ? null : ($this->keywords ?? $this->similarToText),
-            candidates: $this->hybrid['candidates'] ?? 50,
+            depth: $this->hybrid['depth'] ?? 50,
             fusionK: $this->hybrid['k'] ?? 60,
             keywordMatch: $this->hybrid['match'] ?? SearchQuery::KEYWORD_MATCH_ANY,
             keywordWeight: $this->hybrid['keyword_weight'] ?? 0.25,
@@ -370,13 +404,15 @@ final class Builder
 
     /**
      * Search. The query text is embedded inside the search span, so its time is the span's
-     * `vector.embedding_ms` and an embedding failure fires VectorOperationFailed.
+     * `vector.embedding_ms` and an embedding failure fires VectorOperationFailed. A rerank() runs inside
+     * the same span (`vector.rerank_*`).
      */
     public function get(): SearchResult
     {
         $this->assertQueryVectorIsSet();
         $this->assertFilterSupported($this->filter());
         $this->assertHybridIsComplete();
+        $rerankQuery = $this->rerankQuery();
 
         $context = new VectorTraceContext(
             store: $this->store instanceof InstrumentedStore ? $this->store->name() : (string) config('vector.default', 'pgvector'),
@@ -384,11 +420,23 @@ final class Builder
             topK: $this->topK,
             filterCount: count($this->filterConditions),
             searchMode: $this->hybrid !== null ? 'hybrid' : 'dense',
+            reranker: $this->rerank !== null ? $this->rerank['reranker']->name() : null,
         );
 
         return TraceSpan::operation(
             'search',
-            fn (): SearchResult => $this->store->search($this->compile()),
+            function () use ($rerankQuery): SearchResult {
+                $result = $this->store->search($this->compile());
+
+                if ($this->rerank === null || $rerankQuery === null) {
+                    return $result;
+                }
+
+                $reranker = $this->rerank['reranker'];
+                $reranked = TraceSpan::rerank(count($result->hits), fn (): RerankResult => $reranker->rerank($rerankQuery, $result->hits, $this->topK));
+
+                return new SearchResult(hits: $reranked->hits, count: count($reranked->hits), metadata: $result->metadata);
+            },
             $context,
         );
     }
@@ -430,6 +478,17 @@ final class Builder
                 'A query is required: call similarTo(text) or usingVector(vector) before get().',
             );
         }
+    }
+
+    private function rerankQuery(): ?string
+    {
+        if ($this->rerank === null) {
+            return null;
+        }
+
+        return $this->rerank['query'] ?? $this->similarToText ?? $this->keywords ?? throw new VectorQueryException(
+            'rerank() with usingVector() needs a query text: pass rerank(query: ...).',
+        );
     }
 
     private function assertHybridIsComplete(): void

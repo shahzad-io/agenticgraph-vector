@@ -39,6 +39,9 @@ final class BenchRunner
     /** Same-budget candidate recall: dense top K against hybrid fused top K (30 is the B7 reranker's candidate count). */
     public const CANDIDATE_KS = [30, 50, 100];
 
+    /** Every pipeline sends its own top 30 to the reranker (the candidate recall@30 budget); the reranker keeps TOP_K. */
+    public const RERANK_CANDIDATES = 30;
+
     /**
      * A keyword weight that puts every keyword candidate above every dense-only one, so a hybrid search's fused
      * top K is the keyword list (needs weight * (1/(k+K) - 1/(k+K+1)) > 1/(k+1): above 420 for k 60, K 100).
@@ -49,6 +52,7 @@ final class BenchRunner
         'dataset:', 'model:', 'dimensions:', 'mode:', 'concurrency:', 'warmup:', 'queries:', 'docs:',
         'truncate:', 'out:', 'compare::', 'tolerance:', 'price-per-1m-tokens:', 'report:', 'help',
         'collection:', 'child:', 'slice:', 'results:', 'filtered', 'iterative-scan:', 'match:', 'keyword-weight:', 'keep',
+        'rerank:', 'rerank-price-per-1k-searches:', 'rerank-price-per-1m-tokens:',
     ];
 
     public const USAGE = <<<'TXT'
@@ -62,6 +66,10 @@ final class BenchRunner
       --match=any,websearch      hybrid keyword match modes to sweep (default: vector.hybrid.match)
       --keyword-weight=0,0.5,1   hybrid keyword weights to sweep (default: vector.hybrid.keyword_weight);
                                  with --match or --keyword-weight, hybrid keys are hybrid:<match>:<weight>
+      --rerank=NAME              add a +rerank twin of every mode: its top 30 reranked by vector.rerank.providers.NAME
+                                 to the top 10 (cached per reranker, model, query and candidate ids; one client)
+      --rerank-price-per-1k-searches=X  reranker price per 1,000 searches (search units), for the cost section
+      --rerank-price-per-1m-tokens=X    reranker price per 1M tokens, for the cost section
       --keep                     keep the ingested collection (and its ingest numbers) for later --collection runs
       --concurrency=1,4,8        client processes per throughput run
       --warmup=20                untimed queries before the timed runs
@@ -189,13 +197,128 @@ final class BenchRunner
      * @param  array{text: string, vector: list<float>, filter: string|int|null}  $query
      * @return list<SearchHit>
      */
-    private static function searchHits(array $job, array $query): array
+    public static function searchHits(array $job, array $query): array
     {
         $builder = Vector::store('pgvector')->collection($job['collection'])->usingVector($query['vector'])->options($job['options'])->take($job['top_k']);
         $builder = $job['field'] !== null ? $builder->where($job['field'], $query['filter']) : $builder;
         $builder = $job['mode'] === 'hybrid' ? $builder->keywords($query['text'])->hybrid(match: $job['match'] ?? 'any', keywordWeight: $job['keyword_weight'] ?? 1.0) : $builder;
 
         return $builder->get()->hits;
+    }
+
+    /**
+     * The report key of a mode's reranked twin: dense+rerank, hybrid:any:0.25+rerank, dense+rerank@off.
+     */
+    public static function rerankKey(string $variant, ?string $scan): string
+    {
+        return $scan === null ? "{$variant}+rerank" : "{$variant}+rerank@{$scan}";
+    }
+
+    /**
+     * The paired reference of a report key: dense+rerank for reranked twins, dense for dense+rerank itself and for
+     * plain modes, at the same iterative scan setting.
+     */
+    public static function pairedReference(string $key): string
+    {
+        $scan = str_contains($key, '@') ? '@'.explode('@', $key, 2)[1] : '';
+        $mode = $scan === '' ? $key : explode('@', $key, 2)[0];
+
+        return ($mode !== 'dense+rerank' && str_contains($mode, '+rerank') ? 'dense+rerank' : 'dense').$scan;
+    }
+
+    /**
+     * Rerank each query's candidates to TOP_K with the named reranker, one request at a time. Results are cached in
+     * $cacheFile per query id and ordered candidate ids, with the request's time, units and tokens, so a rerun or a
+     * mode with the same candidates (hybrid at weight 0) makes no request.
+     *
+     * @param  array<string, list<SearchHit>>  $hitsByQuery  query id => candidates, best first
+     * @param  list<array{id: string, text: string}>  $queries
+     * @return array{ranked: array<string, list<string>>, stats: array{calls: int, cached: int, p50_ms: int|float|null, p95_ms: int|float|null, units: int|null, tokens: int|null, run_units: int|null, run_tokens: int|null}}
+     */
+    public static function rerankRanked(string $reranker, array $hitsByQuery, array $queries, string $cacheFile): array
+    {
+        /** @var array<string, array{ids: list<string>, ms: int, units: int|null, tokens: int|null}> $cache */
+        $cache = is_file($cacheFile) ? self::readJson($cacheFile) : [];
+        $ranked = [];
+        $entries = [];
+        $calls = 0;
+        $runUnits = [];
+        $runTokens = [];
+
+        foreach ($queries as $query) {
+            $hits = $hitsByQuery[$query['id']] ?? [];
+            $cacheKey = sha1($query['id']."\0".implode("\0", array_map(static fn (SearchHit $hit): string => (string) $hit->id, $hits)));
+
+            if (! isset($cache[$cacheKey])) {
+                $started = hrtime(true);
+                $result = Vector::reranker($reranker)->rerank($query['text'], $hits, self::TOP_K);
+                $cache[$cacheKey] = [
+                    'ids' => array_map(static fn (SearchHit $hit): string => (string) $hit->id, $result->hits),
+                    'ms' => self::ms($started),
+                    'units' => $result->units,
+                    'tokens' => $result->tokens,
+                ];
+                $calls++;
+                $runUnits[] = $result->units;
+                $runTokens[] = $result->tokens;
+                file_put_contents($cacheFile, json_encode($cache, JSON_THROW_ON_ERROR));
+            }
+
+            $ranked[$query['id']] = $cache[$cacheKey]['ids'];
+            $entries[] = $cache[$cacheKey];
+        }
+
+        $latencies = array_column($entries, 'ms');
+
+        return ['ranked' => $ranked, 'stats' => [
+            'calls' => $calls,
+            'cached' => count($entries) - $calls,
+            'p50_ms' => BenchReport::percentile($latencies, 50),
+            'p95_ms' => BenchReport::percentile($latencies, 95),
+            'units' => self::sumTokens(array_column($entries, 'units')),
+            'tokens' => self::sumTokens(array_column($entries, 'tokens')),
+            'run_units' => self::sumTokens($runUnits),
+            'run_tokens' => self::sumTokens($runTokens),
+        ]];
+    }
+
+    /**
+     * Money for $units search units and $tokens tokens at the given prices; null when neither price applies.
+     */
+    public static function rerankCost(?int $units, ?int $tokens, ?float $perThousandSearches, ?float $perMillionTokens): ?float
+    {
+        $parts = [
+            $perThousandSearches !== null && $units !== null ? $units * $perThousandSearches / 1000 : null,
+            $perMillionTokens !== null && $tokens !== null ? $tokens * $perMillionTokens / 1_000_000 : null,
+        ];
+
+        return array_filter($parts, static fn (?float $part): bool => $part !== null) === [] ? null : round(array_sum($parts), 6);
+    }
+
+    /**
+     * The rerank cost: this run's requests, and per query (every reranked mode's queries, cached ones included).
+     *
+     * @param  array<string, array<string, mixed>>  $results
+     * @return array<string, mixed>
+     */
+    private static function rerankCostSection(string $reranker, string $model, array $results, ?float $perThousandSearches, ?float $perMillionTokens): array
+    {
+        $stats = array_values(array_filter(array_map(static fn (array $result): ?array => $result['rerank'] ?? null, $results)));
+        $sum = static fn (string $field): ?int => self::sumTokens(array_column($stats, $field));
+        $queries = (int) array_sum(array_map(static fn (array $s): int => $s['calls'] + $s['cached'], $stats));
+        $all = self::rerankCost($sum('units'), $sum('tokens'), $perThousandSearches, $perMillionTokens);
+
+        return [
+            'reranker' => $reranker,
+            'model' => $model,
+            'price_per_1k_searches' => $perThousandSearches,
+            'price_per_1m_tokens' => $perMillionTokens,
+            'calls' => (int) array_sum(array_column($stats, 'calls')),
+            'units' => $sum('run_units'),
+            'tokens' => $sum('run_tokens'),
+            'run' => self::rerankCost($sum('run_units'), $sum('run_tokens'), $perThousandSearches, $perMillionTokens),
+            'per_query' => $queries === 0 || $all === null ? null : round($all / $queries, 6),
+        ];
     }
 
     /**
@@ -351,6 +474,9 @@ final class BenchRunner
         $warmup = (int) ($options['warmup'] ?? 20);
         $truncate = (int) ($options['truncate'] ?? 0);
         $price = isset($options['price-per-1m-tokens']) ? (float) $options['price-per-1m-tokens'] : null;
+        $rerank = isset($options['rerank']) ? (string) $options['rerank'] : null;
+        $rerankSearchPrice = isset($options['rerank-price-per-1k-searches']) ? (float) $options['rerank-price-per-1k-searches'] : null;
+        $rerankTokenPrice = isset($options['rerank-price-per-1m-tokens']) ? (float) $options['rerank-price-per-1m-tokens'] : null;
         $slug = trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower($model)), '-');
         $out = rtrim((string) ($options['out'] ?? '/tmp/ag2/bench'), '/');
 
@@ -439,6 +565,21 @@ final class BenchRunner
         }
 
         self::boot($driver, $embedding);
+
+        // A reranker failure aborts the run instead of failing open into the dense order.
+        $rerankModel = null;
+
+        if ($rerank !== null) {
+            config(['vector.rerank.fail_open' => false]);
+
+            try {
+                Vector::reranker($rerank)->rerank('vector-bench preflight', [new SearchHit('preflight', 1.0, 'vector-bench preflight')], 1);
+            } catch (Throwable $exception) {
+                throw new RuntimeException("Reranker [{$rerank}] preflight failed: ".$exception->getMessage(), previous: $exception);
+            }
+
+            $rerankModel = (string) config("vector.rerank.providers.{$rerank}.model", $rerank);
+        }
 
         // Embed a preflight probe only when this run embeds something: an ingest, or queries missing from the cache.
         $reused = isset($options['collection']) ? (string) $options['collection'] : null;
@@ -596,14 +737,20 @@ final class BenchRunner
                     // Same-budget candidate recall: the top K of this mode, with ef_search raised so HNSW can return K.
                     self::say("{$key}: candidate recall at ".implode(', ', self::CANDIDATE_KS));
                     $candidates = [];
-                    $perQuery[$key] = ['ndcg_at_10' => RetrievalMetrics::ndcgPerQuery($dataset['qrels'], $ranked, self::TOP_K)];
+                    $rerankHits = [];
+                    $perQuery[$key] = ['ndcg_at_10' => RetrievalMetrics::ndcgPerQuery($dataset['qrels'], $ranked, self::TOP_K), 'recall_at_5' => RetrievalMetrics::recallPerQuery($dataset['qrels'], $ranked, 5)];
 
                     foreach (self::CANDIDATE_KS as $k) {
                         $kJob = ['top_k' => $k, 'options' => $job['options'] + [PgVectorSearchOptions::HNSW_EF_SEARCH => max(40, $k)]] + $job;
                         $kRanked = [];
 
                         foreach ($queries as $query) {
-                            $kRanked[$query['id']] = self::searchIds($kJob, $query);
+                            $hits = self::searchHits($kJob, $query);
+                            $kRanked[$query['id']] = array_map(static fn (SearchHit $hit): string => (string) $hit->id, $hits);
+
+                            if ($rerank !== null && $k === self::RERANK_CANDIDATES) {
+                                $rerankHits[$query['id']] = $hits;
+                            }
                         }
 
                         $candidateRanked[$key][$k] = $kRanked;
@@ -618,17 +765,37 @@ final class BenchRunner
                         'below_take' => count(array_filter($ranked, static fn (array $ids): bool => count($ids) < self::TOP_K)),
                         'concurrency' => $runs,
                     ];
+
+                    if ($rerank !== null) {
+                        $twin = self::rerankKey($variant, $scan);
+                        self::say("{$twin}: reranking ".count($queries).' queries ('.self::RERANK_CANDIDATES.' candidates each, one client)');
+                        $reranked = self::rerankRanked($rerank, $rerankHits, $queries, "{$out}/cache/rerank.{$dataset['name']}.{$rerank}.".trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower((string) $rerankModel)), '-').'.json');
+                        $perQuery[$twin] = [
+                            'ndcg_at_10' => RetrievalMetrics::ndcgPerQuery($dataset['qrels'], $reranked['ranked'], self::TOP_K),
+                            'recall_at_5' => RetrievalMetrics::recallPerQuery($dataset['qrels'], $reranked['ranked'], 5),
+                            'candidate_recall_at_30' => $perQuery[$key]['candidate_recall_at_30'],
+                        ];
+                        $results[$twin] = [
+                            ...($settings['mode'] === 'hybrid' ? ['settings' => ['match' => $settings['match'], 'keyword_weight' => $settings['keyword_weight']]] : []),
+                            'quality' => BenchReport::quality($dataset['qrels'], $reranked['ranked']),
+                            'candidates' => $candidates,
+                            'below_take' => count(array_filter($reranked['ranked'], static fn (array $ids): bool => count($ids) < self::TOP_K)),
+                            'rerank' => ['reranker' => $rerank, 'model' => $rerankModel, 'candidates' => self::RERANK_CANDIDATES] + $reranked['stats'],
+                            'concurrency' => [],
+                        ];
+                    }
                 }
             }
 
-            // Paired per-query differences against dense at the same iterative scan setting.
+            // Paired per-query differences against dense (dense+rerank for reranked twins) at the same iterative scan setting.
             foreach (array_keys($results) as $key) {
-                $dense = str_contains($key, '@') ? 'dense@'.explode('@', $key, 2)[1] : 'dense';
+                $dense = self::pairedReference($key);
 
                 if ($key !== $dense && isset($perQuery[$dense])) {
                     $results[$key]['paired'] = [
                         'reference' => $dense,
                         'ndcg_at_10' => BenchReport::pairedBootstrap($perQuery[$key]['ndcg_at_10'], $perQuery[$dense]['ndcg_at_10']),
+                        'recall_at_5' => BenchReport::pairedBootstrap($perQuery[$key]['recall_at_5'], $perQuery[$dense]['recall_at_5']),
                         'candidate_recall_at_30' => BenchReport::pairedBootstrap($perQuery[$key]['candidate_recall_at_30'], $perQuery[$dense]['candidate_recall_at_30']),
                     ];
                 }
@@ -703,6 +870,7 @@ final class BenchRunner
                 'price_per_1m_tokens' => $price,
                 'ingest' => $price === null || $ingestTokens === null ? null : round($ingestTokens * $price / 1_000_000, 6),
                 'queries' => $price === null || $queryTokens === null ? null : round($queryTokens * $price / 1_000_000, 6),
+                'rerank' => $rerank === null ? null : self::rerankCostSection($rerank, (string) $rerankModel, $results, $rerankSearchPrice, $rerankTokenPrice),
             ],
             'infrastructure' => [
                 'php' => PHP_VERSION,

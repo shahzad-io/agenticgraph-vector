@@ -25,8 +25,10 @@ class VectorServiceProvider extends PackageServiceProvider
 
         $this->app->singleton(VectorManager::class, fn ($app): VectorManager => new VectorManager($app));
         $this->app->singleton(EmbeddingsManager::class, fn ($app): EmbeddingsManager => new EmbeddingsManager($app));
+        $this->app->singleton(RerankManager::class, fn ($app): RerankManager => new RerankManager($app));
 
         $this->app->alias(VectorManager::class, 'vector');
         $this->app->alias(EmbeddingsManager::class, 'vector.embeddings');
+        $this->app->alias(RerankManager::class, 'vector.rerank');
     }
 }

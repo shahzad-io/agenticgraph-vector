@@ -31,6 +31,12 @@ it('reads each F7 key from its env value', function (string $path, string $env, 
     'pgvector.batch_size' => ['stores.pgvector.batch_size', 'VECTOR_PGVECTOR_BATCH_SIZE', '250', 250],
     'pgvector.install_extension' => ['stores.pgvector.install_extension', 'VECTOR_PGVECTOR_INSTALL_EXTENSION', 'false', false],
     'events.enabled' => ['events.enabled', 'VECTOR_EVENTS_ENABLED', 'false', false],
+    'rerank.default' => ['rerank.default', 'VECTOR_RERANK_PROVIDER', 'cohere', 'cohere'],
+    'rerank.fail_open' => ['rerank.fail_open', 'VECTOR_RERANK_FAIL_OPEN', 'false', false],
+    'rerank.timeout (cast to int)' => ['rerank.timeout', 'VECTOR_RERANK_TIMEOUT', '12', 12],
+    'rerank cohere model' => ['rerank.providers.cohere.model', 'VECTOR_RERANK_COHERE_MODEL', 'rerank-v4.0-pro', 'rerank-v4.0-pro'],
+    'rerank voyage model' => ['rerank.providers.voyage.model', 'VECTOR_RERANK_VOYAGE_MODEL', 'rerank-3', 'rerank-3'],
+    'rerank prism model' => ['rerank.providers.llm.model', 'VECTOR_RERANK_PRISM_MODEL', 'openai:gpt-4.1-mini', 'openai:gpt-4.1-mini'],
 ]);
 
 it('keeps the current default when the env value is unset', function (string $path, string $env, mixed $default) {
@@ -44,4 +50,10 @@ it('keeps the current default when the env value is unset', function (string $pa
     'pgvector.batch_size' => ['stores.pgvector.batch_size', 'VECTOR_PGVECTOR_BATCH_SIZE', 100],
     'pgvector.install_extension' => ['stores.pgvector.install_extension', 'VECTOR_PGVECTOR_INSTALL_EXTENSION', true],
     'events.enabled' => ['events.enabled', 'VECTOR_EVENTS_ENABLED', true],
+    'guard: rerank.default has no vendor default' => ['rerank.default', 'VECTOR_RERANK_PROVIDER', null],
+    'rerank.fail_open' => ['rerank.fail_open', 'VECTOR_RERANK_FAIL_OPEN', true],
+    'rerank.timeout' => ['rerank.timeout', 'VECTOR_RERANK_TIMEOUT', 5],
+    'guard: rerank cohere model has no default' => ['rerank.providers.cohere.model', 'VECTOR_RERANK_COHERE_MODEL', null],
+    'guard: rerank voyage model has no default' => ['rerank.providers.voyage.model', 'VECTOR_RERANK_VOYAGE_MODEL', null],
+    'guard: rerank prism model has no default' => ['rerank.providers.llm.model', 'VECTOR_RERANK_PRISM_MODEL', null],
 ]);

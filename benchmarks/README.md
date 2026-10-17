@@ -36,11 +36,14 @@ PRISM_REQUEST_TIMEOUT=120 bin/vector-bench --dataset=scifact --model=openai:text
 | `--dataset` | required | A name from `datasets.json` |
 | `--model` | required | `provider:model` through Prism, or `deterministic` (plumbing checks only) |
 | `--dimensions` | provider | Sent to the provider |
-| `--mode` | `dense` | Comma separated: `dense`, `hybrid` (vector plus keyword search, the query text as keywords in match mode `any`, RRF). With `hybrid` the collection is created with keyword search. Rerank arrives with B7 |
+| `--mode` | `dense` | Comma separated: `dense`, `hybrid` (vector plus keyword search, the query text as keywords in match mode `any`, RRF). With `hybrid` the collection is created with keyword search |
 | `--filtered` | off | Filtered query set: documents get a derived field at ingest (WixQA `product`, the title before its first `:`; SciFact `bucket`, crc32 of the id modulo 20) and each query searches only its relevant documents' value. Queries whose relevant documents have more than one value, or none, are left out. The dataset files and pins are unchanged |
 | `--iterative-scan` | store config | Comma separated `off`, `relaxed_order`, `strict_order`: every mode runs once per setting (report key `mode@setting`) |
 | `--match` | `vector.hybrid.match` | Comma separated `any`, `websearch`: hybrid match modes to sweep |
 | `--keyword-weight` | `vector.hybrid.keyword_weight` | Comma separated weights (at least 0) to sweep. With `--match` or `--keyword-weight`, hybrid report keys are `hybrid:<match>:<weight>` |
+| `--rerank` | none | A `vector.rerank.providers` name. Adds a `+rerank` twin of every mode (report keys `dense+rerank`, `hybrid:any:0.25+rerank`, `mode+rerank@setting`): each query's own top 30 of that mode reranked to the top 10, one request at a time. Fail-open is off for the run, and a preflight rerank request checks the key and model |
+| `--rerank-price-per-1k-searches` | none | Reranker price per 1,000 search units (Cohere), for the cost section |
+| `--rerank-price-per-1m-tokens` | none | Reranker price per 1M tokens (Voyage, an LLM), for the cost section |
 | `--keep` | off | Keep the ingested collection; a later `--collection` run reuses it with no embedding calls when the query vectors are cached, and reports the ingest that built it |
 | `--concurrency` | `1,4,8` | Client processes per throughput run |
 | `--warmup` | `20` | Untimed queries before the timed runs |
@@ -61,7 +64,8 @@ Preflight checks the env keys, pgvector, the dataset checksums and one embedding
 2. Index build time is a timed `REINDEX` of the embedding index (HNSW grows during inserts, so it has no separate build step). Storage is `pg_table_size` and `pg_indexes_size`.
 3. Embeds each query once (one call per query, timed) and caches the vectors in `<out>/cache/` per dataset, model and dimensions.
 4. Runs the warmup, then for each concurrency level starts N processes that wait at a ready/go barrier and search with the cached vectors (`usingVector`), so the latency is store time only. Children write one JSON line per query; the parent merges them.
-5. Samples the pgvector container's memory (`docker stats`) during the run, and drops the collection at the end.
+5. With `--rerank`, reranks each mode's top 30 per query (the candidate recall@30 search) to the top 10, sequentially, and caches the result in `<out>/cache/rerank.<dataset>.<reranker>.<model>.json` per query id and ordered candidate ids, with the request's time, units and tokens. A rerun, or a mode with the same candidates (hybrid at keyword weight 0), makes no request.
+6. Samples the pgvector container's memory (`docker stats`) during the run, and drops the collection at the end.
 
 ## Report
 
@@ -69,10 +73,11 @@ Preflight checks the env keys, pgvector, the dataset checksums and one embedding
 
 - Quality (from the run's rankings, top 10): nDCG@10, recall@1/5/10 (BEIR: relevant found in the top k divided by all relevant), hit@1/5/10 (any relevant in the top k), MRR@10. Every mode is shown, each as a delta against the first one (`dense` when it ran), and the number of queries that returned fewer than 10 hits per mode. A filtered run names its field and query count, and is compared only with a filtered baseline.
 - Candidate recall at the same budget: recall@30 (the reranker's default candidate count), @50 and @100 of each mode's own top K (`hnsw.ef_search` raised to K). The raw union of the dense and keyword top K is reported separately with its document count (up to 2K); it is not a same-budget comparison.
-- Paired differences against dense: per-query nDCG@10 and candidate recall@30, mean and a seeded bootstrap 95% interval (10,000 resamples).
+- Paired differences: per-query nDCG@10, recall@5 and candidate recall@30, mean and a seeded bootstrap 95% interval (10,000 resamples), against `dense` (`dense+rerank` for `+rerank` modes) at the same iterative scan setting. A `+rerank` mode's candidate recall is its base mode's (the same candidates).
+- Reranking (with `--rerank`): per `+rerank` mode, requests made and cached, rerank latency p50/p95 (one client; measured when the request was made, so cached entries keep their original time), units and tokens. Higher concurrency is not run for reranking: it would measure the vendor's rate limiter.
 - Query performance: QPS and p50/p95/p99 store latency per concurrency level; query embedding latency separately.
 - Ingestion: documents per second, embedding time, index rebuild time.
-- Resources, cost (calls, tokens, and the price you give), infrastructure versions.
+- Resources, cost (calls, tokens, and the price you give; with `--rerank`, this run's rerank requests and the cost per query), infrastructure versions.
 
 ## Baselines
 

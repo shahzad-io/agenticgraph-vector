@@ -1,6 +1,6 @@
 ---
 name: agenticgraph-vector
-description: "Use AgenticGraph vector search: named stores and configuration, the memory store for tests, ingestion and batch ingestion, metadata updates, retrieval, filters and SearchQuery, listing ids, building RAG nodes, score handling, capability discovery, the store conformance suite, aliases and zero-downtime collection migration (vector:migrate), hybrid search (keyword plus vector, hybrid(), keywords()), HNSW iterative scan, vector span attributes, and vector exceptions."
+description: "Use AgenticGraph vector search: named stores and configuration, the memory store for tests, ingestion and batch ingestion, metadata updates, retrieval, filters and SearchQuery, listing ids, building RAG nodes, score handling, capability discovery, the store conformance suite, aliases and zero-downtime collection migration (vector:migrate), hybrid search (keyword plus vector, hybrid(), keywords()), reranking (rerank(), Vector::reranker(), Cohere, Voyage, an LLM through Prism), HNSW iterative scan, vector span attributes, and vector exceptions."
 ---
 
 # AgenticGraph Vector
@@ -55,7 +55,10 @@ Docs: `/docs/vector-installation`
 | `stores.pgvector.registry_table` | `vector_collection_registry` | Name, dimensions, metric per collection |
 | `embeddings.default` | `prism` | Prism. No vendor default: set `VECTOR_EMBEDDINGS_PRISM_PROVIDER` and `VECTOR_EMBEDDINGS_MODEL` (example: `openai`, `text-embedding-3-small`), or the first embedding call throws. `dimensions` null (unset) asks the provider: one extra embed call per process when a collection is created without dimensions. Set `VECTOR_EMBEDDINGS_DIMENSIONS` to skip it. `api_key` null means Prism's provider key (e.g. `OPENAI_API_KEY`). |
 | `embeddings.providers.deterministic` | 8 dims | Local hashes for tests. Never tune scores on it. |
-| `events.enabled` | `true` | `VectorOperationCompleted` / `VectorOperationFailed` / `VectorEmbeddingCompleted` |
+| `events.enabled` | `true` | `VectorOperationCompleted` / `VectorOperationFailed` / `VectorEmbeddingCompleted` / `VectorRerankCompleted` / `VectorRerankFailed` |
+| `rerank.default` | none | Reranker used by `rerank()` without a name. `VECTOR_RERANK_PROVIDER`; unset, `rerank()` without `using:` throws. |
+| `rerank.fail_open` | `true` | On a reranker error or timeout, return the store order. `VECTOR_RERANK_FAIL_OPEN` |
+| `rerank.timeout` | `5` | Seconds per rerank request. `VECTOR_RERANK_TIMEOUT` |
 
 - `stores.memory` (driver `memory`) is a reference store in plain PHP: exact search, pgvector's score math and capabilities, data for the life of the process. For app tests: `VECTOR_STORE=memory` with `VECTOR_EMBEDDINGS_PROVIDER=deterministic`. Not for production.
 - The managers keep the first resolved store and provider, including on Octane and in long-lived workers. Static config is fine. After `config([...])` at runtime, reset them: [references/ingestion.md](references/ingestion.md#runtime-config).
@@ -171,7 +174,7 @@ Vector::store('pgvector')->createCollection(new CollectionDefinition(name: 'help
 $results = Vector::store('pgvector')
     ->collection('help_center')
     ->similarTo('Where is the Print Certification button?')
-    ->hybrid()                    // candidates: 50, k: 60, match: 'any', keywordWeight: 0.25
+    ->hybrid()                    // depth: 50, k: 60, match: 'any', keywordWeight: 0.25
     ->minScore(0.3)
     ->take(5)
     ->get();
@@ -180,8 +183,8 @@ $results->first()?->scores;       // ['vector' => float, 'keyword' => ?float, 'f
 ```
 
 - Needs the `Keyword` capability (pgvector, memory) and a collection with `keyword: true`. An existing collection gets it with `php artisan vector:migrate {name} --keyword` (a copy, no embedding calls). Hybrid on a collection without it throws `VectorQueryException`.
-- Vector and Postgres full text candidates (up to `max(candidates, take)` each, same filter) are fused by weighted reciprocal rank fusion: `1 / (k + dense rank) + keywordWeight / (k + keyword rank)`. `keywordWeight` defaults to `vector.hybrid.keyword_weight` (0.25); 0 gives exactly the dense results.
-- Measured (B6): hybrid did not beat dense on top-10 quality across benchmarks; it adds relevant candidates at the same budget (recall@30). Recommend dense as the baseline and hybrid as candidates for a reranker; never switch an app to hybrid without its golden set showing a gain.
+- Vector and Postgres full text candidates (up to `max(depth, take)` each, same filter) are fused by weighted reciprocal rank fusion: `1 / (k + dense rank) + keywordWeight / (k + keyword rank)`. `keywordWeight` defaults to `vector.hybrid.keyword_weight` (0.25); 0 gives exactly the dense results.
+- Measured (B6, B7): hybrid did not beat dense on top-10 quality, and reranked hybrid matched reranked dense within noise on help-center benchmarks (Cohere and Voyage). Recommend dense plus a reranker; never switch an app to hybrid without its golden set showing a gain.
 - `score` stays the vector similarity; `minScore()` applies to it for every hit. Hits come in fused order, not by `score`. Never threshold `scores['fused']` (at most about 0.033) or `scores['keyword']`.
 - Match mode: `hybrid(match: 'any')` (default, `vector.hybrid.match`) matches documents with any of the query's words, ranked by `ts_rank_cd`; use it for questions. `hybrid(match: 'websearch')` needs every word and reads `"phrases"`, `-excluded`, `or`; use it for search-box input. Questions in `websearch` mode rarely match anything.
 - `keywords('...')` sets the keyword query; it defaults to the `similarTo()` text and is required with `usingVector()`.
@@ -189,6 +192,33 @@ $results->first()?->scores;       // ['vector' => float, 'keyword' => ?float, 'f
 - The memory store matches with `simple` semantics for every document, in both modes.
 
 Docs: `/docs/vector-guide-hybrid-search`
+
+## Reranking
+
+```php
+use AgenticGraph\Vector\Facades\Vector;
+
+$results = Vector::store('pgvector')
+    ->collection('help_center')
+    ->similarTo('How do I print my certificate?')
+    ->minScore(0.3)                           // on the vector similarity, before reranking
+    ->rerank(using: 'cohere', candidates: 30) // a vector.rerank.providers name
+    ->take(5)
+    ->get();
+
+$results->first()?->scores;                   // ['vector' => float, 'rerank' => ?float]
+```
+
+- The store returns `max(candidates, take)` hits (vector or hybrid), the reranker orders them, the top `take` come back. Works on every store; no capability.
+- Measured (B7, top 30 reranked to 10): nDCG@10 +0.06 to +0.20 over dense on three benchmarks. Voyage `rerank-3` scored slightly above Cohere `rerank-v4.0-pro` at a third to a fifth of the price; both add about 1.3 s per search (p50). An LLM through `prism` adds about 2.9 s.
+- Drivers in `vector.rerank.providers`: `cohere` (`VECTOR_RERANK_COHERE_MODEL`, `COHERE_API_KEY`), `voyage` (`VECTOR_RERANK_VOYAGE_MODEL`, `VOYAGE_API_KEY`), `prism` (an LLM: `VECTOR_RERANK_PRISM_PROVIDER`, `VECTOR_RERANK_PRISM_MODEL`), `null` (store order) and `deterministic` (query word overlap) for tests. No default reranker or model; config entry names are examples.
+- `score` stays the vector similarity; keep thresholds on it. Order by `scores['rerank']`; its scale depends on the reranker. Never threshold it with a vector threshold.
+- The rerank query is the `similarTo()` text; with `usingVector()` pass `rerank(query: ...)`. `hybrid(depth: ...)` is per-list depth before fusion, `rerank(candidates: ...)` is what the reranker reads.
+- `fail_open` (default): an error or timeout returns the store's first `take` hits without `scores['rerank']` and fires `VectorRerankFailed`; the search does not throw.
+- Several searches per question: merge hits by id, then `Vector::reranker('cohere')->rerank($query, $hits, 5)` once (`RerankResult`: `hits`, `model`, `units`, `tokens`, `failedOpen`). Never merge separately reranked lists by rerank score.
+- Own driver: implement `RerankerContract`, register with `Vector::rerankers()->extend('driver', fn ($app, array $config, string $name) => ...)`, test with `RerankerConformanceTests`.
+
+Docs: `/docs/vector-guide-reranking`
 
 ## Scores
 
@@ -279,11 +309,12 @@ Docs: `/docs/vector-reference-facades-and-builder`, `/docs/vector-configuration`
 
 Two separate channels.
 
-- **Events** (`AgenticGraph\Vector\Events`): `VectorOperationCompleted` (`operation`, `store`, `collection`, `durationMs`, `resultCount`, `documentCount`, `embeddingMs`) and `VectorOperationFailed` (adds `exception`). One per store operation, collection management and store-level calls included, when `events.enabled` is on: controller, job or node, with or without AgenticGraph. `store` is the store name.
+- **Events** (`AgenticGraph\Vector\Events`): `VectorOperationCompleted` (`operation`, `store`, `collection`, `durationMs`, `resultCount`, `documentCount`, `embeddingMs`, `searchMode`, `rerankMs`) and `VectorOperationFailed` (adds `exception`). One per store operation, collection management and store-level calls included, when `events.enabled` is on: controller, job or node, with or without AgenticGraph. `store` is the store name.
 - `VectorMigrationProgressed` (`store`, `alias`, `source`, `target`, `phase`, `copied`, `total`): per migration batch and phase change. A migration is one `vector.migrate` span (`vector.result_count` is the documents copied).
 - `VectorEmbeddingCompleted` (`model`, `inputCount`, `tokens`, `durationMs`): one per `embed()` / `embedBatch()` of the built-in providers; `tokens` is the provider's reported usage (null for deterministic). Use it for embedding cost.
+- `VectorRerankCompleted` (`reranker`, `model`, `documentCount`, `units`, `tokens`, `durationMs`) per rerank request, `VectorRerankFailed` (adds `exception`, `failedOpen`) on an error or timeout. Use units and tokens for rerank cost; the package never computes money.
 - **Spans**: a `vector` span named `vector.{operation}` exists only when the call runs inside an AgenticGraph node and AgenticGraph tracing is on. It nests under the node.
-- Span attributes (schema v2) are counts and timings, never query text or document bodies: `vector.store`, `vector.collection`, `vector.operation`, `vector.top_k`, `vector.result_count`, `vector.latency_ms`, `vector.embedding_ms`, `vector.score_min`, `vector.score_max`, `vector.filter_count`.
+- Span attributes (schema v4) are counts and timings, never query text or document bodies: `vector.store`, `vector.collection`, `vector.operation`, `vector.top_k`, `vector.result_count`, `vector.latency_ms`, `vector.embedding_ms`, `vector.score_min`, `vector.score_max`, `vector.filter_count`, `vector.search_mode`, and on reranked searches `vector.reranker`, `vector.rerank_ms`, `vector.rerank_candidates`, `vector.rerank_status` (`ok` or `failed_open`).
 - A `similarTo()` search embeds inside its span: `vector.embedding_ms` (event `embeddingMs`) is that part of the latency, and an embedding failure fires `VectorOperationFailed` for the search. Upsert and insert put the document embedding time there too.
 - Without AgenticGraph installed, search runs and events fire with no span overhead.
 - Turning tracing on, drivers, and seeing the span in tests: use the `agenticgraph-tracing` skill.
