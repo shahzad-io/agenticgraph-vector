@@ -1,6 +1,6 @@
 ---
 name: agenticgraph-vector
-description: "Use AgenticGraph vector search: named stores and configuration, the memory store for tests, ingestion and batch ingestion, queued ingest (queue()->upsert(), vector:ingest:resume), metadata updates, retrieval, filters and SearchQuery, listing ids, building RAG nodes, score handling, capability discovery, the store conformance suite, aliases and zero-downtime collection migration (vector:migrate), hybrid search (keyword plus vector, hybrid(), keywords()), reranking (rerank(), Vector::reranker(), Cohere, Voyage, an LLM through Prism), HNSW iterative scan, vector span attributes, and vector exceptions."
+description: "Use AgenticGraph vector search: named stores and configuration, the memory store for tests, ingestion and batch ingestion, chunking long documents (TextSplitter, upsertChunks(), collapse()), queued ingest (queue()->upsert(), vector:ingest:resume), metadata updates, retrieval, filters and SearchQuery, listing ids, building RAG nodes, score handling, capability discovery, the store conformance suite, aliases and zero-downtime collection migration (vector:migrate), hybrid search (keyword plus vector, hybrid(), keywords()), reranking (rerank(), Vector::reranker(), Cohere, Voyage, an LLM through Prism), HNSW iterative scan, vector span attributes, and vector exceptions."
 ---
 
 # AgenticGraph Vector
@@ -59,6 +59,7 @@ Docs: `/docs/vector-installation`
 | `rerank.default` | none | Reranker used by `rerank()` without a name. `VECTOR_RERANK_PROVIDER`; unset, `rerank()` without `using:` throws. |
 | `rerank.fail_open` | `true` | On a reranker error or timeout, return the store order. `VECTOR_RERANK_FAIL_OPEN` |
 | `rerank.timeout`, `rerank.retries`, `rerank.retry_sleep_ms` | `5`, `2`, `500` | Total seconds per rerank, retries included (429, 5xx, timeouts), then fail-open. `VECTOR_RERANK_TIMEOUT`, `VECTOR_RERANK_RETRIES`, `VECTOR_RERANK_RETRY_SLEEP_MS` |
+| `collapse.overfetch` | `3` | Chunks fetched per requested hit by `collapse()`. `VECTOR_COLLAPSE_OVERFETCH` |
 | `queue.connection`, `queue.queue` | none | Queue for `queue()->upsert()`; unset uses the app's default. `VECTOR_QUEUE_CONNECTION`, `VECTOR_QUEUE` |
 | `queue.tries`, `queue.backoff`, `queue.timeout` | `3`, `[10, 30, 60]`, `60` | Per batch job. The timeout must be below the connection's `retry_after` and above the Prism provider's `timeout` + 5 s (defaults pass). Inside the job the provider's retries are off; tries and backoff retry the batch. `VECTOR_QUEUE_TRIES`, `VECTOR_QUEUE_TIMEOUT` |
 
@@ -138,6 +139,31 @@ Vector::store('pgvector')
 - More: [references/ingestion.md](references/ingestion.md).
 
 Docs: `/docs/vector-guide-batch-ingestion`, `/docs/vector-guide-queued-ingest`, `/docs/vector-quick-start`
+
+## Chunking long documents
+
+```php
+use AgenticGraph\Vector\Ingest\TextSplitter;
+
+$splitter = new TextSplitter(size: 2000, overlap: 200); // characters, about 500 English tokens
+
+Vector::store('pgvector')->collection('articles')
+    ->upsertChunks([Document::make('kb-42', $body, ['title' => 'Custom domains'])], $splitter);
+
+$results = Vector::store('pgvector')->collection('articles')
+    ->similarTo($question)
+    ->rerank(using: 'voyage', candidates: 50) // optional; chunks are reranked, then collapsed
+    ->collapse('parent_id')
+    ->take(5)
+    ->get();
+```
+
+- Chunk only documents too long to embed whole (with a reranker, whole help-center articles ranked better than chunks at 30, 50 and 100 candidates). With chunks, raise rerank candidates: 30 chunks hold about 24 documents; start at 50. Chunk ids are `{parentId}#{n}`; metadata is the parent's plus `parent_id` and `chunk`.
+- Re-ingest with `upsertChunks()` again: it upserts the new chunks, then deletes that parent's chunks with `chunk` >= the new count, so the document stays findable. It refuses `queue()`; for a first queued load, `queue()->upsert(array_merge(...array_map($splitter->chunk(...), $documents)))`.
+- Always `collapse('parent_id')` a chunk search: one hit per document, its best chunk as `content`. It fetches `vector.collapse.overfetch` (3) x take() chunks; fewer hits come back when they hold fewer documents.
+- Cite `metadata['parent_id']` and the parent's title or source field, never the chunk id.
+
+Docs: `/docs/vector-guide-chunking`
 
 ## Retrieval
 

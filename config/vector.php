@@ -291,6 +291,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Collapse
+    |--------------------------------------------------------------------------
+    |
+    | ->collapse('parent_id') keeps the best chunk per parent document. The
+    | search fetches overfetch x take() chunks first (with rerank(), at least
+    | that many candidates), so take() parents usually survive the collapse;
+    | when they do not, fewer hits come back.
+    |
+    */
+
+    'collapse' => [
+
+        'overfetch' => (int) env('VECTOR_COLLAPSE_OVERFETCH', 3),
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Events
     |--------------------------------------------------------------------------
     |

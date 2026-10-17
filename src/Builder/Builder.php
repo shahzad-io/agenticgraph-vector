@@ -13,6 +13,7 @@ use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Ingest\QueuedIngest;
+use AgenticGraph\Vector\Ingest\TextSplitter;
 use AgenticGraph\Vector\Rerankers\InstrumentedReranker;
 use AgenticGraph\Vector\RerankManager;
 use AgenticGraph\Vector\Stores\InstrumentedStore;
@@ -60,6 +61,9 @@ final class Builder
 
     /** @var array{reranker: InstrumentedReranker, candidates: int, query: string|null}|null */
     private ?array $rerank = null;
+
+    /** @var array{field: string, overfetch: int}|null */
+    private ?array $collapse = null;
 
     /** @var (callable(int, int): void)|null */
     private $onProgress = null;
@@ -235,6 +239,26 @@ final class Builder
     }
 
     /**
+     * One hit per parent: the search fetches `vector.collapse.overfetch` (default 3) x take() hits (with rerank(),
+     * at least that many candidates, all reranked), keeps the first hit per value of metadata $field in result
+     * order (the best-scoring chunk of each parent; a hit without the field stands for itself) and returns the
+     * top take(). Fewer come back when the fetched hits hold fewer parents.
+     */
+    public function collapse(string $field = 'parent_id'): self
+    {
+        $overfetch = (int) config('vector.collapse.overfetch', 3);
+
+        if ($overfetch < 1) {
+            throw new VectorQueryException("vector.collapse.overfetch must be at least 1. Got [{$overfetch}].");
+        }
+
+        $clone = clone $this;
+        $clone->collapse = ['field' => $field, 'overfetch' => $overfetch];
+
+        return $clone;
+    }
+
+    /**
      * The keyword query of a hybrid() search. In `websearch` match mode it is web search syntax: words (all must
      * match), "quoted phrases", -excluded words, or; in `any` mode operators are ignored. Required with usingVector().
      */
@@ -313,6 +337,46 @@ final class Builder
         $this->documentStore()->upsert($this->collection, array_values($lastCopies), $globalMetadata, $this->onProgress);
 
         return null;
+    }
+
+    /**
+     * Split each parent with $splitter and replace its chunks (TextSplitter::chunk()): upsert the new chunks, then
+     * delete the parent's chunks from the new count on (`parent_id` = id and `chunk` >= count), so a search finds
+     * the parent at every moment. A parent with blank text loses all its chunks. Not with queue(): the delete
+     * would run before the batches.
+     *
+     * @param  list<Document>  $parents
+     * @param  array<string, mixed>  $globalMetadata
+     */
+    public function upsertChunks(array $parents, TextSplitter $splitter, array $globalMetadata = []): void
+    {
+        if ($this->queued !== null) {
+            throw new VectorUnsupportedOperationException('upsertChunks() cannot queue: the stale chunks would be deleted before the new ones are written. Split with TextSplitter::chunk() and queue() an upsert() instead.');
+        }
+
+        $this->documentStore();
+        $this->assertSupported(StoreCapability::DeleteByFilter, 'Replacing chunks');
+        $this->assertSupported(StoreCapability::FilterRange, 'Replacing chunks');
+
+        $chunks = [];
+        $counts = [];
+
+        foreach ($parents as $parent) {
+            $parentChunks = $splitter->chunk($parent);
+            $counts[(string) $parent->id] = count($parentChunks);
+            array_push($chunks, ...$parentChunks);
+        }
+
+        if ($chunks !== []) {
+            $this->upsert($chunks, $globalMetadata);
+        }
+
+        foreach ($counts as $parentId => $count) {
+            $this->deleteByFilter(new NormalizedFilter([
+                new FilterCondition('parent_id', FilterOperator::Equals, (string) $parentId),
+                new FilterCondition('chunk', FilterOperator::GreaterThanOrEqual, $count),
+            ]));
+        }
     }
 
     /**
@@ -413,7 +477,7 @@ final class Builder
             $vector = TraceSpan::embedding(fn (): array => $this->embeddings->driver($provider)->embed($text));
         }
 
-        $topK = $this->rerank === null ? $this->topK : max($this->rerank['candidates'], $this->topK);
+        $topK = $this->rerank === null ? $this->fetchCount() : max($this->rerank['candidates'], $this->fetchCount());
 
         return new SearchQuery(
             collection: $collection,
@@ -456,14 +520,19 @@ final class Builder
             function () use ($rerankQuery): SearchResult {
                 $result = $this->store->search($this->compile());
 
-                if ($this->rerank === null || $rerankQuery === null) {
+                if ($this->rerank !== null && $rerankQuery !== null) {
+                    $reranker = $this->rerank['reranker'];
+                    $reranked = TraceSpan::rerank(count($result->hits), fn (): RerankResult => $reranker->rerank($rerankQuery, $result->hits, $this->fetchCount()));
+                    $result = new SearchResult(hits: $reranked->hits, count: count($reranked->hits), metadata: $result->metadata);
+                }
+
+                if ($this->collapse === null) {
                     return $result;
                 }
 
-                $reranker = $this->rerank['reranker'];
-                $reranked = TraceSpan::rerank(count($result->hits), fn (): RerankResult => $reranker->rerank($rerankQuery, $result->hits, $this->topK));
+                $hits = array_slice($result->unique($this->collapse['field'])->hits, 0, $this->topK);
 
-                return new SearchResult(hits: $reranked->hits, count: count($reranked->hits), metadata: $result->metadata);
+                return new SearchResult(hits: $hits, count: count($hits), metadata: $result->metadata);
             },
             $context,
         );
@@ -472,6 +541,14 @@ final class Builder
     public function store(): SearchStoreContract
     {
         return $this->store;
+    }
+
+    /**
+     * Hits the search keeps before collapse(): take(), or take() x overfetch with collapse().
+     */
+    private function fetchCount(): int
+    {
+        return $this->collapse === null ? $this->topK : $this->topK * $this->collapse['overfetch'];
     }
 
     private function withCondition(string $field, FilterOperator $operator, mixed $value): self

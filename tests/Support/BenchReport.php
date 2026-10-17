@@ -13,7 +13,7 @@ final class BenchReport
     public const QUALITY_KEYS = ['ndcg_at_10', 'recall_at_1', 'recall_at_5', 'recall_at_10', 'hit_at_1', 'hit_at_5', 'hit_at_10', 'mrr_at_10'];
 
     /** Run settings that must match for two reports to be compared. */
-    public const COMPARABLE_KEYS = ['dataset.name', 'dataset.revision', 'model.name', 'model.dimensions', 'truncate', 'sizes.documents', 'sizes.queries', 'sizes.top_k', 'filter.field'];
+    public const COMPARABLE_KEYS = ['dataset.name', 'dataset.revision', 'model.name', 'model.dimensions', 'truncate', 'chunk', 'sizes.documents', 'sizes.queries', 'sizes.top_k', 'filter.field'];
 
     /**
      * @param  array<string, list<string>>  $qrels
@@ -162,6 +162,7 @@ final class BenchReport
             "- Dataset: {$report['dataset']['description']} (revision `{$report['dataset']['revision']}`, {$report['dataset']['license']})",
             "- Model: `{$report['model']['name']}`, {$report['model']['dimensions']} dimensions",
             '- Truncation: '.($report['truncate'] > 0 ? "{$report['truncate']} characters" : 'none'),
+            ...(isset($report['chunk']) ? ["- Chunks: {$report['chunk']['size']} characters, overlap {$report['chunk']['overlap']}, {$report['chunk']['chunks']} chunks; hits collapsed by `{$report['chunk']['collapse']}` before scoring (over-fetch {$report['chunk']['overfetch']}x, rerank before collapse)"] : []),
             "- Sizes: {$report['sizes']['documents']} documents, {$report['sizes']['queries']} queries, top {$report['sizes']['top_k']}, warmup {$report['sizes']['warmup']}".($report['sizes']['subset'] ? ' (subset)' : ''),
             "- Store: {$report['store']['name']}, `{$report['store']['index']}`",
             ...(isset($report['filter']) ? ["- Filtered set: field `{$report['filter']['field']}`, {$report['filter']['queries']} of {$report['filter']['unfiltered_queries']} queries (relevant documents share one value)"] : []),

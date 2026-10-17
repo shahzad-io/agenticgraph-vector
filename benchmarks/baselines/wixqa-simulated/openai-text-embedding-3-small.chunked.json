@@ -1,0 +1,196 @@
+{
+    "schema": 1,
+    "created_at": "2026-10-17T19:22:53+00:00",
+    "dataset": {
+        "name": "wixqa-simulated",
+        "description": "WixQA Simulated (200 queries) over the Wix KB corpus",
+        "license": "MIT",
+        "citation": "Wix.com AI Research, WixQA: A Multi-Dataset Benchmark for Enterprise Retrieval-Augmented Generation, 2025",
+        "revision": "d662dc42479c14e202eccd832f8c4b66a035c4cc",
+        "files": {
+            "corpus": "dc2c9cd21ce4ea189317f3825c2d0d59d6ce0167581b8132e20cfdcd23858ca4",
+            "queries": "ab4acc89d329499416ed53077da2ed8aeedd71316ce4f8cbce9f0a3f2d95bc6c",
+            "qrels": "342fd6583b999e390ebe57ad2effa4bfe3a9afb9834ceef8e67096bf95277dbe"
+        }
+    },
+    "model": {
+        "name": "openai:text-embedding-3-small",
+        "slug": "openai-text-embedding-3-small",
+        "dimensions": 1536
+    },
+    "truncate": 0,
+    "chunk": {
+        "size": 2000,
+        "overlap": 200,
+        "chunks": 11850,
+        "collapse": "parent_id",
+        "overfetch": 3
+    },
+    "sizes": {
+        "documents": 6221,
+        "queries": 200,
+        "top_k": 10,
+        "warmup": 20,
+        "subset": false
+    },
+    "store": {
+        "name": "pgvector",
+        "index": "CREATE INDEX vcol_172a092516a37766ba43751fdd54297c_embedding_idx ON public.vcol_172a092516a37766ba43751fdd54297c USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')",
+        "collection": "bench_6139d9f8e6fb"
+    },
+    "ingest": {
+        "measured_by": "the run that built the collection",
+        "documents": 6221,
+        "wall_ms": 480156,
+        "docs_per_second": 13,
+        "embedding_ms": 315071,
+        "embedding_calls": 119,
+        "embedding_tokens": 3195444,
+        "index_rebuild_ms": 3975
+    },
+    "query_embedding": {
+        "calls": 200,
+        "tokens": 2695,
+        "cached": false,
+        "p50_ms": 492,
+        "p95_ms": 536,
+        "p99_ms": 822
+    },
+    "filter": null,
+    "modes": {
+        "dense": {
+            "quality": {
+                "ndcg_at_10": 0.543193486804918,
+                "recall_at_1": 0.3233333333333333,
+                "recall_at_5": 0.6566666666666667,
+                "recall_at_10": 0.7725,
+                "hit_at_1": 0.345,
+                "hit_at_5": 0.69,
+                "hit_at_10": 0.795,
+                "mrr_at_10": 0.4793809523809526
+            },
+            "candidates": {
+                "recall_at_30": 0.9208333333333334,
+                "recall_at_50": 0.9575,
+                "recall_at_100": 0.985
+            },
+            "below_take": 0,
+            "concurrency": {
+                "1": {
+                    "queries": 200,
+                    "wall_ms": 526,
+                    "qps": 380,
+                    "p50_ms": 2.512,
+                    "p95_ms": 3.351,
+                    "p99_ms": 4.987
+                },
+                "4": {
+                    "queries": 200,
+                    "wall_ms": 223,
+                    "qps": 895.3,
+                    "p50_ms": 4.127,
+                    "p95_ms": 6.594,
+                    "p99_ms": 7.132
+                },
+                "8": {
+                    "queries": 200,
+                    "wall_ms": 132,
+                    "qps": 1520.3,
+                    "p50_ms": 4.593,
+                    "p95_ms": 8.812,
+                    "p99_ms": 9.975
+                }
+            }
+        },
+        "dense+rerank": {
+            "quality": {
+                "ndcg_at_10": 0.6813890313448766,
+                "recall_at_1": 0.48,
+                "recall_at_5": 0.7825,
+                "recall_at_10": 0.85,
+                "hit_at_1": 0.52,
+                "hit_at_5": 0.81,
+                "hit_at_10": 0.87,
+                "mrr_at_10": 0.641015873015873
+            },
+            "candidates": {
+                "recall_at_30": 0.9208333333333334,
+                "recall_at_50": 0.9575,
+                "recall_at_100": 0.985
+            },
+            "below_take": 0,
+            "rerank": {
+                "reranker": "voyage",
+                "model": "rerank-3",
+                "candidates": 30,
+                "collapse": "after rerank",
+                "calls": 200,
+                "cached": 0,
+                "p50_ms": 1201,
+                "p95_ms": 1629,
+                "units": null,
+                "tokens": 1703493,
+                "run_units": null,
+                "run_tokens": 1703493
+            },
+            "concurrency": [],
+            "paired": {
+                "reference": "dense",
+                "ndcg_at_10": {
+                    "mean": 0.13819554453995883,
+                    "low": 0.10241308456229184,
+                    "high": 0.1755561217588703,
+                    "queries": 200,
+                    "resamples": 10000
+                },
+                "recall_at_5": {
+                    "mean": 0.12583333333333335,
+                    "low": 0.07,
+                    "high": 0.185,
+                    "queries": 200,
+                    "resamples": 10000
+                },
+                "candidate_recall_at_30": {
+                    "mean": 0,
+                    "low": 0,
+                    "high": 0,
+                    "queries": 200,
+                    "resamples": 10000
+                }
+            }
+        }
+    },
+    "union": null,
+    "resources": {
+        "table_bytes": 113704960,
+        "index_bytes": 97878016,
+        "total_bytes": 211582976,
+        "container": "agenticgraph-vector-postgres-1",
+        "memory_mib_max": 157.3,
+        "memory_samples": 4,
+        "memory_note": null
+    },
+    "cost": {
+        "price_per_1m_tokens": 0.02,
+        "ingest": 0.063909,
+        "queries": 5.4e-5,
+        "rerank": {
+            "reranker": "voyage",
+            "model": "rerank-3",
+            "price_per_1k_searches": null,
+            "price_per_1m_tokens": 0.05,
+            "calls": 200,
+            "units": null,
+            "tokens": 1703493,
+            "run": 0.085175,
+            "per_query": 0.000426
+        }
+    },
+    "infrastructure": {
+        "php": "8.4.23",
+        "postgres": "PostgreSQL 16.14 (Debian 16.14-1.pgdg12+1) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+        "pgvector": "0.8.3",
+        "os": "Darwin 24.6.0"
+    },
+    "runtime_ms": 404710
+}

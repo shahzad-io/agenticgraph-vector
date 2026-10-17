@@ -25,6 +25,7 @@ use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Ingest\IngestBatchJob;
 use AgenticGraph\Vector\Ingest\QueuedIngest;
+use AgenticGraph\Vector\Ingest\TextSplitter;
 use AgenticGraph\Vector\Migration\CollectionMigrator;
 use AgenticGraph\Vector\Providers\DeterministicEmbeddingProvider;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
@@ -857,6 +858,89 @@ trait StoreConformanceTests
 
         $this->assertArrayNotHasKey('keyword', $dropped->definition);
         $this->assertNull($store->describeCollection($name)['keyword'] ?? null);
+    }
+
+    // Chunks and collapse
+
+    public function test_conformance_collapse_keeps_the_best_chunk_per_parent_from_an_over_fetch(): void
+    {
+        $builder = $this->vectorBuilder();
+        $builder->upsert([
+            Document::make('a#0', 'a0', ['parent_id' => 'a'], [1.0, 0.0, 0.0]),
+            Document::make('a#1', 'a1', ['parent_id' => 'a'], [0.99, 0.1, 0.0]),
+            Document::make('a#2', 'a2', ['parent_id' => 'a'], [0.98, 0.2, 0.0]),
+            Document::make('b#0', 'b0', ['parent_id' => 'b'], [0.97, 0.25, 0.0]),
+            Document::make('solo', 'solo', [], [0.9, 0.4, 0.0]),
+            Document::make('c#0', 'c0', ['parent_id' => 'c'], [0.5, 0.8, 0.0]),
+        ]);
+        $query = $builder->usingVector([1.0, 0.0, 0.0]);
+
+        $this->assertSame(['a#0', 'a#1'], $query->take(2)->get()->pluck('id'));
+        $this->assertSame(['a#0', 'b#0'], $query->take(2)->collapse()->get()->pluck('id'));
+        $this->assertSame(['a#0', 'b#0', 'solo'], $query->take(3)->collapse('parent_id')->get()->pluck('id'));
+        $this->assertSame(3, $query->take(3)->collapse()->get()->count());
+
+        config()->set('vector.collapse.overfetch', 1);
+        $this->assertSame(['a#0'], $query->take(2)->collapse()->get()->pluck('id'));
+
+        config()->set('vector.collapse.overfetch', 0);
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $query->collapse(), 'at least 1');
+    }
+
+    public function test_conformance_collapse_runs_after_rerank_on_every_fetched_candidate(): void
+    {
+        $builder = $this->vectorBuilder();
+        $builder->upsert([
+            Document::make('a#0', 'alpha', ['parent_id' => 'a'], [1.0, 0.0, 0.0]),
+            Document::make('a#1', 'alpha', ['parent_id' => 'a'], [0.95, 0.3, 0.0]),
+            Document::make('b#0', 'bravo', ['parent_id' => 'b'], [0.9, 0.4, 0.0]),
+            Document::make('b#1', 'zulu', ['parent_id' => 'b'], [0.8, 0.6, 0.0]),
+            Document::make('c#0', 'charlie', ['parent_id' => 'c'], [0.0, 1.0, 0.0]),
+        ]);
+
+        $results = $builder->usingVector([1.0, 0.0, 0.0])->take(2)->rerank('deterministic', candidates: 1, query: 'zulu')->collapse()->get();
+
+        $this->assertSame(['b#1', 'a#0'], $results->pluck('id'));
+        $this->assertSame(1.0, $results->hits[0]->scores['rerank'] ?? null);
+    }
+
+    public function test_conformance_upsert_chunks_replaces_a_parents_chunks_and_keeps_the_others(): void
+    {
+        $builder = $this->vectorBuilder(dimensions: 8);
+        $splitter = new TextSplitter(size: 20);
+        $paragraphs = static fn (int $count, string $word): string => implode("\n\n", array_map(static fn (int $n): string => "{$word} paragraph {$n}.", range(1, $count)));
+
+        $builder->upsertChunks([
+            Document::make('doc', $paragraphs(5, 'Old'), ['title' => 'Guide']),
+            Document::make(7, $paragraphs(3, 'Other')),
+        ], $splitter, ['source' => 'kb']);
+
+        $this->assertSame(['7#0', '7#1', '7#2', 'doc#0', 'doc#1', 'doc#2', 'doc#3', 'doc#4'], $this->sortedIds($builder->listIds()->ids));
+
+        $builder->upsertChunks([Document::make('doc', $paragraphs(2, 'New'), ['title' => 'Guide v2'])], $splitter, ['source' => 'kb']);
+
+        $this->assertSame(['doc#0', 'doc#1'], $this->sortedIds($builder->where('parent_id', 'doc')->listIds()->ids));
+        $this->assertSame(['7#0', '7#1', '7#2'], $this->sortedIds($builder->where('parent_id', '7')->listIds()->ids));
+
+        $chunk = $builder->fetch(['doc#1'])->first();
+        $this->assertNotNull($chunk);
+        $this->assertSame('New paragraph 2.', $chunk->content);
+        $this->assertEquals(['title' => 'Guide v2', 'source' => 'kb', 'parent_id' => 'doc', 'chunk' => 1], $chunk->metadata);
+
+        $builder->upsertChunks([Document::make('doc', " \n ")], $splitter);
+        $this->assertSame([], $builder->where('parent_id', 'doc')->listIds()->ids);
+    }
+
+    public function test_conformance_upsert_chunks_refuses_queue(): void
+    {
+        $builder = $this->vectorBuilder(dimensions: 8);
+
+        $this->assertConformanceThrows(
+            VectorUnsupportedOperationException::class,
+            fn () => $builder->queue('sync')->upsertChunks([Document::make('doc', 'text')], new TextSplitter(size: 100)),
+            'cannot queue',
+        );
+        $this->assertSame([], $builder->listIds()->ids);
     }
 
     // Delete

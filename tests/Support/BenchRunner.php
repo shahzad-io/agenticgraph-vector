@@ -9,6 +9,7 @@ use AgenticGraph\Vector\Events\VectorEmbeddingCompleted;
 use AgenticGraph\Vector\Events\VectorOperationCompleted;
 use AgenticGraph\Vector\Facades\Embeddings;
 use AgenticGraph\Vector\Facades\Vector;
+use AgenticGraph\Vector\Ingest\TextSplitter;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorSearchOptions;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
@@ -52,7 +53,7 @@ final class BenchRunner
         'dataset:', 'model:', 'dimensions:', 'mode:', 'concurrency:', 'warmup:', 'queries:', 'docs:',
         'truncate:', 'out:', 'compare::', 'tolerance:', 'price-per-1m-tokens:', 'report:', 'help',
         'collection:', 'child:', 'slice:', 'results:', 'filtered', 'iterative-scan:', 'match:', 'keyword-weight:', 'keep',
-        'rerank:', 'rerank-price-per-1k-searches:', 'rerank-price-per-1m-tokens:',
+        'rerank:', 'rerank-price-per-1k-searches:', 'rerank-price-per-1m-tokens:', 'chunk:', 'rerank-candidates:',
     ];
 
     public const USAGE = <<<'TXT'
@@ -68,6 +69,7 @@ final class BenchRunner
                                  with --match or --keyword-weight, hybrid keys are hybrid:<match>:<weight>
       --rerank=NAME              add a +rerank twin of every mode: its top 30 reranked by vector.rerank.providers.NAME
                                  to the top 10 (cached per reranker, model, query and candidate ids; one client)
+      --rerank-candidates=30     candidates per query sent to the reranker: 30, 50 or 100 (a candidate recall depth)
       --rerank-price-per-1k-searches=X  reranker price per 1,000 searches (search units), for the cost section
       --rerank-price-per-1m-tokens=X    reranker price per 1M tokens, for the cost section
       --keep                     keep the ingested collection (and its ingest numbers) for later --collection runs
@@ -75,6 +77,8 @@ final class BenchRunner
       --warmup=20                untimed queries before the timed runs
       --queries=N --docs=N       fixed smaller run (default: the whole dataset)
       --truncate=N               cut documents to N characters (0: none)
+      --chunk=SIZE,OVERLAP       split documents at ingest (TextSplitter, characters) and collapse hits to their
+                                 parent before scoring (rerank: the chunks are reranked, then collapsed)
       --out=~/ag2-scratch/bench  report folder (never inside a repo)
       --compare[=file]           fail on a quality drop against the baseline
                                  (default benchmarks/baselines/<dataset>/<model-slug>.json)
@@ -175,7 +179,15 @@ final class BenchRunner
      */
     public static function searchIds(array $job, array $query): array
     {
-        return array_map(static fn (SearchHit $hit): string => (string) $hit->id, self::searchHits($job, $query));
+        return array_map(self::parentId(...), self::searchHits($job, $query));
+    }
+
+    /**
+     * The document a hit scores as: its parent for a chunk (qrels name documents), else the hit itself.
+     */
+    public static function parentId(SearchHit $hit): string
+    {
+        return (string) ($hit->metadata['parent_id'] ?? $hit->id);
     }
 
     /**
@@ -189,11 +201,11 @@ final class BenchRunner
     {
         $hits = self::searchHits(['mode' => 'hybrid', 'keyword_weight' => self::KEYWORD_LIST_WEIGHT] + $job, $query);
 
-        return array_values(array_map(static fn (SearchHit $hit): string => (string) $hit->id, array_filter($hits, static fn (SearchHit $hit): bool => ($hit->scores['keyword'] ?? null) !== null)));
+        return array_values(array_map(self::parentId(...), array_filter($hits, static fn (SearchHit $hit): bool => ($hit->scores['keyword'] ?? null) !== null)));
     }
 
     /**
-     * @param  array{collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, match?: string, keyword_weight?: float}  $job
+     * @param  array{collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, match?: string, keyword_weight?: float, collapse?: bool}  $job
      * @param  array{text: string, vector: list<float>, filter: string|int|null}  $query
      * @return list<SearchHit>
      */
@@ -201,6 +213,7 @@ final class BenchRunner
     {
         $builder = Vector::store('pgvector')->collection($job['collection'])->usingVector($query['vector'])->options($job['options'])->take($job['top_k']);
         $builder = $job['field'] !== null ? $builder->where($job['field'], $query['filter']) : $builder;
+        $builder = ($job['collapse'] ?? false) ? $builder->collapse() : $builder;
         $builder = $job['mode'] === 'hybrid' ? $builder->keywords($query['text'])->hybrid(match: $job['match'] ?? 'any', keywordWeight: $job['keyword_weight'] ?? 1.0) : $builder;
 
         return $builder->get()->hits;
@@ -235,7 +248,7 @@ final class BenchRunner
      * @param  list<array{id: string, text: string}>  $queries
      * @return array{ranked: array<string, list<string>>, stats: array{calls: int, cached: int, p50_ms: int|float|null, p95_ms: int|float|null, units: int|null, tokens: int|null, run_units: int|null, run_tokens: int|null}}
      */
-    public static function rerankRanked(string $reranker, array $hitsByQuery, array $queries, string $cacheFile): array
+    public static function rerankRanked(string $reranker, array $hitsByQuery, array $queries, string $cacheFile, int $topN = self::TOP_K): array
     {
         /** @var array<string, array{ids: list<string>, ms: int, units: int|null, tokens: int|null}> $cache */
         $cache = is_file($cacheFile) ? self::readJson($cacheFile) : [];
@@ -247,11 +260,11 @@ final class BenchRunner
 
         foreach ($queries as $query) {
             $hits = $hitsByQuery[$query['id']] ?? [];
-            $cacheKey = sha1($query['id']."\0".implode("\0", array_map(static fn (SearchHit $hit): string => (string) $hit->id, $hits)));
+            $cacheKey = sha1($query['id']."\0".implode("\0", array_map(static fn (SearchHit $hit): string => (string) $hit->id, $hits)).($topN === self::TOP_K ? '' : "\0top{$topN}"));
 
             if (! isset($cache[$cacheKey])) {
                 $started = hrtime(true);
-                $result = Vector::reranker($reranker)->rerank($query['text'], $hits, self::TOP_K);
+                $result = Vector::reranker($reranker)->rerank($query['text'], $hits, $topN);
                 $cache[$cacheKey] = [
                     'ids' => array_map(static fn (SearchHit $hit): string => (string) $hit->id, $result->hits),
                     'ms' => self::ms($started),
@@ -280,6 +293,23 @@ final class BenchRunner
             'run_units' => self::sumTokens($runUnits),
             'run_tokens' => self::sumTokens($runTokens),
         ]];
+    }
+
+    /**
+     * Reranked chunk ids collapsed to their parents (first chunk per parent), top TOP_K.
+     *
+     * @param  array<string, list<string>>  $ranked  query id => chunk ids
+     * @param  array<string, list<SearchHit>>  $hitsByQuery  the reranked candidates, for their parents
+     * @return array<string, list<string>>
+     */
+    public static function collapseRanked(array $ranked, array $hitsByQuery): array
+    {
+        foreach ($ranked as $queryId => $ids) {
+            $parents = array_column(array_map(static fn (SearchHit $hit): array => ['id' => (string) $hit->id, 'parent' => self::parentId($hit)], $hitsByQuery[$queryId] ?? []), 'parent', 'id');
+            $ranked[$queryId] = array_slice(array_values(array_unique(array_map(static fn (string $id): string => $parents[$id] ?? $id, $ids))), 0, self::TOP_K);
+        }
+
+        return $ranked;
     }
 
     /**
@@ -473,8 +503,10 @@ final class BenchRunner
         $levels = array_map('intval', explode(',', (string) ($options['concurrency'] ?? '1,4,8')));
         $warmup = (int) ($options['warmup'] ?? 20);
         $truncate = (int) ($options['truncate'] ?? 0);
+        $splitter = isset($options['chunk']) ? new TextSplitter(...array_map('intval', explode(',', (string) $options['chunk'], 2))) : null;
         $price = isset($options['price-per-1m-tokens']) ? (float) $options['price-per-1m-tokens'] : null;
         $rerank = isset($options['rerank']) ? (string) $options['rerank'] : null;
+        $rerankCandidates = (int) ($options['rerank-candidates'] ?? self::RERANK_CANDIDATES);
         $rerankSearchPrice = isset($options['rerank-price-per-1k-searches']) ? (float) $options['rerank-price-per-1k-searches'] : null;
         $rerankTokenPrice = isset($options['rerank-price-per-1m-tokens']) ? (float) $options['rerank-price-per-1m-tokens'] : null;
         $slug = trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower($model)), '-');
@@ -504,6 +536,10 @@ final class BenchRunner
 
         if ($filtered && isset($options['collection'])) {
             throw new RuntimeException('--filtered derives document metadata at ingest, so it cannot reuse --collection.');
+        }
+
+        if (! in_array($rerankCandidates, self::CANDIDATE_KS, true)) {
+            throw new RuntimeException('--rerank-candidates takes '.implode(', ', self::CANDIDATE_KS).'.');
         }
 
         if (in_array(0, $levels, true)) {
@@ -565,6 +601,7 @@ final class BenchRunner
         }
 
         self::boot($driver, $embedding);
+        $overfetch = $splitter === null ? 1 : (int) config('vector.collapse.overfetch', 3);
 
         // A reranker failure aborts the run instead of failing open into the dense order.
         $rerankModel = null;
@@ -615,17 +652,26 @@ final class BenchRunner
         $this->sample(true);
 
         $hybrid = in_array('hybrid', $modes, true);
+        $documents = array_map(
+            static fn (array $row): Document => Document::make(
+                $row['id'],
+                BenchDataset::truncate($row['text'], $truncate),
+                self::documentMetadata($field, $field !== null ? $values[$row['id']] : null),
+            ),
+            $dataset['corpus'],
+        );
+        $documents = $splitter === null ? $documents : array_merge(...array_map($splitter->chunk(...), $documents));
 
         if ($reused === null) {
             $store->createCollection(new CollectionDefinition(name: $collection, dimensions: $dimensions, keyword: $hybrid ?: null));
-        } elseif (! $store instanceof AliasStoreContract || ($count = $store->countDocuments($reused)) !== count($dataset['corpus'])) {
-            throw new RuntimeException("--collection={$reused} must hold exactly the corpus (".count($dataset['corpus']).' documents), it holds '.($count ?? 'an unknown number of').'.');
+        } elseif (! $store instanceof AliasStoreContract || ($count = $store->countDocuments($reused)) !== count($documents)) {
+            throw new RuntimeException("--collection={$reused} must hold exactly the corpus (".count($documents).($splitter === null ? ' documents' : ' chunks').'), it holds '.($count ?? 'an unknown number of').'.');
         } elseif ($hybrid && $store->describeCollection($reused)['keyword'] === null) {
             throw new RuntimeException("--collection={$reused} has no keyword search, so --mode=hybrid cannot run. Migrate it with --keyword first.");
         }
 
         try {
-            self::say($reused === null ? "Ingesting {$dataset['name']}: ".count($dataset['corpus'])." documents into {$collection}" : "Searching {$reused} (no ingest)");
+            self::say($reused === null ? "Ingesting {$dataset['name']}: ".count($dataset['corpus']).' documents'.($splitter === null ? '' : ' as '.count($documents).' chunks')." into {$collection}" : "Searching {$reused} (no ingest)");
             $this->embedCalls = [];
             $started = hrtime(true);
             $reused !== null || $store->collection($collection)
@@ -636,14 +682,7 @@ final class BenchRunner
                         self::say("Ingested {$done}/{$total}");
                     }
                 })
-                ->upsert(array_map(
-                    static fn (array $row): Document => Document::make(
-                        $row['id'],
-                        BenchDataset::truncate($row['text'], $truncate),
-                        self::documentMetadata($field, $field !== null ? $values[$row['id']] : null),
-                    ),
-                    $dataset['corpus'],
-                ));
+                ->upsert($documents);
             $ingestMs = self::ms($started);
             $ingestCalls = $this->embedCalls;
             $this->sample(true);
@@ -695,6 +734,7 @@ final class BenchRunner
                         'mode' => $settings['mode'],
                         'field' => $field,
                         'options' => $scan === null ? [] : [PgVectorSearchOptions::HNSW_ITERATIVE_SCAN => $scan],
+                        'collapse' => $splitter !== null,
                         'queries' => $queries,
                         ...($settings['mode'] === 'hybrid' ? ['match' => $settings['match'], 'keyword_weight' => $settings['keyword_weight']] : []),
                     ];
@@ -741,15 +781,16 @@ final class BenchRunner
                     $perQuery[$key] = ['ndcg_at_10' => RetrievalMetrics::ndcgPerQuery($dataset['qrels'], $ranked, self::TOP_K), 'recall_at_5' => RetrievalMetrics::recallPerQuery($dataset['qrels'], $ranked, 5)];
 
                     foreach (self::CANDIDATE_KS as $k) {
-                        $kJob = ['top_k' => $k, 'options' => $job['options'] + [PgVectorSearchOptions::HNSW_EF_SEARCH => max(40, $k)]] + $job;
+                        $kJob = ['top_k' => $k, 'options' => $job['options'] + [PgVectorSearchOptions::HNSW_EF_SEARCH => max(40, $k * $overfetch)]] + $job;
                         $kRanked = [];
 
                         foreach ($queries as $query) {
                             $hits = self::searchHits($kJob, $query);
-                            $kRanked[$query['id']] = array_map(static fn (SearchHit $hit): string => (string) $hit->id, $hits);
+                            $kRanked[$query['id']] = array_map(self::parentId(...), $hits);
 
-                            if ($rerank !== null && $k === self::RERANK_CANDIDATES) {
-                                $rerankHits[$query['id']] = $hits;
+                            // Chunked: the reranker gets the top chunks (Builder take(10)->rerank($candidates)->collapse()).
+                            if ($rerank !== null && $k === $rerankCandidates) {
+                                $rerankHits[$query['id']] = $splitter === null ? $hits : self::searchHits(['collapse' => false] + $kJob, $query);
                             }
                         }
 
@@ -768,8 +809,9 @@ final class BenchRunner
 
                     if ($rerank !== null) {
                         $twin = self::rerankKey($variant, $scan);
-                        self::say("{$twin}: reranking ".count($queries).' queries ('.self::RERANK_CANDIDATES.' candidates each, one client)');
-                        $reranked = self::rerankRanked($rerank, $rerankHits, $queries, "{$out}/cache/rerank.{$dataset['name']}.{$rerank}.".trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower((string) $rerankModel)), '-').'.json');
+                        self::say("{$twin}: reranking ".count($queries)." queries ({$rerankCandidates} candidates each, one client)");
+                        $reranked = self::rerankRanked($rerank, $rerankHits, $queries, "{$out}/cache/rerank.{$dataset['name']}.{$rerank}.".trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower((string) $rerankModel)), '-').'.json', $splitter === null ? self::TOP_K : self::TOP_K * $overfetch);
+                        $reranked['ranked'] = $splitter === null ? $reranked['ranked'] : self::collapseRanked($reranked['ranked'], $rerankHits);
                         $perQuery[$twin] = [
                             'ndcg_at_10' => RetrievalMetrics::ndcgPerQuery($dataset['qrels'], $reranked['ranked'], self::TOP_K),
                             'recall_at_5' => RetrievalMetrics::recallPerQuery($dataset['qrels'], $reranked['ranked'], 5),
@@ -780,7 +822,10 @@ final class BenchRunner
                             'quality' => BenchReport::quality($dataset['qrels'], $reranked['ranked']),
                             'candidates' => $candidates,
                             'below_take' => count(array_filter($reranked['ranked'], static fn (array $ids): bool => count($ids) < self::TOP_K)),
-                            'rerank' => ['reranker' => $rerank, 'model' => $rerankModel, 'candidates' => self::RERANK_CANDIDATES] + $reranked['stats'],
+                            'rerank' => ['reranker' => $rerank, 'model' => $rerankModel, 'candidates' => $rerankCandidates, ...($splitter === null ? [] : [
+                                'collapse' => 'after rerank',
+                                'candidate_documents_mean' => round(array_sum(array_map(static fn (array $hits): int => count(array_unique(array_map(self::parentId(...), $hits))), $rerankHits)) / max(count($rerankHits), 1), 1),
+                            ])] + $reranked['stats'],
                             'concurrency' => [],
                         ];
                     }
@@ -799,6 +844,11 @@ final class BenchRunner
                         'candidate_recall_at_30' => BenchReport::pairedBootstrap($perQuery[$key]['candidate_recall_at_30'], $perQuery[$dense]['candidate_recall_at_30']),
                     ];
                 }
+            }
+
+            // Per-query scores, so runs over the same queries can be paired later (for example two candidate counts).
+            foreach (array_keys($results) as $key) {
+                $results[$key]['per_query'] = ['ndcg_at_10' => $perQuery[$key]['ndcg_at_10'], 'recall_at_5' => $perQuery[$key]['recall_at_5']];
             }
 
             $union = $this->rawUnion($variants, $iterative[0], $collection, $field, $queries, $dataset['qrels'], $candidateRanked);
@@ -829,6 +879,7 @@ final class BenchRunner
             ],
             'model' => ['name' => $model, 'slug' => $slug, 'dimensions' => $dimensions],
             'truncate' => $truncate,
+            'chunk' => $splitter === null ? null : ['size' => $splitter->size, 'overlap' => $splitter->overlap, 'chunks' => count($documents), 'collapse' => 'parent_id', 'overfetch' => $overfetch],
             'sizes' => [
                 'documents' => count($dataset['corpus']),
                 'queries' => count($dataset['queries']),
@@ -910,7 +961,7 @@ final class BenchRunner
         $tolerance = (float) ($options['tolerance'] ?? 0.01);
         $baselineFile = is_string($options['compare'] ?? null)
             ? $options['compare']
-            : self::ROOT.'/benchmarks/baselines/'.data_get($report, 'dataset.name').'/'.data_get($report, 'model.slug').'.json';
+            : self::ROOT.'/benchmarks/baselines/'.data_get($report, 'dataset.name').'/'.data_get($report, 'model.slug').(data_get($report, 'chunk') === null ? '' : '.chunked').'.json';
 
         if (! is_file($baselineFile)) {
             throw new RuntimeException("No baseline at {$baselineFile}.");

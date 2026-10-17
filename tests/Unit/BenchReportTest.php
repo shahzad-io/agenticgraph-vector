@@ -286,3 +286,35 @@ it('renders the rerank table, the reference column and the rerank cost', functio
         ->and($markdown)->toContain('| dense+rerank | cohere (`rerank-v4.0-pro`) | 30 | 290 (10) | 180 | 320 | 300 | n/a |')
         ->and($markdown)->toContain('- Rerank (cohere, `rerank-v4.0-pro`): 290 requests this run (290 units, n/a tokens), cost 0.725; per query 0.0025');
 });
+
+it('compares a chunked run only with a chunked baseline', function () {
+    $chunk = ['size' => 2000, 'overlap' => 200, 'chunks' => 300, 'collapse' => 'parent_id', 'overfetch' => 3];
+    $chunked = benchReport(overrides: ['chunk' => $chunk]);
+
+    expect(BenchReport::compare($chunked, benchReport(), 0.01)['failures'])->toBe(['Not comparable: chunk is '.json_encode($chunk).', the baseline has null.'])
+        ->and(BenchReport::compare($chunked, $chunked, 0.01)['failures'])->toBe([])
+        ->and(BenchReport::markdown($chunked))->toContain('- Chunks: 2000 characters, overlap 200, 300 chunks; hits collapsed by `parent_id`');
+});
+
+it('scores chunk hits as their parents and collapses reranked chunks after the rerank', function () {
+    config()->set('vector.stores.pgvector', ['driver' => 'memory']);
+    $store = Vector::store('pgvector');
+    $store->createCollection(new CollectionDefinition('bench_chunks', dimensions: 2));
+    $store->collection('bench_chunks')->upsert([
+        Document::make('a#0', 'a0', ['parent_id' => 'a'], [1.0, 0.0]),
+        Document::make('a#1', 'a1', ['parent_id' => 'a'], [0.9, 0.1]),
+        Document::make('b#0', 'b0', ['parent_id' => 'b'], [0.5, 0.5]),
+        Document::make('plain', 'plain', [], [0.0, 1.0]),
+    ]);
+    $job = ['collection' => 'bench_chunks', 'top_k' => 3, 'mode' => 'dense', 'field' => null, 'options' => []];
+    $query = ['text' => 'q', 'vector' => [1.0, 0.0], 'filter' => null];
+    $hits = BenchRunner::searchHits($job, $query);
+
+    expect(BenchRunner::searchIds($job, $query))->toBe(['a', 'a', 'b'])
+        ->and(BenchRunner::searchIds(['collapse' => true] + $job, $query))->toBe(['a', 'b', 'plain'])
+        ->and(BenchRunner::collapseRanked(['q' => ['b#0', 'a#1', 'a#0']], ['q' => $hits]))->toBe(['q' => ['b', 'a']]);
+});
+
+it('takes a rerank candidate count only at a candidate recall depth', function () {
+    (new BenchRunner)->run(['dataset' => 'wixqa-expert', 'model' => 'deterministic', 'rerank' => 'deterministic', 'rerank-candidates' => '40']);
+})->throws(RuntimeException::class, '--rerank-candidates takes 30, 50, 100.');
