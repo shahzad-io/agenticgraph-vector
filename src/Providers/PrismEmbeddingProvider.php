@@ -234,6 +234,10 @@ final class PrismEmbeddingProvider implements EmbeddingProviderContract
             $config['api_key'] = $this->config['api_key'];
         }
 
+        if (isset($this->config['url']) && is_string($this->config['url']) && $this->config['url'] !== '') {
+            $config['url'] = $this->config['url'];
+        }
+
         return $config;
     }
 

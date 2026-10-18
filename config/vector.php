@@ -95,6 +95,9 @@ return [
                 'dimensions' => env('VECTOR_EMBEDDINGS_DIMENSIONS') ? (int) env('VECTOR_EMBEDDINGS_DIMENSIONS') : null,
                 // null when unset or empty: Prism then uses its own provider key (e.g. OPENAI_API_KEY).
                 'api_key' => env('VECTOR_EMBEDDINGS_API_KEY') ?: null,
+                // null when unset or empty: Prism then uses its own base URL for the provider. Set it for an
+                // OpenAI-compatible gateway (for example LiteLLM). Per request, not global.
+                'url' => env('VECTOR_EMBEDDINGS_URL') ?: null,
                 // Seconds per request. A 429, a 5xx or a connection error or timeout is retried up to `retries`
                 // times, waiting retry_sleep_ms x 2^(retry - 1) with jitter (half to all of it), or the
                 // provider's Retry-After when longer, up to retry_after_max_ms; a longer Retry-After fails the
@@ -273,6 +276,8 @@ return [
                 'model' => env('VECTOR_RERANK_PRISM_MODEL'),
                 // null when unset or empty: Prism then uses its own provider key.
                 'api_key' => env('VECTOR_RERANK_PRISM_API_KEY') ?: null,
+                // null when unset or empty: Prism then uses its own base URL for the provider (a gateway goes here).
+                'url' => env('VECTOR_RERANK_PRISM_URL') ?: null,
                 // Each passage is cut to this many characters in the prompt.
                 'max_characters' => (int) env('VECTOR_RERANK_PRISM_MAX_CHARACTERS', 1500),
             ],

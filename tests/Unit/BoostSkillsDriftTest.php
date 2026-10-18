@@ -11,7 +11,9 @@ use Illuminate\Support\Manager;
  * - $var->method() and chains, typed from new X, return types, or the common names below;
  * - every VECTOR_* key and every key in a dotenv block, against config/vector.php.
  * Interface methods are also looked up on the src classes that implement the interface.
- * Shahzad\AgenticGraph names are not checked here; that package's own drift test covers them.
+ * - every Shahzad\AgenticGraph\... class and method the references use, from the sibling agenticgraph repo
+ *   (AGENTICGRAPH_CORE_PATH, default ../agenticgraph), loaded through core's own autoloader. Core's suite checks
+ *   its own skills; this one checks the vector skill's use of core.
  * Receivers it cannot type are skipped. Methods defined in the same code block are allowed.
  */
 
@@ -19,13 +21,36 @@ const DRIFT_VARS = [
     'results' => 'AgenticGraph\Vector\ValueObjects\SearchResult',
     'provider' => 'AgenticGraph\Vector\Contracts\EmbeddingProviderContract',
     'capabilities' => 'AgenticGraph\Vector\ValueObjects\StoreCapabilities',
+    'state' => 'Shahzad\AgenticGraph\Contracts\StateContract',
 ];
 
 const DRIFT_PREFIX = 'AgenticGraph\\Vector\\';
 
+const DRIFT_CORE_PREFIX = 'Shahzad\\AgenticGraph\\';
+
 function driftRoot(): string
 {
     return dirname(__DIR__, 2);
+}
+
+function driftCoreRoot(): string
+{
+    return getenv('AGENTICGRAPH_CORE_PATH') ?: dirname(driftRoot()).'/agenticgraph';
+}
+
+/** Core is a sibling repo, not a Composer dependency here. Its autoloader is loaded once, after this package's. */
+function driftLoadCore(): void
+{
+    static $loaded = false;
+    if ($loaded) {
+        return;
+    }
+    $loaded = true;
+    $autoload = driftCoreRoot().'/vendor/autoload.php';
+    if (! is_file($autoload)) {
+        throw new RuntimeException("Core autoload missing at {$autoload}: set AGENTICGRAPH_CORE_PATH or run composer install in agenticgraph.");
+    }
+    require_once $autoload;
 }
 
 /** @return array<string, string> skill-relative path => contents */
@@ -50,12 +75,15 @@ function driftClassIndex(): array
     if ($index !== null) {
         return $index;
     }
+    driftLoadCore();
     $index = [];
-    $dir = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(driftRoot().'/src', FilesystemIterator::SKIP_DOTS));
-    foreach ($dir as $file) {
-        $src = (string) file_get_contents($file->getPathname());
-        if (preg_match('/^namespace\s+([\w\\\\]+);/m', $src, $ns) && preg_match('/^(?:final |abstract |readonly )*(?:class|interface|enum|trait)\s+(\w+)/m', $src, $cls)) {
-            $index[$cls[1]][] = $ns[1].'\\'.$cls[1];
+    foreach ([driftRoot(), driftCoreRoot()] as $base) {
+        $dir = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($base.'/src', FilesystemIterator::SKIP_DOTS));
+        foreach ($dir as $file) {
+            $src = (string) file_get_contents($file->getPathname());
+            if (preg_match('/^namespace\s+([\w\\\\]+);/m', $src, $ns) && preg_match('/^(?:final |abstract |readonly )*(?:class|interface|enum|trait)\s+(\w+)/m', $src, $cls)) {
+                $index[$cls[1]][] = $ns[1].'\\'.$cls[1];
+            }
         }
     }
 
@@ -64,6 +92,8 @@ function driftClassIndex(): array
 
 function driftTypeExists(string $fqcn): bool
 {
+    driftLoadCore();
+
     return class_exists($fqcn) || interface_exists($fqcn) || enum_exists($fqcn) || trait_exists($fqcn);
 }
 
@@ -88,7 +118,7 @@ function driftResolve(string $name, array $uses): array
         isset($uses[$name]) => [$uses[$name]],
         default => driftClassIndex()[$name] ?? [],
     };
-    $fqcns = array_filter($fqcns, fn (string $c): bool => str_starts_with($c, DRIFT_PREFIX));
+    $fqcns = array_filter($fqcns, fn (string $c): bool => str_starts_with($c, DRIFT_PREFIX) || str_starts_with($c, DRIFT_CORE_PREFIX));
 
     return array_merge(...array_values(array_map('driftTargets', $fqcns)));
 }
@@ -213,7 +243,7 @@ function driftCheck(string $path, string $text): array
         $uses[$u[2] ?? substr(strrchr('\\'.$u[1], '\\'), 1)] = $u[1];
     }
 
-    preg_match_all('/AgenticGraph\\\\{1,2}Vector(?:\\\\{1,2}\w+)+/', $text, $fq);
+    preg_match_all('/(?:AgenticGraph\\\\{1,2}Vector|Shahzad\\\\{1,2}AgenticGraph)(?:\\\\{1,2}\w+)+/', $text, $fq);
     foreach (array_unique($fq[0]) as $name) {
         $namespace = str_replace('\\\\', '\\', $name).'\\';
         $isNamespace = array_filter(array_merge(...array_values(driftClassIndex())), fn (string $c): bool => str_starts_with($c, $namespace)) !== [];
@@ -318,6 +348,17 @@ it('gives every skill a name, a description and the docs commit it condenses', f
             ->and($m[1])->toBe(basename(dirname($path)))
             ->and($text)->toMatch('/^docs-sha: [0-9a-f]{7,40}$/m');
     }
+});
+
+it('finds the core source that the core names are checked against', function () {
+    expect(is_file(driftCoreRoot().'/vendor/autoload.php'))->toBeTrue();
+    expect(driftTypeExists('Shahzad\AgenticGraph\Contracts\StateContract'))->toBeTrue();
+});
+
+it('catches a renamed core method', function () {
+    $text = "```php\n\$state->getRenamed();\n```\nuse Shahzad\\AgenticGraph\\Contracts\\StateContract;";
+
+    expect(driftCheck('x.md', $text))->toContain('x.md: Shahzad\AgenticGraph\Contracts\StateContract::getRenamed() does not exist');
 });
 
 it('catches a renamed method', function () {

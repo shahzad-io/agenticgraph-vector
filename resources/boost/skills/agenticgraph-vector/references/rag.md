@@ -24,12 +24,15 @@ public function ask(string $question): string
         return 'I could not find anything relevant.';
     }
 
+    // Provider and model come from your config (example keys). The visitor's question is the user
+    // message only; it is never concatenated into the instructions.
     $response = Prism::text()
-        ->using('openai', 'gpt-4o')
-        ->withPrompt(
-            "Answer using ONLY the context below. If it is not enough, say so.\n\n".
-            "Question: {$question}\n\nContext:\n".$results->toContext("\n\n---\n\n")
+        ->using(config('rag.provider'), config('rag.model'))
+        ->withSystemPrompt(
+            "Answer using ONLY the context below. If it is not enough, say so.\n\nContext:\n".
+            $results->toContext("\n\n---\n\n")
         )
+        ->withPrompt($question)
         ->asText();
 
     return $response->text;

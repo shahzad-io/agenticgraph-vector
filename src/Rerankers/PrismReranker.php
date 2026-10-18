@@ -27,7 +27,7 @@ final class PrismReranker implements RerankerContract
         .'Return one entry per passage with its index and score. Judge only the passage text.';
 
     /**
-     * @param  array<string, mixed>  $config  the provider entry: provider, model (or provider:model), api_key, max_characters, timeout (total seconds, retries included), retries, retry_sleep_ms
+     * @param  array<string, mixed>  $config  the provider entry: provider, model (or provider:model), api_key, url, max_characters, timeout (total seconds, retries included), retries, retry_sleep_ms
      */
     public function __construct(
         private readonly string $name,
@@ -48,20 +48,23 @@ final class PrismReranker implements RerankerContract
             array_keys($hits),
             $hits,
         ));
-        $apiKey = (string) ($this->config['api_key'] ?? '');
+        $providerConfig = array_filter(
+            ['api_key' => (string) ($this->config['api_key'] ?? ''), 'url' => (string) ($this->config['url'] ?? '')],
+            static fn (string $value): bool => $value !== '',
+        );
 
         try {
             $response = HttpRetry::withinBudget(
                 (float) ($this->config['timeout'] ?? 5),
                 (int) ($this->config['retries'] ?? 2),
                 (int) ($this->config['retry_sleep_ms'] ?? 500),
-                function (float $seconds) use ($provider, $model, $apiKey, $query, $passages): StructuredResponse {
+                function (float $seconds) use ($provider, $model, $providerConfig, $query, $passages): StructuredResponse {
                     // Prism maps 429 and 529 without keeping the HTTP exception; the retry callback sees it first.
                     $httpError = null;
 
                     try {
                         return Prism::structured()
-                            ->using($provider, $model, $apiKey !== '' ? ['api_key' => $apiKey] : [])
+                            ->using($provider, $model, $providerConfig)
                             ->withSchema(new ObjectSchema('rankings', 'Relevance of each passage to the query', [
                                 new ArraySchema('rankings', 'One entry per passage', new ObjectSchema('ranking', 'A passage and its score', [
                                     new NumberSchema('index', 'The passage number in brackets'),
