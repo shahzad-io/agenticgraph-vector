@@ -242,9 +242,9 @@ final class InstrumentedStore implements AliasStoreContract, IndexStoreContract,
         return $this->aliasStore()->catchUpMigration($state);
     }
 
-    public function finishMigration(MigrationState $state, int $threshold): MigrationState
+    public function finishMigration(MigrationState $state, int $threshold, bool $embedInLock = true): MigrationState
     {
-        return $this->aliasStore()->finishMigration($state, $threshold);
+        return $this->aliasStore()->finishMigration($state, $threshold, $embedInLock);
     }
 
     private function aliasStore(): AliasStoreContract

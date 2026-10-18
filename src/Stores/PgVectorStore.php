@@ -664,21 +664,25 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
                 $this->connection()->statement("CREATE INDEX IF NOT EXISTS {$this->storage($target)}_keyword_idx ON {$this->storage($target)} USING gin (keywords)");
             }
 
-            return $this->catchUpPass($state, null);
+            return (int) $this->catchUpPass($state, null);
         });
     }
 
-    public function finishMigration(MigrationState $state, int $threshold): MigrationState
+    public function finishMigration(MigrationState $state, int $threshold, bool $embedInLock = true): MigrationState
     {
-        return $this->run(function () use ($state, $threshold): MigrationState {
+        return $this->run(function () use ($state, $threshold, $embedInLock): MigrationState {
             $this->preparePgVector();
 
-            return $this->connection()->transaction(function () use ($state, $threshold): MigrationState {
+            return $this->connection()->transaction(function () use ($state, $threshold, $embedInLock): MigrationState {
                 // Alias row first (waits for in-flight writes), then the table: writers lock in that order too.
                 $this->registry->lockAlias($state->alias);
                 $this->connection()->statement("LOCK TABLE {$this->storage($this->registry->resolve($state->source))} IN SHARE ROW EXCLUSIVE MODE");
 
-                $this->catchUpPass($state, $threshold);
+                // Nothing is written before the check, so returning only releases the locks.
+                if ($this->catchUpPass($state, $threshold, $embedInLock) === null) {
+                    return $state;
+                }
+
                 $this->verifyMigration($state);
 
                 $this->registry->pointAlias($state->alias, $state->target);
@@ -692,9 +696,10 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
     /**
      * Apply what the source changed since the copy: new ids and changed rows (re-embedded when the content
-     * changed in reembed mode), metadata-only changes, deleted ids. Above $threshold it throws first.
+     * changed in reembed mode), metadata-only changes, deleted ids. Above $threshold it throws first. Without
+     * $embed, rows that need embedding make it return null before writing anything.
      */
-    private function catchUpPass(MigrationState $state, ?int $threshold): int
+    private function catchUpPass(MigrationState $state, ?int $threshold, bool $embed = true): ?int
     {
         $target = $this->registry->resolve($state->target);
         $from = $this->storage($this->registry->resolve($state->source));
@@ -708,9 +713,11 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
         $metadataOnly = "FROM {$from} s JOIN {$to} t ON t.id = s.id WHERE t.content = s.content AND t.metadata IS DISTINCT FROM s.metadata";
         $missing = "FROM {$to} t WHERE NOT EXISTS (SELECT 1 FROM {$from} s WHERE s.id = t.id)";
 
-        $difference = (int) $this->connection()->scalar(
-            "SELECT (SELECT COUNT(*) {$rewrite}) + (SELECT COUNT(*) {$missing})".($reembed ? " + (SELECT COUNT(*) {$metadataOnly})" : ''),
+        /** @var object{rewrite: int|string, other: int|string} $counts */
+        $counts = $this->connection()->selectOne(
+            "SELECT (SELECT COUNT(*) {$rewrite}) AS rewrite, (SELECT COUNT(*) {$missing})".($reembed ? " + (SELECT COUNT(*) {$metadataOnly})" : '').' AS other',
         );
+        $difference = (int) $counts->rewrite + (int) $counts->other;
 
         if ($threshold !== null && $difference > $threshold) {
             throw new VectorQueryException(
@@ -720,6 +727,10 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
         if ($difference === 0) {
             return 0;
+        }
+
+        if ($reembed && ! $embed && (int) $counts->rewrite > 0) {
+            return null;
         }
 
         if ($reembed) {
@@ -795,8 +806,8 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
     /**
      * Resolve a write target inside the caller's transaction, locked until it ends. Through an alias, the alias
      * row's FOR SHARE lock holds off a migration's final pass. A plain collection has no alias row yet, so the
-     * table's ROW EXCLUSIVE lock (the one the write takes anyway, taken here before any embedding) holds it off:
-     * the final pass waits on it. A second, unlocked resolve then shows whether a migration adopting the
+     * table's ROW EXCLUSIVE lock (the one the write takes anyway, taken here before the insert) holds it off:
+     * the final pass waits on it. Writers embed before calling this, so no lock is held during an embedding. A second, unlocked resolve then shows whether a migration adopting the
      * collection switched it before the lock; only then is the new target resolved under the alias lock. The
      * alias lock is never requested while holding a table its final pass waits on (it locks alias, then table).
      *
@@ -942,16 +953,26 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
             $processed = 0;
 
             foreach ($this->chunkDocuments($documents) as $chunk) {
+                // Embed before the write locks, so a migration's final pass never waits on an embedding call.
+                $planned = $this->registry->resolve($collection);
+                $embedded = $this->resolveDocumentsWithEmbeddings($chunk, $planned['embedding']['provider'] ?? null);
+
                 // Each chunk resolves the alias in its own transaction, so a switch mid-ingest moves the rest.
                 $this->connection()->transaction(function () use (
                     $chunk,
                     $collection,
                     $globalMetadata,
                     $upsert,
+                    $planned,
+                    $embedded,
                 ): void {
                     $resolved = $this->resolveForWrite($collection);
                     $storage = $this->storage($resolved);
-                    $embedded = $this->resolveDocumentsWithEmbeddings($chunk, $resolved['embedding']['provider'] ?? null);
+
+                    // A switch landed while embedding: embed again for the new target (rare, inside the lock).
+                    if ($resolved['storage_identifier'] !== $planned['storage_identifier'] || $resolved['embedding'] !== $planned['embedding']) {
+                        $embedded = $this->resolveDocumentsWithEmbeddings($chunk, $resolved['embedding']['provider'] ?? null);
+                    }
 
                     if ($upsert) {
                         $this->bulkUpsertDocuments(

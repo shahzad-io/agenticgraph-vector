@@ -59,7 +59,9 @@ interface AliasStoreContract
 
     /**
      * Lock the source against writers, run a final pass, verify (count and a sample of ids) and switch the
-     * alias, in one step. Above $threshold differing documents nothing switches and it throws.
+     * alias, in one step. Above $threshold differing documents nothing switches and it throws. Without
+     * $embedInLock, documents that need embedding release the lock and return $state unswitched, so the
+     * caller embeds them in another unlocked pass.
      */
-    public function finishMigration(MigrationState $state, int $threshold): MigrationState;
+    public function finishMigration(MigrationState $state, int $threshold, bool $embedInLock = true): MigrationState;
 }

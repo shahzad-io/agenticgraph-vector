@@ -14,6 +14,7 @@ use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
 use AgenticGraph\Vector\Exceptions\VectorInvalidMetadataException;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Stores\InstrumentedStore;
+use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\IngestRun;
 use Illuminate\Support\Facades\Bus;
@@ -76,8 +77,9 @@ final class QueuedIngest
             'updated_at' => now(),
         ]);
 
+        $trace = TraceSpan::carry();
         $jobs = array_map(
-            static fn (array $chunk, int $index): IngestBatchJob => new IngestBatchJob($store->name(), $collection, $globalMetadata, $runId, $index, $chunk),
+            static fn (array $chunk, int $index): IngestBatchJob => new IngestBatchJob($store->name(), $collection, $globalMetadata, $runId, $index, $chunk, $trace),
             $chunks,
             array_keys($chunks),
         );

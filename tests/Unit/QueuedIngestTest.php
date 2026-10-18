@@ -20,6 +20,7 @@ use AgenticGraph\Vector\Providers\DeterministicEmbeddingProvider;
 use AgenticGraph\Vector\Stores\MemoryStore;
 use AgenticGraph\Vector\Support\MetadataValidator;
 use AgenticGraph\Vector\Testing\CountingEmbeddingProvider;
+use AgenticGraph\Vector\Tests\Support\RecordingTraceExporter;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\StoreCapabilities;
@@ -32,6 +33,9 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Sleep;
+use Shahzad\AgenticGraph\Tracing\Contracts\TracerExporter;
+use Shahzad\AgenticGraph\Tracing\TraceContext;
+use Shahzad\AgenticGraph\Tracing\Tracer;
 
 /*
  * Queued ingest through a real database queue and an in-process worker (queue:work --stop-when-empty), on an
@@ -269,6 +273,59 @@ it('guard: keeps provider retries for a queued ingest on the sync connection', f
         ->and($run->batches[0]['attempts'])->toBe(1);
     Http::assertSentCount(2);
     Sleep::assertSleptTimes(1);
+});
+
+/** Tracing on with the stub Tracer and a recording exporter; the caller's node span span_node is open under span_root in trace exec_caller. */
+function queuedInCallerTrace(): RecordingTraceExporter
+{
+    config()->set('agenticgraph.tracing.enabled', true);
+    app()->singleton(Tracer::class);
+    app()->instance(TracerExporter::class, $exporter = new RecordingTraceExporter);
+    app()->instance(TraceContext::class, $context = new TraceContext('exec_caller', 'span_root'));
+    $context->startSpan('node');
+
+    return $exporter;
+}
+
+it('carries the caller trace into each batch job: its upsert span hangs off the trace root, links to the caller span, and is sent as a continued segment', function () {
+    $exporter = queuedInCallerTrace();
+    Vector::store('queued')->collection('docs')->queue('database')->upsert(ingestDocuments(5));
+    // The caller's process moves on; the worker has no trace of its own.
+    app()->forgetInstance(TraceContext::class);
+
+    work();
+
+    $upserts = array_values(array_filter(app(Tracer::class)->spans, fn (array $span): bool => $span[0] === 'vector.upsert'));
+    expect(array_map(fn (array $span): array => [$span[2], $span[3], $span[4]], $upserts))->toBe(array_fill(0, 3, ['exec_caller', 'span_root', [['trace_id' => 'exec_caller', 'span_id' => 'span_node']]]))
+        ->and($exporter->calls)->toBe(array_merge(...array_fill(0, 3, [['resumeTrace', 'exec_caller', ['continued']], ['flush', 'exec_caller', []]])))
+        ->and(app()->bound(TraceContext::class))->toBeFalse();
+});
+
+it('keeps the original trace for a resumed batch', function () {
+    config()->set('vector.queue.tries', 1);
+    $this->embeddings->failOnBatch = 2;
+    queuedInCallerTrace();
+    $run = Vector::store('queued')->collection('docs')->queue('database')->upsert(ingestDocuments(4));
+    app()->forgetInstance(TraceContext::class);
+    work();
+    $this->embeddings->failOnBatch = null;
+    app()->instance(Tracer::class, new Tracer);
+
+    Artisan::call('vector:ingest:resume', ['run' => $run->id]);
+    work();
+
+    expect(Vector::ingestRun($run->id)->status)->toBe('completed')
+        ->and(array_map(fn (array $span): array => [$span[0], $span[2], $span[3], $span[4]], app(Tracer::class)->spans))->toBe([['vector.upsert', 'exec_caller', 'span_root', [['trace_id' => 'exec_caller', 'span_id' => 'span_node']]]]);
+});
+
+it('guard: an inline batch on the sync connection stays in the running trace and sends no segment of its own', function () {
+    $exporter = queuedInCallerTrace();
+
+    Vector::store('queued')->collection('docs')->queue('sync')->upsert(ingestDocuments(3));
+
+    expect($exporter->calls)->toBe([])
+        ->and(array_column(app(Tracer::class)->spans, 2))->each->toBe('exec_caller')
+        ->and(app(TraceContext::class)->getSpanId())->toBe('span_node');
 });
 
 it('fails an embedding error that is not retryable on its first try', function () {

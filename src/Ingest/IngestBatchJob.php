@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Ingest;
 
 use AgenticGraph\Vector\Providers\PrismEmbeddingProvider;
+use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\VectorManager;
 use Illuminate\Bus\Batchable;
@@ -30,6 +31,7 @@ final class IngestBatchJob implements ShouldQueue
     /**
      * @param  array<string, mixed>  $globalMetadata
      * @param  list<Document>  $documents  content and metadata only (queue() refuses precomputed vectors)
+     * @param  array{trace_id: string, root_span_id: string, span_id: string}|null  $trace  the caller's trace, so a retried or resumed batch stays in it
      */
     public function __construct(
         public readonly string $store,
@@ -38,6 +40,7 @@ final class IngestBatchJob implements ShouldQueue
         public readonly string $runId,
         public readonly int $index,
         public readonly array $documents,
+        public readonly ?array $trace = null,
     ) {
         $this->tries = QueuedIngest::tries();
         $this->timeout = QueuedIngest::timeout();
@@ -67,7 +70,8 @@ final class IngestBatchJob implements ShouldQueue
 
         // On a worker the job's tries and backoff retry a failed batch, so each embedding request gets one try.
         // Inline (the sync connection, no job) a batch runs once, so the provider keeps its own retries.
-        $this->job !== null ? PrismEmbeddingProvider::withoutRetries($upsert) : $upsert();
+        // Jobs queued before the trace property existed leave it uninitialized; ?? reads that as null.
+        TraceSpan::continueTrace($this->trace ?? null, fn () => $this->job !== null ? PrismEmbeddingProvider::withoutRetries($upsert) : $upsert());
 
         QueuedIngest::batchDone($this->runId, $this->index, $this->attempts());
     }

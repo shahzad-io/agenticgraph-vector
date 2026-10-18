@@ -88,13 +88,23 @@ final class CollectionMigrator
         $passes = max(1, (int) config('vector.migration.catch_up_max_passes', 10));
 
         // Writes that outpace the passes make the final pass abort above the threshold; a rerun continues.
-        for ($pass = 0; $pass < $passes; $pass++) {
-            if ($this->store->catchUpMigration($state) <= $threshold) {
+        // A final pass that finds rows to embed releases the lock for another unlocked pass; only the last
+        // pass embeds inside the lock.
+        for ($pass = 1; ; $pass++) {
+            $last = $pass >= $passes;
+
+            if ($this->store->catchUpMigration($state) > $threshold && ! $last) {
+                continue;
+            }
+
+            $finished = $this->store->finishMigration($state, $threshold, embedInLock: $last);
+
+            if ($finished->phase === 'switched' || $last) {
                 break;
             }
         }
 
-        $state = $this->store->finishMigration($state, $threshold);
+        $state = $finished;
         $this->progress($state);
 
         return $state;

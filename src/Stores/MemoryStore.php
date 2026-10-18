@@ -433,7 +433,10 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
         return $this->catchUpPass($state, null);
     }
 
-    public function finishMigration(MigrationState $state, int $threshold): MigrationState
+    /**
+     * Holds no lock, so $embedInLock changes nothing here.
+     */
+    public function finishMigration(MigrationState $state, int $threshold, bool $embedInLock = true): MigrationState
     {
         $this->catchUpPass($state, $threshold);
 

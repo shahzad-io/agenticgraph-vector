@@ -12,7 +12,7 @@ final class Tracer
     /** @var array<string, int|string|float>|null */
     public ?array $exportedAttributes = null;
 
-    /** @var list<array{0: string, 1: array<string, int|string|float>}> span names with their exported attributes */
+    /** @var list<array{0: string, 1: array<string, int|string|float>, 2: string|null, 3: string|null, 4: list<array{trace_id: string, span_id: string}>}> span names with their exported attributes, trace id, parent span id and the context links */
     public array $spans = [];
 
     /**
@@ -21,10 +21,13 @@ final class Tracer
      */
     public function span(string $name, callable $callback, array &$attributes = [], string $spanType = 'custom'): mixed
     {
-        $result = $callback();
-        $this->exportedAttributes = $attributes;
-        $this->spans[] = [$name, $attributes];
-
-        return $result;
+        // Like the real Tracer, a failed callback still records its span.
+        try {
+            return $callback();
+        } finally {
+            $this->exportedAttributes = $attributes;
+            $context = TraceContext::tryGet();
+            $this->spans[] = [$name, $attributes, $context?->getExecutionId(), $context?->getSpanId(), $context?->getLinks() ?? []];
+        }
     }
 }

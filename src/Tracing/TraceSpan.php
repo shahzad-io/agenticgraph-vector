@@ -11,6 +11,8 @@ use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
 use AgenticGraph\Vector\ValueObjects\RerankResult;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use Closure;
+use DateTimeImmutable;
+use DateTimeZone;
 use Throwable;
 
 /**
@@ -26,6 +28,10 @@ final class TraceSpan
     private const TRACER_CLASS = 'Shahzad\AgenticGraph\Tracing\Tracer';
 
     private const TRACE_FACADE_CLASS = 'Shahzad\AgenticGraph\Facades\Trace';
+
+    private const TRACE_CONTEXT_CLASS = 'Shahzad\AgenticGraph\Tracing\TraceContext';
+
+    private const EXPORTER_CLASS = 'Shahzad\AgenticGraph\Tracing\Contracts\TracerExporter';
 
     private static int $depth = 0;
 
@@ -296,6 +302,135 @@ final class TraceSpan
     private static function elapsedMilliseconds(int $startedHrtime): int
     {
         return (int) round((hrtime(true) - $startedHrtime) / 1_000_000);
+    }
+
+    /**
+     * Run $execute as its own trace (a root `graph` span named $name) when agenticgraph tracing is on and
+     * no trace is running. For commands such as vector:migrate, which run outside any graph.
+     *
+     * @template TReturn
+     *
+     * @param  Closure(): TReturn  $execute
+     * @return TReturn
+     */
+    public static function rootTrace(string $name, Closure $execute): mixed
+    {
+        $exporter = self::exporter();
+
+        if ($exporter === null || self::traceContext() !== null) {
+            return $execute();
+        }
+
+        $traceId = 'vector_'.bin2hex(random_bytes(12));
+        $rootSpanId = uniqid('span_', true);
+        $startedAt = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $exporter->startTrace($traceId, $name, [], $startedAt);
+        app()->instance(self::TRACE_CONTEXT_CLASS, self::newTraceContext($traceId, $rootSpanId));
+        $failure = null;
+
+        try {
+            return $execute();
+        } catch (Throwable $exception) {
+            $failure = $exception;
+
+            throw $exception;
+        } finally {
+            app()->forgetInstance(self::TRACE_CONTEXT_CLASS);
+            $endedAt = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+            $durationMs = ((float) $endedAt->format('U.u') - (float) $startedAt->format('U.u')) * 1000;
+            $exporter->addSpan([
+                'id' => $rootSpanId,
+                'trace_id' => $traceId,
+                'parent_id' => null,
+                'node_name' => $name,
+                'node_type' => 'graph',
+                'span_type' => 'graph',
+                'status' => $failure === null ? 'success' : 'failed',
+                'span_kind' => 'internal',
+                'status_code' => $failure === null ? 'OK' : 'ERROR',
+                'started_at' => $startedAt->format('Y-m-d\TH:i:s.uP'),
+                'ended_at' => $endedAt->format('Y-m-d\TH:i:s.uP'),
+                'duration_ms' => $durationMs,
+            ] + ($failure === null ? [] : ['error' => ['type' => $failure::class, 'message' => $failure->getMessage()]]));
+            $failure === null
+                ? $exporter->completeTrace($traceId, [], $durationMs, null, $endedAt)
+                : $exporter->failTrace($traceId, $failure, $durationMs, null, $endedAt);
+        }
+    }
+
+    /**
+     * The running trace, its root span and the current span, for a queued job to carry ({@see continueTrace()}),
+     * or null outside a trace.
+     *
+     * @return array{trace_id: string, root_span_id: string, span_id: string}|null
+     */
+    public static function carry(): ?array
+    {
+        $context = self::exporter() !== null ? self::traceContext() : null;
+        $spanId = $context?->getSpanId();
+
+        return $context !== null && $context->isEnabled() && is_string($spanId)
+            ? ['trace_id' => $context->getExecutionId(), 'root_span_id' => $context->getRootSpanId(), 'span_id' => $spanId]
+            : null;
+    }
+
+    /**
+     * Run a queued job's work inside the trace it carried, sent as a `continued` segment when the work ends. The
+     * work usually ends after the span that queued it (often after the run), so its spans hang off the trace root
+     * and link to that span (trace wire v1.1). Inline (a trace already bound in this process) it just runs.
+     *
+     * @param  array{trace_id: string, root_span_id: string, span_id: string}|null  $carried
+     *
+     * @template TReturn
+     *
+     * @param  Closure(): TReturn  $execute
+     * @return TReturn
+     */
+    public static function continueTrace(?array $carried, Closure $execute): mixed
+    {
+        $exporter = self::exporter();
+
+        if ($carried === null || $exporter === null || self::traceContext() !== null) {
+            return $execute();
+        }
+
+        $link = ['trace_id' => $carried['trace_id'], 'span_id' => $carried['span_id']];
+        app()->instance(self::TRACE_CONTEXT_CLASS, self::newTraceContext($carried['trace_id'], $carried['root_span_id'], [$link]));
+        $exporter->resumeTrace($carried['trace_id'], null, 'continued');
+
+        try {
+            return $execute();
+        } finally {
+            app()->forgetInstance(self::TRACE_CONTEXT_CLASS);
+            $exporter->flush($carried['trace_id']);
+        }
+    }
+
+    /**
+     * agenticgraph's trace exporter when tracing is available and the exporter is on, else null.
+     */
+    private static function exporter(): ?object
+    {
+        if (! self::isAgenticGraphTracingAvailable() || ! app()->bound(self::EXPORTER_CLASS)) {
+            return null;
+        }
+
+        $exporter = app()->make(self::EXPORTER_CLASS);
+
+        return $exporter->isEnabled() ? $exporter : null;
+    }
+
+    /**
+     * @param  list<array{trace_id: string, span_id: string}>  $links
+     */
+    private static function newTraceContext(string $traceId, string $rootSpanId, array $links = []): object
+    {
+        return app()->make(self::TRACE_CONTEXT_CLASS, ['executionId' => $traceId, 'rootSpanId' => $rootSpanId, 'links' => $links]);
+    }
+
+    private static function traceContext(): ?object
+    {
+        return app()->bound(self::TRACE_CONTEXT_CLASS) ? app()->make(self::TRACE_CONTEXT_CLASS) : null;
     }
 
     public static function isAgenticGraphTracingAvailable(): bool

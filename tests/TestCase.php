@@ -25,6 +25,12 @@ class TestCase extends Orchestra
             PgvectorTestHelper::dropCollectionsNotIn($this->collectionsBefore);
         }
 
+        // Close this test's connections now. Left to the garbage collector, old apps keep theirs open and a run
+        // can pass Postgres max_connections (100), so later tests see pgvector as unavailable.
+        foreach (array_keys($this->app['db']->getConnections()) as $connection) {
+            $this->app['db']->purge($connection);
+        }
+
         parent::tearDown();
     }
 

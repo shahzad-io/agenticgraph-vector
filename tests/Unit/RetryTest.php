@@ -163,8 +163,10 @@ it('waits half to all of the exponential ceiling, or Retry-After when longer', f
             ->and(HttpRetry::delayMs(3, 500))->toBeBetween(1000, 2000);
     }
 
-    expect(HttpRetry::delayMs(3, 500, $retryAfter('1.9')))->toBe(1900)
+    // Retry-After wins only above the drawn wait: exact above the ceiling, at least Retry-After inside the window.
+    expect(HttpRetry::delayMs(3, 500, $retryAfter('2.5')))->toBe(2500)
         ->and(HttpRetry::delayMs(1, 500, $retryAfter('1.5')))->toBe(1500)
+        ->and(HttpRetry::delayMs(3, 500, $retryAfter('1.9')))->toBeBetween(1900, 2000)
         ->and(HttpRetry::shouldRetry($retryAfter('2'), 2000))->toBeTrue()
         ->and(HttpRetry::shouldRetry($retryAfter('2.1'), 2000))->toBeFalse()
         ->and(HttpRetry::shouldRetry($retryAfter('20'), 30000))->toBeTrue();

@@ -4,6 +4,13 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 
 ## Unreleased
 
+### Changed (B9a session C: migration lock time, traces)
+
+- Writes embed before taking the alias or table lock (resolve unlocked, embed, lock and resolve again; embed again only when the target or its provider changed meanwhile), so a migration's final pass never waits on an embedding call.
+- A migration's final pass that finds documents to embed releases the lock and runs another unlocked pass (counted in `catch_up_max_passes`); only the last allowed pass embeds inside the lock. `AliasStoreContract::finishMigration()` gains `bool $embedInLock = true`: without it, documents to embed return the state unswitched.
+- With AgenticGraph tracing on, `vector:migrate` runs as its own trace (root span `vector:migrate`, type `graph`, with `vector.migrate` under it).
+- A queued ingest dispatched inside a traced node carries the trace: `IngestBatchJob` gains `?array $trace` (trace id, root span id, queueing span id), each batch's spans join that trace as a `continued` segment flushed when the batch ends, parented to the trace root with a link to the queueing span (agenticgraph trace wire v1.1), and a resumed batch keeps it. Jobs queued before this change run untraced.
+
 ### Added (B9a session B: text splitter)
 - **`AgenticGraph\Vector\Ingest\TextSplitter`** (`new TextSplitter(int $size, int $overlap = 0)`): splits by characters (no tokenizer), ending a chunk at the last paragraph break in the second half of its window, else the last sentence end, else at `$size`; the next chunk starts `$overlap` characters earlier, at a word start. `split()` returns the trimmed pieces (none for blank text); `chunk(Document $parent)` returns chunk documents with ids `{parentId}#{n}` and the parent's metadata plus `parent_id` (string) and `chunk` (index). A parent with a precomputed vector, a size below 1 or an overlap outside 0 to size - 1 throw `InvalidArgumentException`.
 - **`Builder::upsertChunks(array $parents, TextSplitter $splitter, array $globalMetadata = [])`**: upserts every parent's new chunks, then deletes the parent's chunks with `chunk` >= the new count, so a re-ingested document is findable at every moment. Needs `DeleteByFilter` and `FilterRange`; refuses `queue()` (`VectorUnsupportedOperationException`).

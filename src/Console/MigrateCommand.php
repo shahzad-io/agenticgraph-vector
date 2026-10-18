@@ -6,7 +6,9 @@ namespace AgenticGraph\Vector\Console;
 
 use AgenticGraph\Vector\Events\VectorMigrationProgressed;
 use AgenticGraph\Vector\Exceptions\VectorException;
+use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
+use AgenticGraph\Vector\ValueObjects\MigrationState;
 use AgenticGraph\Vector\VectorManager;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Events\Dispatcher;
@@ -82,14 +84,14 @@ final class MigrateCommand extends Command
             $this->printing = ! $dryRun;
 
             try {
-                $state = $vector->migrate(
+                $state = TraceSpan::rootTrace('vector:migrate', fn (): MigrationState => $vector->migrate(
                     $alias,
                     $this->definition($alias),
                     store: $store,
                     dryRun: $dryRun,
                     mode: $this->option('copy') ? 'copy' : ($this->option('reembed') ? 'reembed' : null),
                     batchSize: $batch,
-                );
+                ));
             } finally {
                 $this->printing = false;
             }

@@ -13,12 +13,15 @@ use AgenticGraph\Vector\Migration\CollectionMigrator;
 use AgenticGraph\Vector\Stores\MemoryStore;
 use AgenticGraph\Vector\Support\MetadataValidator;
 use AgenticGraph\Vector\Tests\Support\PgvectorTestHelper;
+use AgenticGraph\Vector\Tests\Support\RecordingTraceExporter;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\MigrationState;
 use AgenticGraph\Vector\ValueObjects\StoreCapabilities;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Event;
+use Shahzad\AgenticGraph\Tracing\Contracts\TracerExporter;
+use Shahzad\AgenticGraph\Tracing\TraceContext;
 use Shahzad\AgenticGraph\Tracing\Tracer;
 
 beforeEach(function () {
@@ -201,6 +204,65 @@ it('stops catch-up passes at vector.migration.catch_up_max_passes', function () 
 
     expect((new CollectionMigrator($store, 'mock', app(EmbeddingsManager::class)))->migrate('a', new CollectionDefinition('a', dimensions: 3, metric: 'cosine'))->phase)->toBe('switched');
 });
+
+it('runs another unlocked pass when the final pass finds rows to embed, and embeds inside the lock only on the last pass', function () {
+    config()->set('vector.migration.catch_up_max_passes', 3);
+    $planned = new MigrationState('a', 'a__v1', 'a__v2', 'reembed', 'catching_up', ['dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'index_options' => [], 'embeddings' => null]);
+
+    $store = Mockery::mock(AliasStoreContract::class, VectorStoreContract::class);
+    $store->shouldReceive('batchSize')->andReturn(10);
+    $store->shouldReceive('describeCollection')->andReturn(['collection' => 'a__v1', 'dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'embedding' => null]);
+    $store->shouldReceive('migration')->andReturn($planned);
+    $store->shouldReceive('catchUpMigration')->times(3)->andReturn(1);
+    $store->shouldReceive('finishMigration')->with($planned, 500, false)->twice()->andReturn($planned);
+    $store->shouldReceive('finishMigration')->with($planned, 500, true)->once()->andReturn($planned->withPhase('switched'));
+
+    expect((new CollectionMigrator($store, 'mock', app(EmbeddingsManager::class)))->migrate('a', new CollectionDefinition('a', dimensions: 3, metric: 'cosine'))->phase)->toBe('switched');
+});
+
+it('runs vector:migrate as its own root trace when agenticgraph tracing is on', function (array $options, string $end) {
+    memoryWithDocuments('rooted');
+    config()->set('agenticgraph.tracing.enabled', true);
+    app()->singleton(Tracer::class);
+    app()->instance(TracerExporter::class, $exporter = new RecordingTraceExporter);
+
+    Artisan::call('vector:migrate', $options + ['alias' => 'rooted', '--dimensions' => 3]);
+
+    [$start, $root, $finish] = $exporter->calls;
+    $traceId = $start[1];
+    $spans = app(Tracer::class)->spans;
+
+    expect($exporter->calls)->toHaveCount(3)
+        ->and($start)->toBe(['startTrace', $traceId, ['vector:migrate']])
+        ->and($root[0])->toBe('addSpan')
+        ->and($root[1])->toMatchArray(['trace_id' => $traceId, 'parent_id' => null, 'node_name' => 'vector:migrate', 'span_type' => 'graph', 'status_code' => $end === 'completeTrace' ? 'OK' : 'ERROR'])
+        ->and($finish[0])->toBe($end)
+        ->and($finish[1])->toBe($traceId)
+        ->and($spans)->toHaveCount(1)
+        ->and($spans[0][0])->toBe('vector.migrate')
+        ->and($spans[0][2])->toBe($traceId)
+        ->and($spans[0][3])->toBe($root[1]['id'])
+        ->and(app()->bound(TraceContext::class))->toBeFalse();
+})->with([
+    'switched' => [[], 'completeTrace'],
+    'refused' => [['--dimensions' => 4, '--copy' => true], 'failTrace'],
+]);
+
+it('guard: runs vector:migrate without a trace when tracing is off or a trace is already running', function (bool $enabled, bool $inTrace) {
+    memoryWithDocuments('untraced');
+    config()->set('agenticgraph.tracing.enabled', $enabled);
+    app()->singleton(Tracer::class);
+    app()->instance(TracerExporter::class, $exporter = new RecordingTraceExporter);
+
+    if ($inTrace) {
+        app()->instance(TraceContext::class, new TraceContext('exec_caller', 'span_caller'));
+    }
+
+    Artisan::call('vector:migrate', ['alias' => 'untraced', '--dimensions' => 3]);
+
+    expect($exporter->calls)->toBe([])
+        ->and(app(Tracer::class)->spans[0][2] ?? null)->toBe($inTrace ? 'exec_caller' : null);
+})->with(['tracing off' => [false, false], 'inside a trace' => [true, true]]);
 
 it('prints each progress line once when vector:migrate runs twice in one process', function () {
     memoryWithDocuments('twice', 2);
