@@ -8,6 +8,9 @@ use AgenticGraph\Vector\Tests\Support\RetrievalMetrics;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\SearchHit;
+use Prism\Prism\Facades\Prism;
+use Prism\Prism\Testing\StructuredResponseFake;
+use Prism\Prism\ValueObjects\Usage;
 
 function benchReport(array $quality = [], array $overrides = []): array
 {
@@ -318,3 +321,39 @@ it('scores chunk hits as their parents and collapses reranked chunks after the r
 it('takes a rerank candidate count only at a candidate recall depth', function () {
     (new BenchRunner)->run(['dataset' => 'wixqa-expert', 'model' => 'deterministic', 'rerank' => 'deterministic', 'rerank-candidates' => '40']);
 })->throws(RuntimeException::class, '--rerank-candidates takes 30, 50, 100.');
+
+it('caches document vectors by the sha256 of their text and reuses them only for the same text', function () {
+    $documents = [Document::make('a', 'alpha text'), Document::make('b', 'beta text'), Document::make('c', 'gamma text', vector: [9.0, 9.0])];
+
+    $cache = BenchRunner::documentVectors($documents, ['a' => '[0.5,0.25]', 'c' => '[1,1]']);
+    $again = BenchRunner::withCachedVectors([Document::make('a2', 'alpha text', ['lang' => 'en']), Document::make('b', 'beta text')], $cache);
+
+    expect($cache)->toBe([hash('sha256', 'alpha text') => [0.5, 0.25]])
+        ->and(array_map(fn (Document $document): ?array => $document->vector, $again))->toBe([[0.5, 0.25], null])
+        ->and([$again[0]->id, $again[0]->metadata])->toBe(['a2', ['lang' => 'en']]);
+});
+
+it('records input and output rerank tokens and prices them apart, old cache entries all as input', function () {
+    Prism::fake(array_fill(0, 2, StructuredResponseFake::make()->withStructured(['rankings' => [['index' => 0, 'score' => 9]]])->withUsage(new Usage(1_000, 200))));
+    config()->set('vector.rerank.providers.llm', ['driver' => 'prism', 'provider' => 'openai', 'model' => 'test-model']);
+    $cacheFile = sys_get_temp_dir().'/ag2-rerank-split-'.getmypid().'.json';
+    $hits = [new SearchHit('d0', 0.9, 'zero'), new SearchHit('d1', 0.8, 'one')];
+    $queries = [['id' => 'q1', 'text' => 'one'], ['id' => 'q2', 'text' => 'two'], ['id' => 'old', 'text' => 'cached before the split']];
+    file_put_contents($cacheFile, json_encode([sha1("old\0d0\0d1") => ['ids' => ['d1', 'd0'], 'ms' => 5, 'units' => null, 'tokens' => 600]]));
+
+    try {
+        $stats = BenchRunner::rerankRanked('llm', ['q1' => $hits, 'q2' => $hits, 'old' => $hits], $queries, $cacheFile)['stats'];
+    } finally {
+        @unlink($cacheFile);
+    }
+
+    $cost = BenchRunner::rerankCostSection('llm', 'openai:test-model', ['dense' => ['rerank' => $stats]], null, null, 1.0, 4.0);
+
+    expect([$stats['input_tokens'], $stats['output_tokens'], $stats['unsplit'], $stats['run_input_tokens'], $stats['run_output_tokens'], $stats['run_unsplit']])->toBe([2_600, 400, 1, 2_000, 400, 0])
+        ->and([$cost['input_tokens'], $cost['output_tokens'], $cost['unsplit']])->toBe([2_000, 400, 1])
+        // This run: 2,000 input at 1.0 and 400 output at 4.0 per 1M; per query adds the old entry's 600 tokens as input.
+        ->and($cost['run'])->toBe(0.0036)
+        ->and($cost['per_query'])->toBe(round((0.0036 + 0.0006) / 3, 6))
+        ->and(BenchRunner::rerankCost(null, 1_000_000, null, 1.0, 1_000_000, 4.0))->toBe(5.0)
+        ->and(BenchReport::markdown(benchReport(overrides: ['cost' => ['rerank' => $cost]])))->toContain('- Rerank token prices split: 1 per 1M input tokens (2000 this run), 4 per 1M output tokens (400 this run); 1 cached requests without the split priced all as input');
+});

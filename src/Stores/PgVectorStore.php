@@ -887,7 +887,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
     }
 
     /**
-     * Every configuration of a language map must exist in Postgres before it goes into a table definition.
+     * Every configuration of a language map must exist on the search path before it goes into a table definition.
      *
      * @param  array<string, string>  $languages
      */
@@ -900,7 +900,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
         }
 
         $known = array_column($this->connection()->select(
-            'SELECT cfgname FROM pg_catalog.pg_ts_config WHERE cfgname IN ('.implode(', ', array_fill(0, count($wanted), '?')).')',
+            'SELECT cfgname FROM pg_catalog.pg_ts_config WHERE pg_catalog.pg_ts_config_is_visible(oid) AND cfgname IN ('.implode(', ', array_fill(0, count($wanted), '?')).')',
             $wanted,
         ), 'cfgname');
         $missing = array_values(array_diff($wanted, $known));

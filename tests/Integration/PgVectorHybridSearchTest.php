@@ -1,5 +1,6 @@
 <?php
 
+use AgenticGraph\Vector\Events\VectorEmbeddingCompleted;
 use AgenticGraph\Vector\Events\VectorMigrationProgressed;
 use AgenticGraph\Vector\Events\VectorRerankCompleted;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
@@ -27,7 +28,9 @@ beforeEach(function () {
 afterEach(function () {
     $connection = DB::connection('pgvector');
 
-    foreach ($connection->select("SELECT storage_identifier FROM {$this->registry}") as $row) {
+    $rows = $connection->scalar('SELECT to_regclass(?) IS NOT NULL', [$this->registry]) ? $connection->select("SELECT storage_identifier FROM {$this->registry}") : [];
+
+    foreach ($rows as $row) {
         $connection->statement("DROP TABLE IF EXISTS {$row->storage_identifier}");
     }
 
@@ -201,4 +204,65 @@ it('guard: never lowers a higher hnsw.ef_search setting', function () {
     });
 
     expect($count)->toBe([150, '200']);
+});
+
+it('folds accents only in a collection that opts in to spanish_unaccent, for documents and queries alike', function () {
+    expect(test()->artisan('vector:text-search:install', ['--store' => 'pgvector'])->run())->toBe(0)
+        ->and(test()->artisan('vector:text-search:install', ['--store' => 'pgvector'])->run())->toBe(0);
+
+    $store = Vector::store('pgvector');
+    $documents = [
+        Document::make('accented', 'Información del año académico', ['lang' => 'es'], [1.0, 0.0, 0.0]),
+        Document::make('plain', 'informacion del ano academico', ['lang' => 'es'], [1.0, 0.0, 0.0]),
+    ];
+    $folded = $this->collection.'_folded';
+    $store->createCollection(new CollectionDefinition($folded, dimensions: 3, keyword: true, languages: ['es' => 'spanish_unaccent']));
+    $store->collection($folded)->upsert($documents);
+    $store->createCollection(new CollectionDefinition($this->collection, dimensions: 3, keyword: true));
+    $store->collection($this->collection)->upsert($documents);
+
+    expect(keywordMatchIds($folded, 'informacion ano', 'websearch'))->toBe(['accented', 'plain'])
+        ->and(keywordMatchIds($folded, 'información año', 'websearch'))->toBe(['accented', 'plain'])
+        ->and(keywordMatchIds($this->collection, 'informacion ano', 'websearch'))->toBe(['plain'])
+        ->and(keywordMatchIds($this->collection, 'información año', 'websearch'))->toBe(['accented']);
+});
+
+it('moves an existing keyword collection to spanish_unaccent with --copy and no embedding call', function () {
+    test()->artisan('vector:text-search:install', ['--store' => 'pgvector'])->assertSuccessful();
+    $store = Vector::store('pgvector');
+    $store->createCollection(new CollectionDefinition($this->collection, dimensions: 3, keyword: true));
+    $store->collection($this->collection)->upsert([Document::make('es', 'Información del año académico', ['lang' => 'es'], [1.0, 0.0, 0.0])]);
+    $embedded = 0;
+    Event::listen(VectorEmbeddingCompleted::class, function () use (&$embedded): void {
+        $embedded++;
+    });
+
+    expect(keywordMatchIds($this->collection, 'informacion'))->toBe([]);
+
+    test()->artisan('vector:migrate', ['alias' => $this->collection, '--store' => 'pgvector', '--keyword' => true, '--language' => ['es=spanish_unaccent'], '--copy' => true])->assertSuccessful();
+
+    expect(keywordMatchIds($this->collection, 'informacion'))->toBe(['es'])
+        ->and($store->describeCollection($this->collection)['keyword'])->toBe(['languages' => ['es' => 'spanish_unaccent'], 'language_field' => 'lang'])
+        ->and($embedded)->toBe(0);
+});
+
+it('refuses a text search configuration that exists only outside the search path', function () {
+    $schema = 'outside_'.uniqid();
+    DB::connection('pgvector')->statement("CREATE SCHEMA {$schema}");
+    DB::connection('pgvector')->statement("CREATE TEXT SEARCH CONFIGURATION {$schema}.hidden_spanish (COPY = spanish)");
+
+    try {
+        expect(fn () => Vector::store('pgvector')->createCollection(new CollectionDefinition($this->collection, dimensions: 3, keyword: true, languages: ['es' => 'hidden_spanish'])))
+            ->toThrow(VectorQueryException::class, 'Unknown Postgres text search configuration(s) in the language map: hidden_spanish.');
+    } finally {
+        DB::connection('pgvector')->statement("DROP SCHEMA {$schema} CASCADE");
+    }
+});
+
+it('refuses to install text search on a store that is not pgvector', function () {
+    config()->set('vector.stores.mem', ['driver' => 'memory']);
+
+    test()->artisan('vector:text-search:install', ['--store' => 'mem'])
+        ->expectsOutputToContain('Store [mem] is not a pgvector store.')
+        ->assertFailed();
 });

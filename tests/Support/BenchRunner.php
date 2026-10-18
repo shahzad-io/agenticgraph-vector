@@ -54,6 +54,7 @@ final class BenchRunner
         'truncate:', 'out:', 'compare::', 'tolerance:', 'price-per-1m-tokens:', 'report:', 'help',
         'collection:', 'child:', 'slice:', 'results:', 'filtered', 'iterative-scan:', 'match:', 'keyword-weight:', 'keep',
         'rerank:', 'rerank-price-per-1k-searches:', 'rerank-price-per-1m-tokens:', 'chunk:', 'rerank-candidates:',
+        'rerank-price-per-1m-input-tokens:', 'rerank-price-per-1m-output-tokens:',
     ];
 
     public const USAGE = <<<'TXT'
@@ -72,11 +73,14 @@ final class BenchRunner
       --rerank-candidates=30     candidates per query sent to the reranker: 30, 50 or 100 (a candidate recall depth)
       --rerank-price-per-1k-searches=X  reranker price per 1,000 searches (search units), for the cost section
       --rerank-price-per-1m-tokens=X    reranker price per 1M tokens, for the cost section
+      --rerank-price-per-1m-input-tokens=X --rerank-price-per-1m-output-tokens=Y  split token prices (an LLM
+                                 reranker); a cached request without the split is priced at X for all its tokens
       --keep                     keep the ingested collection (and its ingest numbers) for later --collection runs
       --concurrency=1,4,8        client processes per throughput run
       --warmup=20                untimed queries before the timed runs
       --queries=N --docs=N       fixed smaller run (default: the whole dataset)
       --truncate=N               cut documents to N characters (0: none)
+                                 (document vectors are cached per dataset, model, dimensions and text sha256)
       --chunk=SIZE,OVERLAP       split documents at ingest (TextSplitter, characters) and collapse hits to their
                                  parent before scoring (rerank: the chunks are reranked, then collapsed)
       --out=~/ag2-scratch/bench  report folder (never inside a repo)
@@ -134,7 +138,8 @@ final class BenchRunner
         $app = Application::create(options: ['extra' => ['dont-discover' => ['*']]]);
         $app['config']->set('vector', require self::ROOT.'/config/vector.php');
         $app['config']->set('database.default', 'pgvector');
-        $app['config']->set('database.connections.pgvector', PgvectorTestHelper::connectionConfig());
+        // public, not the per-process test schema: the query children and later runs share the collections.
+        $app['config']->set('database.connections.pgvector', ['search_path' => 'public'] + PgvectorTestHelper::connectionConfig());
         $app['config']->set('vector.stores.pgvector.connection', 'pgvector');
         $app['config']->set('vector.embeddings.default', $driver);
         $app['config']->set("vector.embeddings.providers.{$driver}", $embedding);
@@ -246,17 +251,18 @@ final class BenchRunner
      *
      * @param  array<string, list<SearchHit>>  $hitsByQuery  query id => candidates, best first
      * @param  list<array{id: string, text: string}>  $queries
-     * @return array{ranked: array<string, list<string>>, stats: array{calls: int, cached: int, p50_ms: int|float|null, p95_ms: int|float|null, units: int|null, tokens: int|null, run_units: int|null, run_tokens: int|null}}
+     * @return array{ranked: array<string, list<string>>, stats: array<string, int|float|null>}
      */
     public static function rerankRanked(string $reranker, array $hitsByQuery, array $queries, string $cacheFile, int $topN = self::TOP_K): array
     {
-        /** @var array<string, array{ids: list<string>, ms: int, units: int|null, tokens: int|null}> $cache */
+        /** @var array<string, array{ids: list<string>, ms: int, units: int|null, tokens: int|null, input_tokens?: int|null, output_tokens?: int|null}> $cache */
         $cache = is_file($cacheFile) ? self::readJson($cacheFile) : [];
         $ranked = [];
         $entries = [];
         $calls = 0;
         $runUnits = [];
         $runTokens = [];
+        $runEntries = [];
 
         foreach ($queries as $query) {
             $hits = $hitsByQuery[$query['id']] ?? [];
@@ -270,10 +276,13 @@ final class BenchRunner
                     'ms' => self::ms($started),
                     'units' => $result->units,
                     'tokens' => $result->tokens,
+                    'input_tokens' => $result->inputTokens,
+                    'output_tokens' => $result->outputTokens,
                 ];
                 $calls++;
                 $runUnits[] = $result->units;
                 $runTokens[] = $result->tokens;
+                $runEntries[] = $cache[$cacheKey];
                 file_put_contents($cacheFile, json_encode($cache, JSON_THROW_ON_ERROR));
             }
 
@@ -292,7 +301,64 @@ final class BenchRunner
             'tokens' => self::sumTokens(array_column($entries, 'tokens')),
             'run_units' => self::sumTokens($runUnits),
             'run_tokens' => self::sumTokens($runTokens),
+            ...self::splitTokens($entries),
+            ...array_combine(['run_input_tokens', 'run_output_tokens', 'run_unsplit'], array_values(self::splitTokens($runEntries))),
         ]];
+    }
+
+    /**
+     * Input and output tokens over cache entries. An entry without the split (cached before it was recorded, or a
+     * reranker that reports one count) counts all its tokens as input; `unsplit` counts those entries.
+     *
+     * @param  list<array<string, mixed>>  $entries
+     * @return array{input_tokens: int|null, output_tokens: int|null, unsplit: int}
+     */
+    private static function splitTokens(array $entries): array
+    {
+        $split = array_filter($entries, static fn (array $entry): bool => isset($entry['input_tokens']));
+        $unsplit = array_filter($entries, static fn (array $entry): bool => ! isset($entry['input_tokens']) && isset($entry['tokens']));
+
+        return [
+            'input_tokens' => self::sumTokens([...array_column($split, 'input_tokens'), ...array_column($unsplit, 'tokens')]),
+            'output_tokens' => self::sumTokens(array_column($split, 'output_tokens')),
+            'unsplit' => count($unsplit),
+        ];
+    }
+
+    /**
+     * The documents with the cached vector of their text (key: sha256 of the content); the others unchanged.
+     *
+     * @param  list<Document>  $documents
+     * @param  array<string, list<float>>  $cache
+     * @return list<Document>
+     */
+    public static function withCachedVectors(array $documents, array $cache): array
+    {
+        return array_map(static function (Document $document) use ($cache): Document {
+            $vector = $cache[hash('sha256', $document->content)] ?? null;
+
+            return $vector === null ? $document : new Document($document->id, $document->content, $document->metadata, $vector);
+        }, $documents);
+    }
+
+    /**
+     * Cache entries (sha256 of the content => vector) for the documents not cached yet, from the stored vectors.
+     *
+     * @param  list<Document>  $documents
+     * @param  array<string|int, string>  $stored  id => pgvector text ("[0.1,0.2]")
+     * @return array<string, list<float>>
+     */
+    public static function documentVectors(array $documents, array $stored): array
+    {
+        $entries = [];
+
+        foreach ($documents as $document) {
+            if ($document->vector === null && isset($stored[$document->id])) {
+                $entries[hash('sha256', $document->content)] = array_map('floatval', json_decode($stored[$document->id], true, flags: JSON_THROW_ON_ERROR));
+            }
+        }
+
+        return $entries;
     }
 
     /**
@@ -313,13 +379,15 @@ final class BenchRunner
     }
 
     /**
-     * Money for $units search units and $tokens tokens at the given prices; null when neither price applies.
+     * Money for $units search units, $tokens tokens and $outputTokens output tokens at the given prices (with split
+     * prices, $tokens are the input tokens); null when no price applies.
      */
-    public static function rerankCost(?int $units, ?int $tokens, ?float $perThousandSearches, ?float $perMillionTokens): ?float
+    public static function rerankCost(?int $units, ?int $tokens, ?float $perThousandSearches, ?float $perMillionTokens, ?int $outputTokens = null, ?float $perMillionOutputTokens = null): ?float
     {
         $parts = [
             $perThousandSearches !== null && $units !== null ? $units * $perThousandSearches / 1000 : null,
             $perMillionTokens !== null && $tokens !== null ? $tokens * $perMillionTokens / 1_000_000 : null,
+            $perMillionOutputTokens !== null && $outputTokens !== null ? $outputTokens * $perMillionOutputTokens / 1_000_000 : null,
         ];
 
         return array_filter($parts, static fn (?float $part): bool => $part !== null) === [] ? null : round(array_sum($parts), 6);
@@ -331,22 +399,33 @@ final class BenchRunner
      * @param  array<string, array<string, mixed>>  $results
      * @return array<string, mixed>
      */
-    private static function rerankCostSection(string $reranker, string $model, array $results, ?float $perThousandSearches, ?float $perMillionTokens): array
+    public static function rerankCostSection(string $reranker, string $model, array $results, ?float $perThousandSearches, ?float $perMillionTokens, ?float $perMillionInputTokens = null, ?float $perMillionOutputTokens = null): array
     {
         $stats = array_values(array_filter(array_map(static fn (array $result): ?array => $result['rerank'] ?? null, $results)));
         $sum = static fn (string $field): ?int => self::sumTokens(array_column($stats, $field));
         $queries = (int) array_sum(array_map(static fn (array $s): int => $s['calls'] + $s['cached'], $stats));
-        $all = self::rerankCost($sum('units'), $sum('tokens'), $perThousandSearches, $perMillionTokens);
+        // Split prices: input tokens at one price, output at the other (stats from rerankRanked, with the fallback).
+        $cost = static fn (string $prefix): ?float => $perMillionInputTokens !== null
+            ? self::rerankCost($sum("{$prefix}units"), $sum("{$prefix}input_tokens"), $perThousandSearches, $perMillionInputTokens, $sum("{$prefix}output_tokens"), $perMillionOutputTokens)
+            : self::rerankCost($sum("{$prefix}units"), $sum("{$prefix}tokens"), $perThousandSearches, $perMillionTokens);
+        $all = $cost('');
 
         return [
             'reranker' => $reranker,
             'model' => $model,
             'price_per_1k_searches' => $perThousandSearches,
             'price_per_1m_tokens' => $perMillionTokens,
+            ...($perMillionInputTokens === null ? [] : [
+                'price_per_1m_input_tokens' => $perMillionInputTokens,
+                'price_per_1m_output_tokens' => $perMillionOutputTokens,
+                'input_tokens' => $sum('run_input_tokens'),
+                'output_tokens' => $sum('run_output_tokens'),
+                'unsplit' => (int) array_sum(array_column($stats, 'unsplit')),
+            ]),
             'calls' => (int) array_sum(array_column($stats, 'calls')),
             'units' => $sum('run_units'),
             'tokens' => $sum('run_tokens'),
-            'run' => self::rerankCost($sum('run_units'), $sum('run_tokens'), $perThousandSearches, $perMillionTokens),
+            'run' => $cost('run_'),
             'per_query' => $queries === 0 || $all === null ? null : round($all / $queries, 6),
         ];
     }
@@ -509,6 +588,12 @@ final class BenchRunner
         $rerankCandidates = (int) ($options['rerank-candidates'] ?? self::RERANK_CANDIDATES);
         $rerankSearchPrice = isset($options['rerank-price-per-1k-searches']) ? (float) $options['rerank-price-per-1k-searches'] : null;
         $rerankTokenPrice = isset($options['rerank-price-per-1m-tokens']) ? (float) $options['rerank-price-per-1m-tokens'] : null;
+        $rerankInputPrice = isset($options['rerank-price-per-1m-input-tokens']) ? (float) $options['rerank-price-per-1m-input-tokens'] : null;
+        $rerankOutputPrice = isset($options['rerank-price-per-1m-output-tokens']) ? (float) $options['rerank-price-per-1m-output-tokens'] : null;
+
+        if (($rerankInputPrice === null) !== ($rerankOutputPrice === null) || ($rerankInputPrice !== null && $rerankTokenPrice !== null)) {
+            throw new RuntimeException('Pass both --rerank-price-per-1m-input-tokens and --rerank-price-per-1m-output-tokens, without --rerank-price-per-1m-tokens.');
+        }
         $slug = trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower($model)), '-');
         $out = rtrim((string) ($options['out'] ?? self::defaultOut()), '/');
 
@@ -661,6 +746,12 @@ final class BenchRunner
             $dataset['corpus'],
         );
         $documents = $splitter === null ? $documents : array_merge(...array_map($splitter->chunk(...), $documents));
+        // Document vectors, cached per dataset, model and dimensions by the sha256 of each text: a rerun ingests without embedding.
+        $documentCacheFile = "{$out}/cache/{$dataset['name']}.{$slug}.{$dimensions}.documents.json";
+        /** @var array<string, list<float>> $documentCache */
+        $documentCache = $reused === null && is_file($documentCacheFile) ? self::readJson($documentCacheFile) : [];
+        $documents = self::withCachedVectors($documents, $documentCache);
+        $documentsCached = $reused === null && array_filter($documents, static fn (Document $document): bool => $document->vector === null) === [];
 
         if ($reused === null) {
             $store->createCollection(new CollectionDefinition(name: $collection, dimensions: $dimensions, keyword: $hybrid ?: null));
@@ -689,6 +780,12 @@ final class BenchRunner
 
             $storage = (string) $db->table((string) config('vector.stores.pgvector.registry_table', 'vector_collection_registry'))
                 ->where('name', $store->describeCollection($collection)['collection'])->value('storage_identifier');
+
+            if ($reused === null && ! $documentsCached) {
+                $documentCache += self::documentVectors($documents, $db->table($storage)->pluck('embedding', 'id')->all());
+                file_put_contents($documentCacheFile, json_encode($documentCache, JSON_THROW_ON_ERROR));
+            }
+
             $started = hrtime(true);
             $reused !== null || $db->statement("REINDEX INDEX {$storage}_embedding_idx");
             $rebuildMs = self::ms($started);
@@ -895,6 +992,7 @@ final class BenchRunner
                 'embedding_ms' => $upsertEmbeddingMs,
                 'embedding_calls' => count($ingestCalls),
                 'embedding_tokens' => $ingestTokens,
+                'cached' => $documentsCached,
                 'index_rebuild_ms' => $rebuildMs,
             ],
             'query_embedding' => [
@@ -921,7 +1019,7 @@ final class BenchRunner
                 'price_per_1m_tokens' => $price,
                 'ingest' => $price === null || $ingestTokens === null ? null : round($ingestTokens * $price / 1_000_000, 6),
                 'queries' => $price === null || $queryTokens === null ? null : round($queryTokens * $price / 1_000_000, 6),
-                'rerank' => $rerank === null ? null : self::rerankCostSection($rerank, (string) $rerankModel, $results, $rerankSearchPrice, $rerankTokenPrice),
+                'rerank' => $rerank === null ? null : self::rerankCostSection($rerank, (string) $rerankModel, $results, $rerankSearchPrice, $rerankTokenPrice, $rerankInputPrice, $rerankOutputPrice),
             ],
             'infrastructure' => [
                 'php' => PHP_VERSION,

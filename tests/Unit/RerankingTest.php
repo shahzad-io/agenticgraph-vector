@@ -205,7 +205,7 @@ it('puts the v4 rerank keys on reranked search spans only, and rerankMs on the e
         ->and($reranked['vector.top_k'])->toBe(3)
         ->and($events[0])->toBeNull()
         ->and($events[1])->toBeInt();
-    Event::assertDispatched(VectorRerankCompleted::class, fn (VectorRerankCompleted $event): bool => $event->reranker === 'spy' && $event->model === 'spy-model' && $event->documentCount === 7 && $event->units === 1 && $event->tokens === null);
+    Event::assertDispatched(VectorRerankCompleted::class, fn (VectorRerankCompleted $event): bool => $event->reranker === 'spy' && $event->model === 'spy-model' && $event->documentCount === 7 && $event->units === 1 && $event->tokens === null && $event->inputTokens === null && $event->outputTokens === null);
 });
 
 it('names the env key when rerank() has no name and no default is configured', function () {
@@ -342,10 +342,13 @@ it('ranks with Prism structured output, cuts passages, and validates the ranking
         ->withUsage(new Usage(100, 20))]);
     config()->set('vector.rerank.providers.llm', ['driver' => 'prism', 'provider' => 'openai', 'model' => 'test-model', 'max_characters' => 4, 'timeout' => 3]);
 
+    Event::fake([VectorRerankCompleted::class]);
+
     $result = Vector::reranker('llm')->rerank('reset', rerankHits(4), 4);
 
     expect(array_map(fn (SearchHit $hit): array => [(string) $hit->id, $hit->scores['rerank']], $result->hits))->toBe([['h1', 90.0], ['h2', 40.0], ['h0', null], ['h3', null]])
-        ->and([$result->model, $result->tokens])->toBe(['openai:test-model', 120]);
+        ->and([$result->model, $result->tokens, $result->inputTokens, $result->outputTokens])->toBe(['openai:test-model', 120, 100, 20]);
+    Event::assertDispatched(VectorRerankCompleted::class, fn (VectorRerankCompleted $event): bool => [$event->tokens, $event->inputTokens, $event->outputTokens] === [120, 100, 20]);
     $fake->assertRequest(function (array $requests): void {
         expect($requests[0]->prompt())->toContain("[0] pass\n\n[1] pass")->not->toContain('passage')
             ->and($requests[0]->temperature())->toBe(0)

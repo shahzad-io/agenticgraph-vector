@@ -2,7 +2,26 @@
 
 All notable changes to `shahzad/agenticgraph-vector` will be documented in this file.
 
-## Unreleased
+## 0.1.0 (unreleased)
+
+### Release metadata (B11 session C)
+
+- Author name typo fixed in `composer.json`; the internal docs (PRD, phase tasks, v8 notes) are no longer tracked; README compatibility table. Dev lock updated (`composer audit` clean; guzzle 8).
+- Tests: each test process uses its own Postgres schema (`agtest_<pid>`, dropped at exit), so this suite and an app's suite can run at the same time on one database. The benchmark runner keeps using `public`.
+
+### Changed (B11 session C: queued batch traces)
+
+- A queued batch that carries a trace now binds core's execution clock for that trace while it runs (unless one is already bound), so with `agenticgraph.tracing.capture.http` on its embedding requests are recorded as `http` spans in the `continued` segment (before, core recorded none: it records HTTP only under a clock). Afterwards the clock is forgotten and core's `HttpClientInstrumentation::cleanupExecution()` runs for the trace, resolved from the container by class name.
+
+### Added (B11 session C: split rerank tokens, runner caches)
+
+- `RerankResult` and `VectorRerankCompleted` gain optional `inputTokens` and `outputTokens` (additive, trailing constructor arguments, null by default). The Prism reranker fills them from the response usage; `tokens` stays their sum. Cohere and Voyage report one count, so theirs stay null.
+- Benchmark runner: `--rerank-price-per-1m-input-tokens` and `--rerank-price-per-1m-output-tokens` price the two apart (a cached request without the split is priced as input). Document vectors are cached per dataset, model, dimensions and text sha256; an ingest served from the cache records `cached: true` and makes no embedding call.
+
+### Added (B11 session C: accent folding)
+
+- **`php artisan vector:text-search:install {--store=}`** creates the `unaccent` extension and the `spanish_unaccent` text search configuration (`spanish` with `unaccent` before the stemmer) on a pgvector store's connection; running it again is a no-op. Opt-in per collection with the language map (`es` to `spanish_unaccent`); move an existing collection with `vector:migrate {alias} --keyword --language=es=spanish_unaccent --copy` (no embedding calls). Documents and queries both fold.
+- A language map configuration must be visible on the connection's search path; one that exists only in another schema now throws the "Unknown Postgres text search configuration" error instead of failing at `CREATE TABLE`.
 
 ### Changed (B10: core LLM request builder)
 

@@ -33,6 +33,10 @@ final class TraceSpan
 
     private const EXPORTER_CLASS = 'Shahzad\AgenticGraph\Tracing\Contracts\TracerExporter';
 
+    private const EXECUTION_CLOCK_CLASS = 'Shahzad\AgenticGraph\Tracing\ExecutionClock';
+
+    private const HTTP_INSTRUMENTATION_CLASS = 'Shahzad\AgenticGraph\Tracing\Instrumentation\HttpClientInstrumentation';
+
     private static int $depth = 0;
 
     private static ?int $embeddingMs = null;
@@ -378,6 +382,8 @@ final class TraceSpan
      * Run a queued job's work inside the trace it carried, sent as a `continued` segment when the work ends. The
      * work usually ends after the span that queued it (often after the run), so its spans hang off the trace root
      * and link to that span (trace wire v1.1). Inline (a trace already bound in this process) it just runs.
+     * Core records HTTP requests (with `capture.http`) only under an execution clock, so the work gets one for the
+     * carried trace unless one is bound; afterwards core's per-trace HTTP state for that trace is cleaned up.
      *
      * @param  array{trace_id: string, root_span_id: string, span_id: string}|null  $carried
      *
@@ -396,12 +402,27 @@ final class TraceSpan
 
         $link = ['trace_id' => $carried['trace_id'], 'span_id' => $carried['span_id']];
         app()->instance(self::TRACE_CONTEXT_CLASS, self::newTraceContext($carried['trace_id'], $carried['root_span_id'], [$link]));
+        $ownClock = class_exists(self::EXECUTION_CLOCK_CLASS) && ! app()->bound(self::EXECUTION_CLOCK_CLASS);
+
+        if ($ownClock) {
+            app()->instance(self::EXECUTION_CLOCK_CLASS, app()->make(self::EXECUTION_CLOCK_CLASS, ['executionId' => $carried['trace_id']]));
+        }
+
         $exporter->resumeTrace($carried['trace_id'], null, 'continued');
 
         try {
             return $execute();
         } finally {
             app()->forgetInstance(self::TRACE_CONTEXT_CLASS);
+
+            if ($ownClock) {
+                app()->forgetInstance(self::EXECUTION_CLOCK_CLASS);
+
+                if (app()->bound(self::HTTP_INSTRUMENTATION_CLASS)) {
+                    app()->make(self::HTTP_INSTRUMENTATION_CLASS)->cleanupExecution($carried['trace_id']);
+                }
+            }
+
             $exporter->flush($carried['trace_id']);
         }
     }

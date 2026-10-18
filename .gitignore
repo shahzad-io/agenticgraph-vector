@@ -29,3 +29,6 @@ phpunit.xml
 phpstan.neon
 testbench.yaml
 /coverage
+
+# Internal docs (PRD, phase tasks, v8 notes): kept locally, not tracked
+/docs

@@ -44,6 +44,7 @@ PRISM_REQUEST_TIMEOUT=120 bin/vector-bench --dataset=scifact --model=openai:text
 | `--rerank` | none | A `vector.rerank.providers` name. Adds a `+rerank` twin of every mode (report keys `dense+rerank`, `hybrid:any:0.25+rerank`, `mode+rerank@setting`): each query's own top 30 of that mode reranked to the top 10, one request at a time. Fail-open is off for the run, and a preflight rerank request checks the key and model |
 | `--rerank-price-per-1k-searches` | none | Reranker price per 1,000 search units (Cohere), for the cost section |
 | `--rerank-price-per-1m-tokens` | none | Reranker price per 1M tokens (Voyage, an LLM), for the cost section |
+| `--rerank-price-per-1m-input-tokens`, `--rerank-price-per-1m-output-tokens` | none | Split token prices (an LLM reranker through Prism, which reports input and output tokens). Pass both, without `--rerank-price-per-1m-tokens`. A cached request from before the split (or from a reranker that reports one count) is priced at the input price for all its tokens; the report counts those as `unsplit` |
 | `--keep` | off | Keep the ingested collection; a later `--collection` run reuses it with no embedding calls when the query vectors are cached, and reports the ingest that built it |
 | `--concurrency` | `1,4,8` | Client processes per throughput run |
 | `--warmup` | `20` | Untimed queries before the timed runs |
@@ -60,7 +61,7 @@ Preflight checks the env keys, pgvector, the dataset checksums and one embedding
 
 ## What a run does
 
-1. Ingests the corpus once into a fresh collection (HNSW, cosine), every document with `lang: en` metadata (the datasets are English, so keyword search stems and drops stop words), timing the upsert and the embedding part of it (`embeddingMs` on the upsert events), and counting embedding calls and tokens from `VectorEmbeddingCompleted`.
+1. Ingests the corpus once into a fresh collection (HNSW, cosine), every document with `lang: en` metadata (the datasets are English, so keyword search stems and drops stop words), timing the upsert and the embedding part of it (`embeddingMs` on the upsert events), and counting embedding calls and tokens from `VectorEmbeddingCompleted`. Document vectors are cached in `<out>/cache/<dataset>.<model-slug>.<dimensions>.documents.json`, keyed by the sha256 of each document text (after `--truncate` and `--chunk`): a document whose text is cached is upserted with its vector and not embedded. When every document came from the cache, the ingest section records `cached: true` (0 embedding calls), so its ingest timing is store time only.
 2. Index build time is a timed `REINDEX` of the embedding index (HNSW grows during inserts, so it has no separate build step). Storage is `pg_table_size` and `pg_indexes_size`.
 3. Embeds each query once (one call per query, timed) and caches the vectors in `<out>/cache/` per dataset, model and dimensions.
 4. Runs the warmup, then for each concurrency level starts N processes that wait at a ready/go barrier and search with the cached vectors (`usingVector`), so the latency is store time only. Children write one JSON line per query; the parent merges them.

@@ -97,6 +97,8 @@ final class PrismReranker implements RerankerContract
             hits: RerankOrder::apply($hits, array_filter($rankings, static fn (mixed $entry): bool => is_array($entry) && array_key_exists('index', $entry) && array_key_exists('score', $entry)), $topN),
             model: "{$provider}:{$model}",
             tokens: $response->usage->promptTokens + $response->usage->completionTokens,
+            inputTokens: $response->usage->promptTokens,
+            outputTokens: $response->usage->completionTokens,
         );
     }
 

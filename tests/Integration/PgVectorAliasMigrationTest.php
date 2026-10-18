@@ -81,13 +81,7 @@ it('holds the alias row while a write is open, so a switch waits for it', functi
     $store->collection($this->collection)->upsert(aliasMigrationDocuments(2));
     Vector::migrate($this->collection, new CollectionDefinition($this->collection, dimensions: 3));
 
-    $config = PgvectorTestHelper::connectionConfig();
-    $other = new PDO(
-        sprintf('pgsql:host=%s;port=%s;dbname=%s', $config['host'], $config['port'], $config['database']),
-        $config['username'],
-        $config['password'],
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
-    );
+    $other = PgvectorTestHelper::pdo();
     $other->exec("SET lock_timeout = '300ms'");
     $switch = fn () => $other->exec("UPDATE {$this->registry}_aliases SET updated_at = CURRENT_TIMESTAMP WHERE alias = '{$this->collection}'");
 

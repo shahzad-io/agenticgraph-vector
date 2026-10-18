@@ -53,7 +53,7 @@ final class InstrumentedReranker implements RerankerContract
             return new RerankResult(array_slice($hits, 0, $topN), $this->model, failedOpen: true);
         }
 
-        $this->dispatch(new VectorRerankCompleted($this->name, $result->model, count($hits), $result->units, $result->tokens, self::ms($started)));
+        $this->dispatch(new VectorRerankCompleted($this->name, $result->model, count($hits), $result->units, $result->tokens, self::ms($started), $result->inputTokens, $result->outputTokens));
 
         return $result;
     }

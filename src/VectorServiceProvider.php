@@ -7,6 +7,7 @@ namespace AgenticGraph\Vector;
 use AgenticGraph\Vector\Console\IndexRebuildCommand;
 use AgenticGraph\Vector\Console\IngestResumeCommand;
 use AgenticGraph\Vector\Console\MigrateCommand;
+use AgenticGraph\Vector\Console\TextSearchInstallCommand;
 use AgenticGraph\Vector\Support\MetadataValidator;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
@@ -21,7 +22,8 @@ class VectorServiceProvider extends PackageServiceProvider
             ->hasMigration('create_vector_ingest_runs_table')
             ->hasCommand(MigrateCommand::class)
             ->hasCommand(IngestResumeCommand::class)
-            ->hasCommand(IndexRebuildCommand::class);
+            ->hasCommand(IndexRebuildCommand::class)
+            ->hasCommand(TextSearchInstallCommand::class);
     }
 
     public function packageRegistered(): void

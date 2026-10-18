@@ -34,6 +34,8 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Sleep;
 use Shahzad\AgenticGraph\Tracing\Contracts\TracerExporter;
+use Shahzad\AgenticGraph\Tracing\ExecutionClock;
+use Shahzad\AgenticGraph\Tracing\Instrumentation\HttpClientInstrumentation;
 use Shahzad\AgenticGraph\Tracing\TraceContext;
 use Shahzad\AgenticGraph\Tracing\Tracer;
 
@@ -299,6 +301,36 @@ it('carries the caller trace into each batch job: its upsert span hangs off the 
     expect(array_map(fn (array $span): array => [$span[2], $span[3], $span[4]], $upserts))->toBe(array_fill(0, 3, ['exec_caller', 'span_root', [['trace_id' => 'exec_caller', 'span_id' => 'span_node']]]))
         ->and($exporter->calls)->toBe(array_merge(...array_fill(0, 3, [['resumeTrace', 'exec_caller', ['continued']], ['flush', 'exec_caller', []]])))
         ->and(app()->bound(TraceContext::class))->toBeFalse();
+});
+
+it('binds an execution clock for the carried trace while a batch runs, then cleans up its HTTP state', function () {
+    queuedInCallerTrace();
+    app()->singleton(HttpClientInstrumentation::class);
+    $clocks = [];
+    Event::listen(VectorOperationCompleted::class, function (VectorOperationCompleted $event) use (&$clocks): void {
+        $clocks[] = app()->bound(ExecutionClock::class) ? app(ExecutionClock::class)->getExecutionId() : null;
+    });
+    Vector::store('queued')->collection('docs')->queue('database')->upsert(ingestDocuments(5));
+    app()->forgetInstance(TraceContext::class);
+
+    work();
+
+    expect($clocks)->toBe(['exec_caller', 'exec_caller', 'exec_caller'])
+        ->and(app(HttpClientInstrumentation::class)->cleaned)->toBe(['exec_caller', 'exec_caller', 'exec_caller'])
+        ->and(app()->bound(ExecutionClock::class))->toBeFalse();
+});
+
+it('guard: keeps an execution clock that was already bound, and leaves its HTTP state to its owner', function () {
+    queuedInCallerTrace();
+    app()->singleton(HttpClientInstrumentation::class);
+    Vector::store('queued')->collection('docs')->queue('database')->upsert(ingestDocuments(2));
+    app()->forgetInstance(TraceContext::class);
+    app()->instance(ExecutionClock::class, $clock = new ExecutionClock('exec_other'));
+
+    work();
+
+    expect(app(ExecutionClock::class))->toBe($clock)
+        ->and(app(HttpClientInstrumentation::class)->cleaned)->toBe([]);
 });
 
 it('keeps the original trace for a resumed batch', function () {

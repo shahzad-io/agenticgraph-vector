@@ -23,7 +23,7 @@ final class PgvectorTestHelper
             'password' => self::env('VECTOR_PG_PASSWORD', 'agenticgraph'),
             'charset' => 'utf8',
             'prefix' => '',
-            'schema' => 'public',
+            'search_path' => self::schema().',public',
             'sslmode' => 'prefer',
         ];
     }
@@ -47,11 +47,48 @@ final class PgvectorTestHelper
                 PDO::ATTR_TIMEOUT => 2,
             ]);
             $pdo->query('SELECT 1');
+            self::createSchema($pdo);
 
             return true;
         } catch (Throwable) {
             return false;
         }
+    }
+
+    /**
+     * This process's own schema. Two suites (or two runs) on one database never see each other's tables;
+     * pgvector and unaccent stay in public, which is second on the search path.
+     */
+    public static function schema(): string
+    {
+        return 'agtest_'.getmypid();
+    }
+
+    /**
+     * Creates this process's schema once (dropping a leftover from a reused pid) and drops it at exit.
+     * ponytail: a killed run leaves its agtest_* schema behind; drop those by hand if they pile up.
+     */
+    private static function createSchema(PDO $pdo): void
+    {
+        static $created = false;
+
+        if ($created) {
+            return;
+        }
+
+        $schema = self::schema();
+        $pdo->exec('CREATE EXTENSION IF NOT EXISTS unaccent SCHEMA public');
+        $pdo->exec("DROP SCHEMA IF EXISTS {$schema} CASCADE");
+        $pdo->exec("CREATE SCHEMA {$schema}");
+        $created = true;
+
+        register_shutdown_function(static function () use ($schema): void {
+            try {
+                self::pdo()->exec("DROP SCHEMA IF EXISTS {$schema} CASCADE");
+            } catch (Throwable) {
+                // Best-effort cleanup.
+            }
+        });
     }
 
     /**
@@ -100,16 +137,22 @@ final class PgvectorTestHelper
         }
     }
 
-    private static function pdo(): PDO
+    /**
+     * A raw connection on this process's search path.
+     */
+    public static function pdo(): PDO
     {
         $config = self::connectionConfig();
 
-        return new PDO(
+        $pdo = new PDO(
             sprintf('pgsql:host=%s;port=%s;dbname=%s', $config['host'], $config['port'], $config['database']),
             (string) $config['username'],
             (string) $config['password'],
             [PDO::ATTR_TIMEOUT => 2, PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
         );
+        $pdo->exec('SET search_path TO '.$config['search_path']);
+
+        return $pdo;
     }
 
     public static function skipReason(): string
