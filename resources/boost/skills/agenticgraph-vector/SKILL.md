@@ -270,7 +270,7 @@ Docs: `/docs/vector-guide-score-ergonomics`
 Retrieve, format context, generate with your own LLM call, cite from state. The package only does the first step.
 
 - In a controller: search, `toContext()`, then Prism `->asText()` and read `$response->text`. `generate()` is deprecated.
-- In a graph: a retrieve node (`AbstractNode`) writes `context`, `retrieved_ids` and `retrieved_scores` to state; a generate node (`PrismNode::prompt()`) answers; a cite node formats from state. Register the graph class under `config('agenticgraph.graphs')` and run it by name.
+- In a graph: a retrieve node (`AbstractNode`) writes `context`, `retrieved_ids` and `retrieved_scores` to state; a generate node (`PrismNode`, `$this->llm()->prompt(...)->vars(...)->text()`) answers; a cite node formats from state. Register the graph class under `config('agenticgraph.graphs')` and run it by name.
 - Retrieval in a controller before the graph fires the event but produces no span. If the graph still has a retrieve node, it searches again.
 - Examples: [references/rag.md](references/rag.md). Graph and node details: use the `agenticgraph-core` skill.
 

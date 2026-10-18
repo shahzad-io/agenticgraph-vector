@@ -89,10 +89,9 @@ final class GenerateNode extends PrismNode
 {
     public function execute(StateContract $state): StateContract
     {
-        $answer = $this->prompt(
-            "Answer using ONLY the context below.\n\nQuestion:\n{query}\n\nContext:\n{context}",
-            ['query' => (string) $state->get('query', ''), 'context' => (string) $state->get('context', '')],
-        );
+        $answer = $this->llm()->prompt(
+            "Answer using ONLY the context below.\n\nQuestion:\n{query}\n\nContext:\n{context}"
+        )->vars(['query' => (string) $state->get('query', ''), 'context' => (string) $state->get('context', '')])->text();
 
         return $state->set('answer', $answer);
     }

@@ -4,6 +4,10 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 
 ## Unreleased
 
+### Changed (B10: core LLM request builder)
+
+- Boost skill: the RAG generate example uses core's `$this->llm()->prompt(...)->vars(...)->text()`; core removed `PrismNode::prompt()` and the other helpers.
+
 ### Changed (B9a session C: migration lock time, traces)
 
 - Writes embed before taking the alias or table lock (resolve unlocked, embed, lock and resolve again; embed again only when the target or its provider changed meanwhile), so a migration's final pass never waits on an embedding call.
