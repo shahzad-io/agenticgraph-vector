@@ -4,6 +4,12 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 
 ## 0.1.0 (unreleased)
 
+### Prism 0.102 (B13a)
+
+- **BREAKING:** requires `prism-php/prism` `^0.102.0` (was `^0.100.1`) and so `illuminate/*` `^12.61.1 || ^13.12.0`. **Laravel 11 is no longer supported** (Prism 0.101 dropped it); CI matrix, README and `orchestra/testbench` (`^10.0|^11.0`) follow.
+- **Numbers change (usage semantics v2):** `RerankResult::$inputTokens`, `$outputTokens` and `$tokens` (and so `VectorRerankCompleted`) from the Prism reranker follow Prism's one contract: input is the **uncached** prompt (cached input is reported separately by Prism and is not counted here), output includes reasoning tokens. A reranker on Gemini with thinking reports more output tokens; a reranker on a provider that caches the system prompt (OpenAI, DeepSeek, OpenRouter, Mistral) reports fewer input tokens than before. `VectorEmbeddingCompleted::$tokens` is unchanged (Prism's embeddings usage did not change).
+- A structured reranker call whose provider ends with an unusual finish reason (Gemini, OpenRouter, DeepSeek) no longer throws inside Prism; an answer without rankings is reported as `Reranker [name] returned no rankings.`
+
 ### Endpoint URLs (B12)
 
 - New: `url` on the Prism embedding entry (`VECTOR_EMBEDDINGS_URL`) and on the Prism reranker entry (`VECTOR_RERANK_PRISM_URL`), passed as Prism's per-request provider config (for an OpenAI-compatible gateway). Empty or unset keeps Prism's own base URL. Cohere and Voyage rerankers have fixed URLs and are unchanged. When the host answers with an HTTP error (a 404 on a wrong path, say), `VectorEmbeddingException` and `VectorRerankException` end with `(configured url: <url>)`; the key is never in the message.
