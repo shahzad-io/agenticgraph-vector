@@ -209,6 +209,10 @@ it('implements SearchResult pure methods', function () {
         ->and($left->first()?->id)->toBe('1')
         ->and($left->pluck('content'))->toBe(['alpha', 'beta'])
         ->and($left->toContext('|'))->toBe('alpha|beta')
+        ->and($left->toContextItems())->toBe([
+            ['id' => '1', 'content' => 'alpha', 'metadata' => ['lang' => 'en'], 'score' => 0.9],
+            ['id' => '2', 'content' => 'beta', 'metadata' => ['lang' => 'en'], 'score' => 0.4],
+        ])
         ->and($left->toArray()['count'])->toBe(2)
         ->and($left->filterByScore(0.5)->count())->toBe(1)
         ->and($left->averageScore())->toBe(0.65)

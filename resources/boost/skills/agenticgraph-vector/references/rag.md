@@ -54,7 +54,7 @@ $products = Product::query()
 
 ## In an AgenticGraph workflow
 
-Requires `shahzad/agenticgraph`. With its tracing on, the search in `RetrieveNode` becomes a `vector.search` span under that node.
+Requires `shahzad/agenticgraph`. With its tracing on, the search in `RetrieveNode` becomes a `vector.search` span under that node. The retrieve node stores `toContextItems()` (plain arrays, safe in a checkpoint); the generate node hands them to `context()`, which joins them into `{context}` and records them as `run()->sources()` and on the llm span.
 
 ```php
 namespace App\Nodes;
@@ -75,7 +75,7 @@ final class RetrieveNode extends AbstractNode
             ->get();
 
         return $state
-            ->set('context', $results->toContext("\n\n---\n\n"))
+            ->set('documents', $results->toContextItems())
             ->set('retrieved_ids', $results->pluck('id'))
             ->set('retrieved_scores', $results->pluck('score'));
     }
@@ -94,7 +94,7 @@ final class GenerateNode extends PrismNode
     {
         $answer = $this->llm()->prompt(
             "Answer using ONLY the context below.\n\nQuestion:\n{query}\n\nContext:\n{context}"
-        )->vars(['query' => (string) $state->get('query', ''), 'context' => (string) $state->get('context', '')])->text();
+        )->vars(['query' => (string) $state->get('query', '')])->context($state->get('documents', []), separator: "\n\n---\n\n")->text();
 
         return $state->set('answer', $answer);
     }

@@ -203,8 +203,9 @@ $ids = $results->pluck('id');
 - `ne` and `whereNotIn()` also match documents without the field. `whereContains()` matches array fields only. Equality is type-exact (`'5'` does not match a stored `5`); another type never matches and never errors. Ranges take numbers, or dates as `DateTimeInterface` or `Y-m-d\TH:i:s\Z` strings; another string throws `VectorInvalidFilterException`.
 - `compile()` returns the `SearchQuery` (collection, vector, filter, topK, minScore, options) without running it. `options()` is for store-specific tuning only.
 - The builder is immutable: each call returns a new instance.
-- `SearchResult`: `hits` (`SearchHit`: `id`, `score`, `content`, `metadata`, `scores`), `count()`, `first()`, `pluck()`, `toContext()`, `filterByScore()`, `averageScore()`, `merge()`, `unique()`, `toArray()`.
+- `SearchResult`: `hits` (`SearchHit`: `id`, `score`, `content`, `metadata`, `scores`), `count()`, `first()`, `pluck()`, `toContext()`, `toContextItems()`, `filterByScore()`, `averageScore()`, `merge()`, `unique()`, `toArray()`.
 - `toContext()` concatenates hit content (default separator `"\n---\n"`). It is not an answer.
+- `toContextItems()` returns the hits as plain arrays (`id`, `content`, `metadata`, `score`; no core types). In a `PrismNode`, pass the result (or those arrays from state) to core's `$this->llm()->context(...)`: it formats them, keeps braces literal and returns them as `run()->sources()`. Core reads the method by name, so vector still does not require core.
 - `fetch($ids)` loads by id. Its scores are always `1.0`, not similarity.
 - `minScore()` filters in SQL. `filterByScore()` filters in PHP after `get()`; use it for experiments.
 

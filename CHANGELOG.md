@@ -4,6 +4,10 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 
 ## 0.1.0 (unreleased)
 
+### `toContextItems()` (B13b C)
+
+- New: `SearchResult::toContextItems()`, the hits as plain arrays (`id`, `content`, `metadata`, `score`), for AgenticGraph's `$this->llm()->context($result)`. No core types: core reads the method by name, and `shahzad/agenticgraph` stays a suggestion.
+
 ### Prism 0.102 (B13a)
 
 - **BREAKING:** requires `prism-php/prism` `^0.102.0` (was `^0.100.1`) and so `illuminate/*` `^12.61.1 || ^13.12.0`. **Laravel 11 is no longer supported** (Prism 0.101 dropped it); CI matrix, README and `orchestra/testbench` (`^10.0|^11.0`) follow.

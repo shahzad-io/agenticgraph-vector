@@ -58,6 +58,20 @@ final readonly class SearchResult
     }
 
     /**
+     * The hits as plain arrays, for AgenticGraph's $this->llm()->context($result): the core reads this method by
+     * name, so neither package imports the other.
+     *
+     * @return list<array{id: string|int, content: string, metadata: array<string, mixed>, score: float}>
+     */
+    public function toContextItems(): array
+    {
+        return array_map(
+            static fn (SearchHit $hit): array => ['id' => $hit->id, 'content' => $hit->content, 'metadata' => $hit->metadata, 'score' => $hit->score],
+            $this->hits,
+        );
+    }
+
+    /**
      * @return array{hits: list<array<string, mixed>>, count: int, metadata: array<string, mixed>}
      */
     public function toArray(): array
