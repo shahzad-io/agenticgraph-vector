@@ -6,7 +6,7 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 
 ### Endpoint URLs (B12)
 
-- New: `url` on the Prism embedding entry (`VECTOR_EMBEDDINGS_URL`) and on the Prism reranker entry (`VECTOR_RERANK_PRISM_URL`), passed as Prism's per-request provider config (for an OpenAI-compatible gateway). Empty or unset keeps Prism's own base URL. Cohere and Voyage rerankers have fixed URLs and are unchanged.
+- New: `url` on the Prism embedding entry (`VECTOR_EMBEDDINGS_URL`) and on the Prism reranker entry (`VECTOR_RERANK_PRISM_URL`), passed as Prism's per-request provider config (for an OpenAI-compatible gateway). Empty or unset keeps Prism's own base URL. Cohere and Voyage rerankers have fixed URLs and are unchanged. When the host answers with an HTTP error (a 404 on a wrong path, say), `VectorEmbeddingException` and `VectorRerankException` end with `(configured url: <url>)`; the key is never in the message.
 
 ### Release metadata (B11 session C)
 

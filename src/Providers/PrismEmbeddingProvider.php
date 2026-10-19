@@ -130,9 +130,10 @@ final class PrismEmbeddingProvider implements EmbeddingProviderContract
             $response = $request->asEmbeddings();
         } catch (Throwable $exception) {
             $cause = HttpRetry::cause($exception, $lastHttpError);
+            $url = HttpRetry::status($cause) !== null ? (string) ($this->providerConfig()['url'] ?? '') : '';
 
             throw new VectorEmbeddingException(
-                'Embedding generation failed: '.$exception->getMessage(),
+                'Embedding generation failed: '.$exception->getMessage().($url !== '' ? " (configured url: {$url})" : ''),
                 previous: $exception,
                 retryable: HttpRetry::retryable($cause),
                 status: HttpRetry::status($cause),

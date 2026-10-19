@@ -38,7 +38,11 @@ function driftCoreRoot(): string
     return getenv('AGENTICGRAPH_CORE_PATH') ?: dirname(driftRoot()).'/agenticgraph';
 }
 
-/** Core is a sibling repo, not a Composer dependency here. Its autoloader is loaded once, after this package's. */
+/**
+ * Core is a sibling repo, not a Composer dependency here. Its classes load through an autoloader appended after this
+ * package's, so the test stubs under tests/Stubs (a stub HttpClientInstrumentation, a narrower TracerExporter) keep
+ * priority. Core's own vendor/autoload.php prepends itself and would shadow them for every test that runs later.
+ */
 function driftLoadCore(): void
 {
     static $loaded = false;
@@ -46,11 +50,16 @@ function driftLoadCore(): void
         return;
     }
     $loaded = true;
-    $autoload = driftCoreRoot().'/vendor/autoload.php';
-    if (! is_file($autoload)) {
-        throw new RuntimeException("Core autoload missing at {$autoload}: set AGENTICGRAPH_CORE_PATH or run composer install in agenticgraph.");
+    $src = driftCoreRoot().'/src/';
+    if (! is_dir($src)) {
+        throw new RuntimeException("Core source missing at {$src}: set AGENTICGRAPH_CORE_PATH.");
     }
-    require_once $autoload;
+    spl_autoload_register(static function (string $class) use ($src): void {
+        $prefix = 'Shahzad\\AgenticGraph\\';
+        if (str_starts_with($class, $prefix) && is_file($file = $src.str_replace('\\', '/', substr($class, strlen($prefix))).'.php')) {
+            require_once $file;
+        }
+    });
 }
 
 /** @return array<string, string> skill-relative path => contents */
@@ -351,7 +360,7 @@ it('gives every skill a name, a description and the docs commit it condenses', f
 });
 
 it('finds the core source that the core names are checked against', function () {
-    expect(is_file(driftCoreRoot().'/vendor/autoload.php'))->toBeTrue();
+    expect(is_dir(driftCoreRoot().'/src'))->toBeTrue();
     expect(driftTypeExists('Shahzad\AgenticGraph\Contracts\StateContract'))->toBeTrue();
 });
 

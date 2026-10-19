@@ -87,7 +87,9 @@ final class PrismReranker implements RerankerContract
                 },
             );
         } catch (Throwable $exception) {
-            throw new VectorRerankException("Reranker [{$this->name}] failed: {$exception->getMessage()}", previous: $exception);
+            $url = HttpRetry::status(HttpRetry::cause($exception, null)) !== null ? ($providerConfig['url'] ?? '') : '';
+
+            throw new VectorRerankException("Reranker [{$this->name}] failed: {$exception->getMessage()}".($url !== '' ? " (configured url: {$url})" : ''), previous: $exception);
         }
 
         $rankings = $response->structured['rankings'] ?? null;
