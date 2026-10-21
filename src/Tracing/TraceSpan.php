@@ -152,15 +152,35 @@ final class TraceSpan
             );
         } catch (Throwable $exception) {
             self::$depth--;
-            self::dispatchFailed($operation, $context, $exception, $started);
+
+            try {
+                self::dispatchFailed($operation, $context, $exception, $started);
+            } finally {
+                self::forgetOperation();
+            }
 
             throw $exception;
         }
 
         self::$depth--;
-        self::dispatchCompleted($operation, $context, $result, $started);
+
+        try {
+            self::dispatchCompleted($operation, $context, $result, $started);
+        } finally {
+            self::forgetOperation();
+        }
 
         return $result;
+    }
+
+    /**
+     * The statics are one operation's scratch: cleared when it ends, so a long-lived worker (Octane, a queue
+     * worker) never carries them into the next request or job.
+     */
+    private static function forgetOperation(): void
+    {
+        self::$embeddingMs = null;
+        self::$rerank = null;
     }
 
     /**
@@ -179,7 +199,9 @@ final class TraceSpan
         try {
             return $embed();
         } finally {
-            self::$embeddingMs = (self::$embeddingMs ?? 0) + self::elapsedMilliseconds($started);
+            if (self::$depth > 0) {
+                self::$embeddingMs = (self::$embeddingMs ?? 0) + self::elapsedMilliseconds($started);
+            }
         }
     }
 
@@ -200,7 +222,9 @@ final class TraceSpan
 
             return $result;
         } finally {
-            self::$rerank = ['ms' => self::elapsedMilliseconds($started), 'candidates' => $candidates, 'status' => $status];
+            if (self::$depth > 0) {
+                self::$rerank = ['ms' => self::elapsedMilliseconds($started), 'candidates' => $candidates, 'status' => $status];
+            }
         }
     }
 

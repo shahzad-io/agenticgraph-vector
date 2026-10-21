@@ -15,6 +15,7 @@ use AgenticGraph\Vector\Tracing\VectorSpanSchema;
 use AgenticGraph\Vector\Tracing\VectorTraceContext;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
+use AgenticGraph\Vector\ValueObjects\RerankResult;
 use AgenticGraph\Vector\ValueObjects\SearchHit;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use AgenticGraph\Vector\ValueObjects\SearchResult;
@@ -476,4 +477,23 @@ it('emits exactly one event per store operation, collection management included'
         'create_collection', 'collection_exists', 'list_collections', 'upsert', 'insert', 'fetch', 'list_ids',
         'update_metadata', 'search', 'delete', 'delete_by_filter', 'search', 'health_check', 'delete_collection',
     ]);
+});
+
+it('leaves no embedding time, rerank or depth behind for the next request on a long-lived worker (Octane)', function () {
+    TraceSpan::operation('upsert', fn () => TraceSpan::embedding(fn () => [0.1]));
+    TraceSpan::operation('search', fn () => TraceSpan::rerank(2, fn () => new RerankResult([], 'deterministic')));
+    TraceSpan::embedding(fn () => [0.1]);
+
+    try {
+        TraceSpan::operation('search', function (): never {
+            TraceSpan::embedding(fn () => [0.1]);
+
+            throw new RuntimeException('store down');
+        });
+    } catch (RuntimeException) {
+    }
+
+    foreach (['depth' => 0, 'embeddingMs' => null, 'rerank' => null] as $property => $clean) {
+        expect((new ReflectionProperty(TraceSpan::class, $property))->getValue())->toBe($clean);
+    }
 });

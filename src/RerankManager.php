@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector;
 
+use AgenticGraph\Vector\Concerns\KeepsExtensions;
 use AgenticGraph\Vector\Contracts\RerankerContract;
 use AgenticGraph\Vector\Exceptions\VectorRerankException;
 use AgenticGraph\Vector\Rerankers\ApiReranker;
@@ -21,6 +22,8 @@ use InvalidArgumentException;
  */
 class RerankManager extends Manager
 {
+    use KeepsExtensions;
+
     public function getDefaultDriver(): string
     {
         $default = (string) $this->config->get('vector.rerank.default', '');

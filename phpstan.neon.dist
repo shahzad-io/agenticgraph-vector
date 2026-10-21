@@ -19,13 +19,6 @@ parameters:
         - stubs/agenticgraph-tracing.stub.php
     tmpDir: build/phpstan
     checkOctaneCompatibility: true
-    ignoreErrors:
-        # The three managers take the container like Laravel's own managers (Illuminate\Support\Manager). Larastan
-        # 3.13 started matching arrow functions here; Octane support is not verified yet (open item, B11 session C).
-        -
-            identifier: larastan.octaneCompatibility
-            path: src/VectorServiceProvider.php
-            count: 3
     checkModelProperties: true
 
     checkMissingCallableSignature: true

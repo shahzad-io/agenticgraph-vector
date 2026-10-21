@@ -74,8 +74,8 @@ Docs: `/docs/vector-installation`
 | `queue.connection`, `queue.queue` | none | Queue for `queue()->upsert()`; unset uses the app's default. `VECTOR_QUEUE_CONNECTION`, `VECTOR_QUEUE` |
 | `queue.tries`, `queue.backoff`, `queue.timeout` | `3`, `[10, 30, 60]`, `60` | Per batch job. The timeout must be below the connection's `retry_after` and above the Prism provider's `timeout` + 5 s (defaults pass). Inside the job the provider's retries are off; tries and backoff retry the batch. `VECTOR_QUEUE_TRIES`, `VECTOR_QUEUE_TIMEOUT` |
 
-- `stores.memory` (driver `memory`) is a reference store in plain PHP: exact search, pgvector's score math and capabilities, data for the life of the process. For app tests: `VECTOR_STORE=memory` with `VECTOR_EMBEDDINGS_PROVIDER=deterministic`. Not for production.
-- The managers keep the first resolved store and provider, including on Octane and in long-lived workers. Static config is fine. After `config([...])` at runtime, reset them: [references/ingestion.md](references/ingestion.md#runtime-config).
+- `stores.memory` (driver `memory`) is a reference store in plain PHP: exact search, pgvector's score math and capabilities, data for the life of its manager (one request or queued job on Octane and queue workers). For app tests: `VECTOR_STORE=memory` with `VECTOR_EMBEDDINGS_PROVIDER=deterministic`. Not for production.
+- The managers are scoped: each Octane request and queued job gets new ones, and they keep the first resolved store and provider for the rest of it. Static config is fine. After `config([...])` following a vector call in the same request, reset them: [references/ingestion.md](references/ingestion.md#runtime-config).
 
 Docs: `/docs/vector-configuration`, `/docs/vector-limitations`
 
@@ -397,6 +397,6 @@ Docs: `/docs/vector-reference-exceptions`
 - No metadata index. pgvector searches with a filter use HNSW iterative scan (`iterative_scan`, default `relaxed_order`, pgvector 0.8+) up to `max_scan_tuples` rows; a filter matching very few documents can still return fewer than `take()` hits.
 - Scores are not probabilities.
 - Runtime config needs the manager reset (see Config).
-- Octane is not verified for the vector managers (see the limitations page).
+- Octane is verified on RoadRunner (no state crosses requests). Swoole coroutines are not verified.
 
 Docs: `/docs/vector-limitations`

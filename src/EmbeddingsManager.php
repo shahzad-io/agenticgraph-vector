@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector;
 
+use AgenticGraph\Vector\Concerns\KeepsExtensions;
 use AgenticGraph\Vector\Contracts\EmbeddingProviderContract;
 use AgenticGraph\Vector\Exceptions\VectorEmbeddingException;
 use AgenticGraph\Vector\Providers\DeterministicEmbeddingProvider;
@@ -17,6 +18,8 @@ use InvalidArgumentException;
  */
 class EmbeddingsManager extends Manager
 {
+    use KeepsExtensions;
+
     public function getDefaultDriver(): string
     {
         return (string) $this->config->get('vector.embeddings.default', 'prism');

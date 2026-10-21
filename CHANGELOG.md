@@ -4,6 +4,12 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 
 ## 0.1.0 (unreleased)
 
+### Octane (B13b F)
+
+- Changed: `VectorManager`, `EmbeddingsManager` and `RerankManager` are bound `scoped` (were singletons): each Octane request and each queued job gets new managers, so a cached store, provider or reranker never outlives the request it was resolved for. A listener on Octane's `RequestReceived` (by event name, Octane stays optional) also drops managers resolved at boot or listed in `octane.warm`. The memory store's data lives one request or job on Octane and queue workers. Drivers added with `Vector::extend()`, `Embeddings::extend()` or the rerank manager's `extend()` stay on every later manager (one shared list per process); a callback that uses `$this` sees the manager it was registered on, so use the `$app` argument instead. The PHPStan `larastan.octaneCompatibility` ignore is removed.
+- Fixed: `TraceSpan`'s embedding time and rerank details are cleared when the outermost operation ends, and only recorded inside an operation, so the next request or job never starts with the last one's values.
+- Verified on Octane (RoadRunner, 2 workers, 1,000 requests); docs no longer say Octane is not verified. `PrismEmbeddingProvider::withoutRetries()` stays a process-wide switch restored in a `finally` (safe on RoadRunner and FrankenPHP; Swoole coroutines are not verified).
+
 ### `toContextItems()` (B13b C)
 
 - New: `SearchResult::toContextItems()`, the hits as plain arrays (`id`, `content`, `metadata`, `score`), for AgenticGraph's `$this->llm()->context($result)`. No core types: core reads the method by name, and `shahzad/agenticgraph` stays a suggestion.

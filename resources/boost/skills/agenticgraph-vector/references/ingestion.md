@@ -82,7 +82,7 @@ $results = Vector::store('pgvector')->collection('articles')->usingVector($vecto
 
 ## Runtime config
 
-The managers keep the first resolved store and provider. After changing config at runtime (tests, multi-tenant), reset them:
+The managers keep the first resolved store and provider for the rest of the request or queued job (each Octane request and job gets new ones). After changing config at runtime following a vector call in the same request (tests, multi-tenant), reset them:
 
 ```php
 use AgenticGraph\Vector\EmbeddingsManager;

@@ -11,6 +11,7 @@ use AgenticGraph\Vector\Console\TextSearchInstallCommand;
 use AgenticGraph\Vector\Support\MetadataValidator;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
+use stdClass;
 
 class VectorServiceProvider extends PackageServiceProvider
 {
@@ -29,13 +30,28 @@ class VectorServiceProvider extends PackageServiceProvider
     public function packageRegistered(): void
     {
         $this->app->singleton(MetadataValidator::class);
+        // Drivers added with extend(), kept for the life of the process: see KeepsExtensions.
+        $this->app->singleton('vector.extensions', fn (): stdClass => new stdClass);
 
-        $this->app->singleton(VectorManager::class, fn ($app): VectorManager => new VectorManager($app));
-        $this->app->singleton(EmbeddingsManager::class, fn ($app): EmbeddingsManager => new EmbeddingsManager($app));
-        $this->app->singleton(RerankManager::class, fn ($app): RerankManager => new RerankManager($app));
+        // Scoped: rebuilt per Octane request and per queued job, so a cached store, provider or reranker never
+        // outlives the request (and its config) it was built for. Within one request they are shared.
+        $this->app->scoped(VectorManager::class, fn ($app): VectorManager => new VectorManager($app));
+        $this->app->scoped(EmbeddingsManager::class, fn ($app): EmbeddingsManager => new EmbeddingsManager($app));
+        $this->app->scoped(RerankManager::class, fn ($app): RerankManager => new RerankManager($app));
 
         $this->app->alias(VectorManager::class, 'vector');
         $this->app->alias(EmbeddingsManager::class, 'vector.embeddings');
         $this->app->alias(RerankManager::class, 'vector.rerank');
+    }
+
+    public function packageBooted(): void
+    {
+        // Octane clones the booted app for each request, so a manager resolved at boot (or listed in octane.warm)
+        // would be every request's manager. Drop them from the clone. A string event name keeps Octane optional.
+        $this->app['events']->listen('Laravel\Octane\Events\RequestReceived', function (object $event): void {
+            foreach ([VectorManager::class, EmbeddingsManager::class, RerankManager::class] as $manager) {
+                $event->sandbox->forgetInstance($manager);
+            }
+        });
     }
 }

@@ -15,7 +15,9 @@ use Throwable;
 
 final class PrismEmbeddingProvider implements EmbeddingProviderContract
 {
-    // ponytail: process-wide switch, fine for one job per worker process; a per-request option if that changes.
+    // ponytail: process-wide switch, restored in a finally, so safe on queue workers and Octane on RoadRunner or
+    // FrankenPHP (one request per process at a time; verified by the octane:probe run). Swoole coroutines would need a
+    // per-request option.
     private static bool $retriesOff = false;
 
     private ?int $resolvedDimensions = null;

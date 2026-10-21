@@ -63,12 +63,17 @@ beforeEach(function () {
     app(EmbeddingsManager::class)->extend('counting', fn (): CountingEmbeddingProvider => $provider);
     config()->set('vector.embeddings.default', 'counting');
 
-    Vector::extend('queued-memory', fn ($app, array $config): MemoryStore => new MemoryStore(
-        $config,
-        $app->make(EmbeddingsManager::class),
-        $app->make(MetadataValidator::class),
-        new StoreCapabilities(StoreCapability::ListIds, StoreCapability::Aliases, StoreCapability::QueuedIngest),
-    ));
+    // One store for the test: the worker builds new managers for each job (scoped), and a memory store's data
+    // lives on the instance.
+    $store = null;
+    Vector::extend('queued-memory', function ($app, array $config) use (&$store): MemoryStore {
+        return $store ??= new MemoryStore(
+            $config,
+            $app->make(EmbeddingsManager::class),
+            $app->make(MetadataValidator::class),
+            new StoreCapabilities(StoreCapability::ListIds, StoreCapability::Aliases, StoreCapability::QueuedIngest),
+        );
+    });
     config()->set('vector.stores.queued', ['driver' => 'queued-memory', 'batch_size' => 2]);
     Vector::store('queued')->createCollection(new CollectionDefinition('docs', dimensions: 8));
 });

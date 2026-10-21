@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector;
 
+use AgenticGraph\Vector\Concerns\KeepsExtensions;
 use AgenticGraph\Vector\Contracts\AliasStoreContract;
 use AgenticGraph\Vector\Contracts\IndexStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
@@ -31,6 +32,8 @@ use InvalidArgumentException;
  */
 class VectorManager extends Manager
 {
+    use KeepsExtensions;
+
     public function getDefaultDriver(): string
     {
         return (string) $this->config->get('vector.default', 'pgvector');
