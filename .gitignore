@@ -32,3 +32,6 @@ testbench.yaml
 
 # Internal docs (PRD, phase tasks, v8 notes): kept locally, not tracked
 /docs
+
+# CI checkout of core (BoostSkillsDriftTest)
+/.ci
