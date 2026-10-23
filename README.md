@@ -85,3 +85,5 @@ Vector operations inside graph nodes nest as `vector` spans in AgenticGraph trac
 ## License
 
 The MIT License (MIT). See [LICENSE.md](LICENSE.md) for details.
+
+Started from spatie/package-skeleton-laravel.
