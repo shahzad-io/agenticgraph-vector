@@ -228,7 +228,7 @@ final class CollectionMigrator
 
         if ($recorded === null || $target === null) {
             throw new VectorQueryException(
-                "Cannot tell whether [{$alias}] can be copied: ".($recorded === null ? "[{$source['collection']}] has no recorded embedding model (created before B5, or without a provider)" : 'the new definition has no embedding model')
+                "Cannot tell whether [{$alias}] can be copied: ".($recorded === null ? "[{$source['collection']}] has no recorded embedding model (created by an earlier build, or without a provider)" : 'the new definition has no embedding model')
                 .'. Choose: copy the vectors as they are (mode copy, --copy) or re-embed (mode reembed, --reembed).',
             );
         }

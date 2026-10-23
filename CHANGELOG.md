@@ -4,80 +4,81 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 
 ## 0.1.0 (unreleased)
 
-### Octane (B13b F)
+### Octane
 
 - Changed: `VectorManager`, `EmbeddingsManager` and `RerankManager` are bound `scoped` (were singletons): each Octane request and each queued job gets new managers, so a cached store, provider or reranker never outlives the request it was resolved for. A listener on Octane's `RequestReceived` (by event name, Octane stays optional) also drops managers resolved at boot or listed in `octane.warm`. The memory store's data lives one request or job on Octane and queue workers. Drivers added with `Vector::extend()`, `Embeddings::extend()` or the rerank manager's `extend()` stay on every later manager (one shared list per process); a callback that uses `$this` sees the manager it was registered on, so use the `$app` argument instead. The PHPStan `larastan.octaneCompatibility` ignore is removed.
 - Fixed: `TraceSpan`'s embedding time and rerank details are cleared when the outermost operation ends, and only recorded inside an operation, so the next request or job never starts with the last one's values.
 - Verified on Octane (RoadRunner, 2 workers, 1,000 requests); docs no longer say Octane is not verified. `PrismEmbeddingProvider::withoutRetries()` stays a process-wide switch restored in a `finally` (safe on RoadRunner and FrankenPHP; Swoole coroutines are not verified).
 
-### `toContextItems()` (B13b C)
+### `toContextItems()`
 
 - New: `SearchResult::toContextItems()`, the hits as plain arrays (`id`, `content`, `metadata`, `score`), for AgenticGraph's `$this->llm()->context($result)`. No core types: core reads the method by name, and `shahzad/agenticgraph` stays a suggestion.
 
-### Prism 0.102 (B13a)
+### Prism 0.102 and PHP 8.3
 
+- **BREAKING:** requires PHP 8.3+ (`php` `^8.3`, was `^8.2`). Laravel 13 needs 8.3, and CI tests 8.3 and 8.4 only.
 - **BREAKING:** requires `prism-php/prism` `^0.102.0` (was `^0.100.1`) and so `illuminate/*` `^12.61.1 || ^13.12.0`. **Laravel 11 is no longer supported** (Prism 0.101 dropped it); CI matrix, README and `orchestra/testbench` (`^10.0|^11.0`) follow.
 - **Numbers change (usage semantics v2):** `RerankResult::$inputTokens`, `$outputTokens` and `$tokens` (and so `VectorRerankCompleted`) from the Prism reranker follow Prism's one contract: input is the **uncached** prompt (cached input is reported separately by Prism and is not counted here), output includes reasoning tokens. A reranker on Gemini with thinking reports more output tokens; a reranker on a provider that caches the system prompt (OpenAI, DeepSeek, OpenRouter, Mistral) reports fewer input tokens than before. `VectorEmbeddingCompleted::$tokens` is unchanged (Prism's embeddings usage did not change).
 - A structured reranker call whose provider ends with an unusual finish reason (Gemini, OpenRouter, DeepSeek) no longer throws inside Prism; an answer without rankings is reported as `Reranker [name] returned no rankings.`
 
-### Endpoint URLs (B12)
+### Endpoint URLs
 
 - New: `url` on the Prism embedding entry (`VECTOR_EMBEDDINGS_URL`) and on the Prism reranker entry (`VECTOR_RERANK_PRISM_URL`), passed as Prism's per-request provider config (for an OpenAI-compatible gateway). Empty or unset keeps Prism's own base URL. Cohere and Voyage rerankers have fixed URLs and are unchanged. When the host answers with an HTTP error (a 404 on a wrong path, say), `VectorEmbeddingException` and `VectorRerankException` end with `(configured url: <url>)`; the key is never in the message.
 
-### Release metadata (B11 session C)
+### Release metadata
 
 - Author name typo fixed in `composer.json`; the internal docs (PRD, phase tasks, v8 notes) are no longer tracked; README compatibility table. Dev lock updated (`composer audit` clean; guzzle 8).
 - Tests: each test process uses its own Postgres schema (`agtest_<pid>`, dropped at exit), so this suite and an app's suite can run at the same time on one database. The benchmark runner keeps using `public`.
 
-### Changed (B11 session C: queued batch traces)
+### Changed (queued batch traces)
 
 - A queued batch that carries a trace now binds core's execution clock for that trace while it runs (unless one is already bound), so with `agenticgraph.tracing.capture.http` on its embedding requests are recorded as `http` spans in the `continued` segment (before, core recorded none: it records HTTP only under a clock). Afterwards the clock is forgotten and core's `HttpClientInstrumentation::cleanupExecution()` runs for the trace, resolved from the container by class name.
 
-### Added (B11 session C: split rerank tokens, runner caches)
+### Added (split rerank tokens, runner caches)
 
 - `RerankResult` and `VectorRerankCompleted` gain optional `inputTokens` and `outputTokens` (additive, trailing constructor arguments, null by default). The Prism reranker fills them from the response usage; `tokens` stays their sum. Cohere and Voyage report one count, so theirs stay null.
 - Benchmark runner: `--rerank-price-per-1m-input-tokens` and `--rerank-price-per-1m-output-tokens` price the two apart (a cached request without the split is priced as input). Document vectors are cached per dataset, model, dimensions and text sha256; an ingest served from the cache records `cached: true` and makes no embedding call.
 
-### Added (B11 session C: accent folding)
+### Added (accent folding)
 
 - **`php artisan vector:text-search:install {--store=}`** creates the `unaccent` extension and the `spanish_unaccent` text search configuration (`spanish` with `unaccent` before the stemmer) on a pgvector store's connection; running it again is a no-op. Opt-in per collection with the language map (`es` to `spanish_unaccent`); move an existing collection with `vector:migrate {alias} --keyword --language=es=spanish_unaccent --copy` (no embedding calls). Documents and queries both fold.
 - A language map configuration must be visible on the connection's search path; one that exists only in another schema now throws the "Unknown Postgres text search configuration" error instead of failing at `CREATE TABLE`.
 
-### Changed (B10: core LLM request builder)
+### Changed (core LLM request builder)
 
 - Boost skill: the RAG generate example uses core's `$this->llm()->prompt(...)->vars(...)->text()`; core removed `PrismNode::prompt()` and the other helpers.
 
-### Changed (B9a session C: migration lock time, traces)
+### Changed (migration lock time, traces)
 
 - Writes embed before taking the alias or table lock (resolve unlocked, embed, lock and resolve again; embed again only when the target or its provider changed meanwhile), so a migration's final pass never waits on an embedding call.
 - A migration's final pass that finds documents to embed releases the lock and runs another unlocked pass (counted in `catch_up_max_passes`); only the last allowed pass embeds inside the lock. `AliasStoreContract::finishMigration()` gains `bool $embedInLock = true`: without it, documents to embed return the state unswitched.
 - With AgenticGraph tracing on, `vector:migrate` runs as its own trace (root span `vector:migrate`, type `graph`, with `vector.migrate` under it).
 - A queued ingest dispatched inside a traced node carries the trace: `IngestBatchJob` gains `?array $trace` (trace id, root span id, queueing span id), each batch's spans join that trace as a `continued` segment flushed when the batch ends, parented to the trace root with a link to the queueing span (agenticgraph trace wire v1.1), and a resumed batch keeps it. Jobs queued before this change run untraced.
 
-### Added (B9a session B: text splitter)
+### Added (text splitter)
 - **`AgenticGraph\Vector\Ingest\TextSplitter`** (`new TextSplitter(int $size, int $overlap = 0)`): splits by characters (no tokenizer), ending a chunk at the last paragraph break in the second half of its window, else the last sentence end, else at `$size`; the next chunk starts `$overlap` characters earlier, at a word start. `split()` returns the trimmed pieces (none for blank text); `chunk(Document $parent)` returns chunk documents with ids `{parentId}#{n}` and the parent's metadata plus `parent_id` (string) and `chunk` (index). A parent with a precomputed vector, a size below 1 or an overlap outside 0 to size - 1 throw `InvalidArgumentException`.
 - **`Builder::upsertChunks(array $parents, TextSplitter $splitter, array $globalMetadata = [])`**: upserts every parent's new chunks, then deletes the parent's chunks with `chunk` >= the new count, so a re-ingested document is findable at every moment. Needs `DeleteByFilter` and `FilterRange`; refuses `queue()` (`VectorUnsupportedOperationException`).
 - **`Builder::collapse(string $field = 'parent_id')`**: one hit per parent, the first in result order. The search fetches `vector.collapse.overfetch` (`VECTOR_COLLAPSE_OVERFETCH`, 3) x take() hits; with `rerank()` all of them are reranked, then collapsed. Below 1 throws `VectorQueryException`.
 - **Conformance:** collapse with over-fetch, collapse after rerank, `upsertChunks()` shrinking a parent from 5 chunks to 2 (other parents kept, metadata, blank text), `upsertChunks()` refusing `queue()`.
 - Benchmark runner: `--chunk=SIZE,OVERLAP` splits documents at ingest and collapses hits to their parent before scoring (reranked runs rerank the top 30 chunks, then collapse). The `chunk` settings are a comparable key, and the default baseline of a chunked run is `<model-slug>.chunked.json`. New WixQA chunked baselines (2,000 characters, overlap 200, no truncation). `--rerank-candidates=30|50|100` sets the reranker's candidate count (default 30); chunked rerank modes report `candidate_documents_mean`; every mode keeps its per-query nDCG@10 and recall@5 (`per_query`) so runs over the same queries can be paired.
 
-### BREAKING (B9a session A: hardening)
+### BREAKING (hardening)
 - **pgvector no longer rebuilds an IVFFlat index after every insert or upsert, nor after a queued run.** An IVFFlat collection created empty keeps its one list until `Vector::rebuildIndex()` or `php artisan vector:index:rebuild {collection}`: run it after the first bulk load. A migration still builds the target's index once, when its copy ends. HNSW is unchanged.
 - **`QueuedIngestStoreContract` is removed** (`ingestBatch()`, `completeIngest()`): it only existed to skip and defer the IVFFlat rebuild. A queued batch is a plain `upsert()` on the named store.
 - **A queued batch retries a `VectorEmbeddingException` only when it is `retryable`.** A 400, 401 or 413 fails the batch at once; a custom provider that throws `VectorEmbeddingException` without `retryable: true` now fails at once too.
 - **Inside a queued ingest job the provider's retries are off**: each embedding request gets one try and the job's `tries` and `backoff` retry the batch. Inline paths (`upsert()` without `queue()`, searches, `queue('sync')`) keep the provider's retries (`PrismEmbeddingProvider::withoutRetries()`).
 - **`queue()` refuses a collection whose Prism provider `timeout` plus 5 s is not below `vector.queue.timeout`** (`InvalidArgumentException` naming the provider). The defaults (30 s, 60 s) pass. Providers without HTTP are not checked.
-- **`deleteAlias()` also deletes the alias's migration rows**, in the same transaction, and refuses (`VectorQueryException`) while its latest migration is `copying` or `catching_up`. Before, a recreated name still reported the old alias's migration (B5 open item).
+- **`deleteAlias()` also deletes the alias's migration rows**, in the same transaction, and refuses (`VectorQueryException`) while its latest migration is `copying` or `catching_up`. Before, a recreated name still reported the old alias's migration.
 - **`vector.rerank.timeout` is a total budget**, retries and waits included, not a per-request limit.
 
-### Added (B9a session A)
+### Added (hardening)
 - **Embedding timeouts and retries.** Prism provider entries read `timeout` (`VECTOR_EMBEDDINGS_TIMEOUT`, 30 s), `retries` (`VECTOR_EMBEDDINGS_RETRIES`, 2) and `retry_sleep_ms` (`VECTOR_EMBEDDINGS_RETRY_SLEEP_MS`, 500) with explicit defaults, applied through Prism's per-request `withClientOptions()` and `withClientRetry()` (no Prism env keys; `prism.request_timeout` no longer applies to these requests). Retried: 429, 5xx (529 included), connection errors and timeouts, decided on the raw HTTP exception before Prism maps it; never other 4xx. Waits: a random time between half and all of `retry_sleep_ms x 2^(n - 1)`, or the provider's `Retry-After` when longer, up to `retry_after_max_ms` (`VECTOR_EMBEDDINGS_RETRY_AFTER_MAX_MS`, 2000); a longer `Retry-After` fails the request at once as `retryable` (status 429) instead of sleeping. Rerankers wait for `Retry-After` only when it fits their remaining budget, then fail open. `VectorEmbeddingCompleted` fires once, for the request that succeeded.
 - **`VectorEmbeddingException::$retryable` and `::$status`** (HTTP status, null without a response). The constructor is `(string $message, ?Throwable $previous, bool $retryable = false, ?int $status = null)`.
 - **Reranker retries inside the timeout.** `vector.rerank.retries` (`VECTOR_RERANK_RETRIES`, 2) and `vector.rerank.retry_sleep_ms` (`VECTOR_RERANK_RETRY_SLEEP_MS`, 500), per entry overridable. Each try gets what is left of `timeout`; a retry whose wait would end past it does not run, then fail-open applies, so a failed-open search never waits longer than `timeout`. The Cohere, Voyage and Prism drivers use `Support\HttpRetry::withinBudget()`.
 - **`Vector::rebuildIndex(string $collection, ?string $store = null)`, `php artisan vector:index:rebuild {collection} {--store=}`**, `IndexStoreContract` and `StoreCapability::RebuildIndex` (pgvector). The rebuild runs `CREATE INDEX CONCURRENTLY` under a temporary name, `DROP INDEX CONCURRENTLY` on the old index and a rename, so searches and writes are not blocked; a per-collection advisory lock makes a second rebuild refuse (`VectorQueryException`) while one runs (no more `42P07` from two rebuilds racing; waiting would deadlock with the concurrent build). A temporary index a killed or failed rebuild left behind is dropped, a missing index is rebuilt from the registered options, and a build over `maintenance_work_mem` throws `VectorQueryException` naming it, keeping the old index. Refused inside a transaction. The migration target's rebuild uses the same path.
 - **Conformance:** `deleteAlias()` removes the migration history, and refuses while a migration is unfinished.
 
-### Added (B8: queued ingest)
+### Added (queued ingest)
 - **`Builder::queue(?string $connection = null, ?string $queue = null)`**: the next `upsert()` dispatches one `IngestBatchJob` per batch of the store's `batchSize()` through `Bus::batch` (failures allowed, named `vector-ingest:<run id>`) after the builder drops repeated ids, and returns an `IngestRun`. `upsert()` returns `?IngestRun` (null without `queue()`). On a `sync` connection the batches run inline, one after another, every batch even after a failure.
 - **Run record.** Publishable migration `create_vector_ingest_runs_table` (`vendor:publish --tag=vector-migrations`) on the app's default connection: id, batch id, store, collection, status (`pending`, `running`, `completed`, `failed`), total and processed documents, per-batch state (status, count, attempts, error), timestamps. Batch state is set per index under a row lock, never incremented. `Vector::ingestRun($id)` and the `IngestRun` value object read it.
 - **`vector.queue` config:** `connection` (`VECTOR_QUEUE_CONNECTION`), `queue` (`VECTOR_QUEUE`), `tries` (`VECTOR_QUEUE_TRIES`, 3), `backoff` (`[10, 30, 60]`) and `timeout` (`VECTOR_QUEUE_TIMEOUT`, 60). `VectorDimensionMismatchException`, `VectorInvalidMetadataException` and `VectorCollectionNotFoundException` fail a batch without a retry (`FailOnException`); connection and embedding errors retry.
@@ -88,18 +89,18 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 - **Conformance:** queued ingest on `sync` (every batch written and the last copy kept, a failed batch fails the run and leaves the others, a batch run twice is written and counted once, batches follow an alias switch, refusals).
 - Benchmark runner: reports and caches default to `~/ag2-scratch/bench` (long-lived, outside `/tmp`).
 
-### Fixed (B8 Step 3 validation)
-- **pgvector: a write to a plain collection could be lost when `vector:migrate` adopted it.** A writer that resolved the collection before adoption took no lock (no alias row existed yet), embedded, and wrote after the switch, into the old collection. Writes now take the table's `ROW EXCLUSIVE` lock right after resolving a plain collection, so the migration's final pass waits for them, then resolve again (unlocked) to follow a switch made before the lock. Lock order stays alias row, then table. Found by a queued ingest during a first migration (100 of 3,300 documents only in the old collection); B5 behavior for aliased collections is unchanged.
+### Fixed (queued ingest)
+- **pgvector: a write to a plain collection could be lost when `vector:migrate` adopted it.** A writer that resolved the collection before adoption took no lock (no alias row existed yet), embedded, and wrote after the switch, into the old collection. Writes now take the table's `ROW EXCLUSIVE` lock right after resolving a plain collection, so the migration's final pass waits for them, then resolve again (unlocked) to follow a switch made before the lock. Lock order stays alias row, then table. Found by a queued ingest during a first migration (100 of 3,300 documents only in the old collection); aliased collections behave as before.
 - **`vector:ingest:resume`** retries only failed jobs still in the failed job store, and refuses without reopening the run when none are left (pruned or deleted). Before, `queue:retry` skipped the missing ids, the command succeeded, and the run stayed `running`.
 
-### BREAKING (B7: reranking)
+### BREAKING (reranking)
 - **`hybrid(candidates:)` is now `hybrid(depth:)`** (candidates per list before fusion), and `SearchQuery::$candidates` is `SearchQuery::$depth`. `rerank(candidates:)` is the count sent to a reranker. Callers passing `candidates:` by name to `hybrid()` must rename it.
 - **`SearchHit::$scores`** is no longer hybrid-only: its shape is `{vector, keyword?, fused?, rerank?}`. Reranked dense hits carry `['vector' => ..., 'rerank' => ...]`.
 - **Span schema v4.** `VectorSpanSchema::VERSION` is `v4`; adds `vector.reranker`, `vector.rerank_ms`, `vector.rerank_candidates` and `vector.rerank_status` (`ok`, `failed_open`) on reranked search spans. `VectorOperationCompleted` and `VectorOperationFailed` gain `rerankMs`.
 - `illuminate/http` is an explicit requirement.
 
-### Added (B7)
-- **Measured (B7).** Reranking the top 30 raised nDCG@10 by 0.06 to 0.20 over dense on SciFact and both WixQA sets (Cohere `rerank-v4.0-pro`, Voyage `rerank-3`); reranked hybrid (keyword weight 0.25 or 0.5) matched reranked dense within noise on WixQA, so the hybrid default stays 0.25 and the recommended pipeline is dense plus a reranker. Benchmark baselines now include `dense+rerank` and `hybrid+rerank` (Cohere).
+### Added (reranking)
+- **Measured.** Reranking the top 30 raised nDCG@10 by 0.06 to 0.20 over dense on SciFact and both WixQA sets (Cohere `rerank-v4.0-pro`, Voyage `rerank-3`); reranked hybrid (keyword weight 0.25 or 0.5) matched reranked dense within noise on WixQA, so the hybrid default stays 0.25 and the recommended pipeline is dense plus a reranker. Benchmark baselines now include `dense+rerank` and `hybrid+rerank` (Cohere).
 - **pgvector raises `hnsw.ef_search`** for a search that needs more than 40 rows: to `max(take, hybrid depth)` (at most 1000), unless `options()` sets it, and never below the session's value. Before, an unfiltered HNSW search returned at most 40 hits, so `take(100)`, 30+ rerank candidates beyond 40, and hybrid's default depth of 50 were silently cut to 40.
 - **Reranking.** `Builder::rerank(?string $using = null, int $candidates = 30, ?string $query = null)`: the store returns `max(candidates, take)` hits (`minScore()` applies before reranking, to the vector similarity), the named reranker orders them, and the top `take` come back. `score` stays the vector similarity; hits are ordered by `scores['rerank']`. The rerank query is `$query`, else the `similarTo()` text, else the hybrid keywords; `usingVector()` needs `$query`.
 - **`Vector::reranker(?string $name)`** (and `Vector::rerankers()`, the `RerankManager`) reranks hits merged from several searches, with the same fail-open policy and events.
@@ -110,14 +111,14 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 - **`AgenticGraph\Vector\Testing\RerankerConformanceTests`**: at most topN, a subset without duplicates, non-increasing rerank scores, hits unchanged except the rerank score, no request for empty input, topN above the count, stable ties. Run on `null` and `deterministic`, and (gated) on Cohere, Voyage and Prism.
 - **Benchmark runner.** `--rerank=<config name>` adds a `+rerank` twin of every mode: its top 30 reranked to the top 10 (one client), cached per query and ordered candidate ids. Paired intervals of `+rerank` modes use `dense+rerank` as reference. Rerank latency p50/p95, requests, units and tokens per mode; `--rerank-price-per-1k-searches` and `--rerank-price-per-1m-tokens` price them in the cost section.
 
-### BREAKING (B6: hybrid search and iterative scan)
+### BREAKING (hybrid search and iterative scan)
 - **Contracts.** `describeCollection()` also returns `keyword` (`['languages' => [...], 'language_field' => ...]`, or null). Custom stores must return it. A store that runs `SearchQuery::$keywords` should declare `StoreCapability::Keyword`.
 - **Filtered pgvector searches use HNSW iterative scan** (`relaxed_order` by default, pgvector 0.8 or later), so a selective filter returns up to `take()` hits instead of the few the first HNSW candidates hold. On pgvector before 0.8 set `vector.stores.pgvector.iterative_scan` to `off`.
 - Dense search ties (equal distance) are ordered by id in both stores (pgvector byte order, `COLLATE "C"`). Before, pgvector left them in index order and memory compared numeric-looking ids as numbers.
 - pgvector and memory declare `StoreCapability::Keyword`.
 - **Span schema v3.** `VectorSpanSchema::VERSION` is `v3`; adds `vector.search_mode` (`dense` or `hybrid`) on search spans. `VectorOperationCompleted` and `VectorOperationFailed` gain `searchMode` (null for other operations).
 
-### Added (B6)
+### Added (hybrid search and iterative scan)
 - **Hybrid search.** `Builder::hybrid(int $candidates = 50, int $k = 60)` and `Builder::keywords(string $keywords)`: up to `max(candidates, take)` vector and keyword candidates, under the same filter, fused by reciprocal rank fusion (`AgenticGraph\Vector\Support\ReciprocalRankFusion`, shared by both stores). `SearchHit::$score` stays the vector similarity; hybrid hits come in fused order and carry `SearchHit::$scores` (`vector`, `keyword` or null, `fused`). `minScore()` applies to the vector similarity of every hit after fusion, keyword-only hits included. The keyword query defaults to the `similarTo()` text and is required with `usingVector()`; `keywords()` without `hybrid()` throws. A hybrid search on a collection without keyword search throws `VectorQueryException` naming the migration. `SearchResult::toArray()` includes `scores`.
 - **Keyword collections.** `CollectionDefinition` gains `keyword` (null: none on create, the source's setting in a migration), `languages` (metadata value to text search configuration, default `CollectionDefinition::DEFAULT_LANGUAGES`: `en`, `english` to `english`, `es`, `spanish` to `spanish`; other values use `simple`) and `languageField` (default `lang`), plus `keywordSettings()`. pgvector adds a generated `keywords tsvector` column (a `CASE` over the map) and a GIN index; write paths are unchanged. The keyword query is parsed with `websearch_to_tsquery` in every configuration of the map plus `simple`; their OR is the index condition and each document must match the query in its own configuration. Unknown configurations are refused before anything is created. `createCollection()` with a different keyword setting throws (use migrate). Registry column `keyword`, added on first use.
 - **Migration.** `CollectionMigrator` carries `keyword`, `languages` and `languageField` (kept from the source unless given). Adding keyword search to a collection with the same provider is a copy. pgvector builds the keyword index of the new collection at the catch-up phase, not during the copy. `vector:migrate` gains `--keyword`, `--no-keyword`, `--language=value=configuration` (repeatable) and `--language-field`; the dry run prints the keyword settings.
@@ -125,22 +126,22 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 - **Iterative scan.** Search options `hnsw.iterative_scan` (`off`, `relaxed_order`, `strict_order`) and `hnsw.max_scan_tuples`, applied with `SET LOCAL`. Config `vector.stores.pgvector.iterative_scan` (`VECTOR_PGVECTOR_ITERATIVE_SCAN`, default `relaxed_order`) for searches with a filter, and `max_scan_tuples` (`VECTOR_PGVECTOR_MAX_SCAN_TUPLES`, default 20000). Candidates are re-sorted by distance.
 - **Keyword match modes.** `Builder::hybrid(int $candidates = 50, int $k = 60, ?string $match = null)`: `any` (default) combines the query's words with OR (`plainto_tsquery` per configuration, `&` turned into `|`) and ranks keyword candidates by `ts_rank_cd`, for natural-language questions; `websearch` keeps `websearch_to_tsquery` (every word, quoted phrases, `-` exclusions, `or`). Null takes config `vector.hybrid.match` (`VECTOR_HYBRID_MATCH`, default `any`); another value throws `VectorQueryException`. Each document still matches in its own configuration. The memory store's `any` mode matches documents with any query token, scored by how many distinct query tokens they hold. Why: AND matching found keyword hits for 9 of 300 SciFact questions.
 - **Weighted fusion.** `Builder::hybrid(..., ?float $keywordWeight = null)`: the keyword side's RRF term is multiplied by the weight (dense weight 1); null takes config `vector.hybrid.keyword_weight` (`VECTOR_HYBRID_KEYWORD_WEIGHT`, default `0.25`); a negative or non-finite weight throws `VectorQueryException`. At weight 0 the hits are exactly the dense results (members, order and scores). `ReciprocalRankFusion::fuse()` gains `$keywordWeight`.
-- **Defaults from the B6 sweep** (weights 0 to 1, both match modes, three datasets and a help-center golden set, paired bootstrap intervals): no weight beat dense on top-10 quality on every set, so dense stays the recommended baseline and hybrid is documented as candidate generation for a reranker. Match `any` was chosen on same-budget candidate recall@30 (`websearch` added none); weight 0.25 has the best candidate recall@30 with no set losing. The committed baselines record dense and hybrid at these defaults.
+- **Defaults from the benchmark sweep** (weights 0 to 1, both match modes, three datasets and a help-center golden set, paired bootstrap intervals): no weight beat dense on top-10 quality on every set, so dense stays the recommended baseline and hybrid is documented as candidate generation for a reranker. Match `any` was chosen on same-budget candidate recall@30 (`websearch` added none); weight 0.25 has the best candidate recall@30 with no set losing. The committed baselines record dense and hybrid at these defaults.
 - `SearchQuery` gains `keywords`, `candidates`, `fusionK`, `keywordMatch` (`SearchQuery::KEYWORD_MATCH_MODES`) and `keywordWeight` (0.25).
 - Conformance suite: keyword matching per mode (`any`: any word, operators ignored; `websearch`: words, phrases, exclusions, alternatives), a natural-language question that only `any` matches, match mode validation and the config default, the keyword weight 0 invariant (exactly the dense results) and the weight scaling the keyword term exactly, exact phrase in the fused top, RRF scores, `score` equal to the vector similarity, a query without lexemes gives the dense ranking, filters on both sides, `minScore` on keyword-only hits, keyword requirements and errors, `similarTo()` text as the default keyword query, keyword-setting conflicts on `createCollection()`, migrations adding and keeping keyword search, and the `Keyword` gate. Hybrid tests are skipped for a store without `Keyword`.
 - Dev only: benchmark documents carry `lang: en` (the datasets are English). `bin/vector-bench` reports same-budget candidate recall@30/50/100, paired per-query differences against dense with bootstrap 95% intervals (nDCG@10, candidate recall@30), and the raw union of the dense and keyword lists separately with its document count. `--match` and `--keyword-weight` sweep hybrid settings (report keys `hybrid:<match>:<weight>`); `--keep` keeps the ingested collection for `--collection` reruns, which then report the ingest that built it and skip the preflight embedding when every query vector is cached. `bin/vector-bench --mode=dense,hybrid`, `--filtered` (WixQA `product`, SciFact `bucket` derived in the runner) and `--iterative-scan=off,relaxed_order`; reports show deltas against the first mode, queries below take, and the filter. A filtered report is compared only with a filtered baseline.
 
-### Fixed (B6)
+### Fixed (hybrid search and iterative scan)
 - Em-dashes removed from src, tests, docs and the README (the standalone RAG corpus text uses a colon instead).
 
-### BREAKING (B5: aliases and schema migration)
-- **Collections keep their embedding provider.** A collection records the provider it was created with (registry column `embedding`: provider name, model, width) and embeds documents and `similarTo()` queries with it. Changing `vector.embeddings.default` no longer changes the provider of existing collections. Collections created before B5 (no record) keep using the default provider.
+### BREAKING (aliases and schema migration)
+- **Collections keep their embedding provider.** A collection records the provider it was created with (registry column `embedding`: provider name, model, width) and embeds documents and `similarTo()` queries with it. Changing `vector.embeddings.default` no longer changes the provider of existing collections. Collections created by an earlier build (no record) keep using the default provider.
 - **Named embedding providers.** `Embeddings::using($name)` reads `vector.embeddings.providers.{$name}` and builds it with its `driver` key (`prism` or `deterministic`), so one app can hold several models. A name not in the config throws `InvalidArgumentException` unless registered with `Embeddings::extend()`. `prism` and `deterministic` still work without a config entry. The deterministic driver reads an optional `model` key.
 - **Contracts.** `CollectionStoreContract` gains `describeCollection(string $name): array` (the collection a name resolves to, its width, metric, index and recorded embeddings). Custom stores must implement it.
 - **Aliases share the collection namespace.** `collectionExists()` is true for an alias; `listCollections()` lists physical collections only; `deleteCollection()` throws for an alias and for a collection an alias points to. `createCollection()` with an alias name is idempotent against the collection behind it. A conflicting definition's message now points to `Vector::migrate()`.
 - pgvector and memory declare `StoreCapability::Aliases`.
 
-### Added (B5)
+### Added (aliases and schema migration)
 - **Aliases.** `AgenticGraph\Vector\Contracts\AliasStoreContract` (pgvector and memory): `listAliases()`, `deleteAlias()`, `pointAlias()` and the migration steps. Every operation resolves an alias in the store (pgvector: in the same registry query). Writes resolve it inside their transaction with `FOR SHARE` on the alias row, so a switch waits for in-flight writes; a long ingest resolves per chunk. `Vector::store()` throws `VectorUnsupportedOperationException` for alias calls on a store without the capability.
 - **Migration.** `Vector::migrate(string $alias, CollectionDefinition $definition, ?string $store = null, bool $dryRun = false, ?string $mode = null, ?int $batchSize = null): MigrationState`, `Vector::rollbackMigration()`, `Vector::dropOldCollection()`, and `php artisan vector:migrate {alias}` (`--store`, `--dimensions`, `--metric`, `--index`, `--index-option=*`, `--embeddings`, `--batch`, `--copy`, `--reembed`, `--dry-run`, `--drop-old`, `--rollback`). Adopts a plain collection (`docs` becomes `docs__v1` plus alias `docs`), creates `docs__v2`, copies vectors in Postgres (`INSERT ... SELECT`) when provider, model and width match or re-embeds through the new provider otherwise, catches up writes made during the copy, then in one transaction locks the old table against writers, runs a final pass, verifies count and a sample, and switches the alias. Options the definition leaves out are taken from the source collection (width, metric, index, index options, provider; a new provider brings its own width, given index options merge over the source's for the same index type), and the dry run prints the resulting definition. A source with no recorded embeddings needs mode `copy` or `reembed`; a re-embed whose provider embeds at another width than the definition is refused before anything is written. Resumable from `{registry_table}_migrations`; IVFFlat targets rebuild once after the copy. Config `vector.migration.catch_up_threshold` (`VECTOR_MIGRATION_CATCH_UP_THRESHOLD`, default 500) and `vector.migration.catch_up_max_passes` (`VECTOR_MIGRATION_CATCH_UP_MAX_PASSES`, default 10).
 - `CollectionDefinition` gains `embeddings` (provider name). `AgenticGraph\Vector\ValueObjects\MigrationState`, `AgenticGraph\Vector\Migration\CollectionMigrator`.
@@ -148,15 +149,15 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 - pgvector registry: tables `{registry_table}_aliases` and `{registry_table}_migrations`, column `embedding`, created or added on first use (inside the once-per-process registry check, no migration).
 - Conformance suite: alias resolution for every operation, alias semantics and namespace, switch, adoption, copy vs re-embed, unknown embeddings refused, dry run, resume after a failure, writes during a migration, rollback and drop-old. Alias tests are skipped for a store without `Aliases`. `CountingEmbeddingProvider::$failOnBatch` injects embedding failures.
 
-### Added (B4: benchmark harness)
+### Added (benchmark harness)
 - `AgenticGraph\Vector\Events\VectorEmbeddingCompleted` (`model`, `inputCount`, `tokens`, `durationMs`): one per `embed()` and `embedBatch()` of the Prism and deterministic providers, when `vector.events.enabled` is on. `tokens` is the usage Prism reports (null when the provider reports none, and for the deterministic provider). Custom providers can fire it with `VectorEmbeddingCompleted::record()`.
 - Upsert and insert embed documents inside `TraceSpan::embedding()`, so the `vector.upsert` / `vector.insert` span carries `vector.embedding_ms` and the event carries `embeddingMs` (both null when every document has a vector). Before, only `similarTo()` searches set them.
 - Dev only (export-ignored): `bin/vector-bench` retrieval benchmark runner, `benchmarks/datasets.json` (SciFact and WixQA pinned by revision and sha256), `benchmarks/export-datasets.py`. See `benchmarks/README.md`. `benchmarks/export-scifact.py` is replaced by `export-datasets.py`; the Ollama PHPUnit benchmark (`tests/Benchmark`) reads the pinned export and reports the fixed metrics.
 
-### Fixed (B4)
+### Fixed (benchmark harness)
 - Benchmark recall@k used the hit rate (any relevant document in the top k). It is now BEIR recall (relevant found in the top k divided by all relevant); the hit rate is reported as hit@k, and MRR is cut at 10.
 
-### BREAKING (B3: store contract)
+### BREAKING (store contract)
 - **Capabilities shape.** `StoreCapabilities` is backed by the new `AgenticGraph\Vector\Enums\StoreCapability` enum: `new StoreCapabilities(StoreCapability ...$capabilities)`, `supports(StoreCapability $capability): bool`, `$capabilities` (list). Removed: `supportsDeleteByFilter()`, `supportsNamespaces()`, `supportsHybridSearch()`, `supportsReranking()`, `supportsTenantIsolation()` and `StoreCapabilities::pgvector()`. Use `supports(StoreCapability::DeleteByFilter)`. Cases: `ListIds`, `UpdateMetadata`, `DeleteByFilter`, `FilterNot`, `FilterContains`, `FilterRange`, `Keyword`, `Aliases`.
 - **Delete is unambiguous.** `Builder::delete()` with ids and a filter (from `where()` or the `$filter` argument) throws `VectorQueryException`. Before, ids with `where()` ignored the filter, and ids with `$filter` ignored the ids.
 - **Duplicate ids.** `insert()` with an id the collection holds, or one repeated in the call, throws `VectorDuplicateDocumentException` (extends `VectorQueryException`). pgvector reported it as `VectorConnectionException`.
@@ -167,7 +168,7 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 - **Type-exact equality filters.** `where()` / `whereIn()` only match a field of the value's JSON type. A string no longer matches a number with the same text (`'5'` matched a stored `5`). A number or boolean no longer fails when a document holds another type under that key (pgvector raised a cast error, reported as `VectorConnectionException`); such documents do not match. Invalid filters now throw `VectorInvalidFilterException` when the condition is built, not when the query runs.
 - `VectorTraceContext::$searchQuery` is replaced by `?int $topK`.
 
-### Added (B3)
+### Added (store contract)
 - `where($field, $operator, $value)` with `=`, `!=`, `<>`, `>`, `>=`, `<`, `<=` or `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`; `whereNotIn()`; `whereContains()`. `FilterOperator` gains `NotEquals`, `NotIn`, `Contains`, `GreaterThan`, `GreaterThanOrEqual`, `LessThan`, `LessThanOrEqual`. `ne` / `not_in` match documents without the field; `contains` matches array fields only; ranges are type-guarded.
 - Dates: `DateTimeInterface` values in metadata and filters are stored and compared as UTC ISO 8601 strings, `Y-m-d\TH:i:s\Z` (`AgenticGraph\Vector\Support\UtcDate`). Ranges on any other string throw `VectorInvalidFilterException`.
 - `Builder::upsert()` with an id more than once keeps the last copy (pgvector failed with a database error). `onProgress` counts the remaining documents.
@@ -179,7 +180,7 @@ All notable changes to `shahzad/agenticgraph-vector` will be documented in this 
 - Events gain nullable `embeddingMs`. An embedding failure in `similarTo()` fires `VectorOperationFailed` for the search.
 - `stores.pgvector.verify_extension` (`VECTOR_PGVECTOR_VERIFY_EXTENSION`, default `true`). The extension check and the registry table check run once per store instance (per process), not per operation.
 
-### Fixed (B3)
+### Fixed (store contract)
 - `Builder::deleteByFilter()` and store-level `deleteByFilter()` with an empty filter throw `VectorQueryException`; pgvector deleted every row.
 - pgvector stored empty metadata as a JSON array (`[]`); it is now an object (`{}`).
 - pgvector wrapped `VectorInvalidFilterException` and `VectorUnsupportedOperationException` thrown inside an operation as `VectorConnectionException`; every `VectorException` now passes through.

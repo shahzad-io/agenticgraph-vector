@@ -69,7 +69,7 @@ final readonly class PgVectorIndex
 
     /**
      * @param  string|null  $indexDefinition  pg_get_indexdef() of the embedding index
-     * @param  array{type?: string, options?: array<string, int>}|null  $registered  the registry's index_options (null before B3)
+     * @param  array{type?: string, options?: array<string, int>}|null  $registered  the registry's index_options (null in an older registry)
      */
     public static function fromExisting(?string $indexDefinition, ?array $registered, int $configuredLists): ?self
     {

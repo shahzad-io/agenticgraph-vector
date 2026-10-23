@@ -127,7 +127,7 @@ final class PgvectorTestHelper
             // Best-effort cleanup: never fail a test from here.
         }
 
-        // Aliases and migration records of the dropped collections (B5 tables; absent on an older registry).
+        // Aliases and migration records of the dropped collections (alias tables; absent on an older registry).
         try {
             $pdo = self::pdo();
             $pdo->exec('DELETE FROM vector_collection_registry_aliases WHERE collection NOT IN (SELECT name FROM vector_collection_registry)');

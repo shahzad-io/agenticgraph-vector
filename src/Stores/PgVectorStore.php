@@ -395,7 +395,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
                 $rows[] = [(string) $id, json_encode((object) $this->metadataValidator->normalize($metadata), JSON_THROW_ON_ERROR)];
             }
 
-            // Rows written before B3 may hold empty metadata as a JSON array; || on an array would append.
+            // Rows written by older builds may hold empty metadata as a JSON array; || on an array would append.
             $value = $merge
                 ? "(CASE WHEN jsonb_typeof(documents.metadata) = 'object' THEN documents.metadata ELSE '{}'::jsonb END) || changes.metadata"
                 : 'changes.metadata';

@@ -202,9 +202,9 @@ return [
     | "quoted phrases", -exclusions, or; for search-box input).
     |
     | keyword_weight multiplies the keyword side's fusion term (dense 1; 0
-    | gives the dense results). 0.25 is the B6 benchmark value: it adds
+    | gives the dense results). 0.25 is the benchmark value: it adds
     | relevant candidates at the same budget, but lowers top-10 quality, and
-    | reranked (B7) it matched reranked dense within noise. Dense plus a
+    | reranked it matched reranked dense within noise. Dense plus a
     | reranker is the recommended pipeline.
     |
     */

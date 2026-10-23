@@ -5,7 +5,7 @@ description: "Use AgenticGraph vector search: named stores and configuration, th
 
 # AgenticGraph Vector
 
-docs-sha: 1e3e4db
+docs-sha: 34f68f1
 
 Condensed from the AgenticGraph docs (`/docs/vector-...` paths below) at that commit. When a detail here and the package source disagree, the source wins.
 
@@ -119,7 +119,7 @@ Vector::store('pgvector')->listAliases();
 
 - CLI: `php artisan vector:migrate articles --embeddings=prism_large` (also `--dry-run`, `--copy`, `--reembed`, `--batch`, `--dimensions`, `--metric`, `--index`, `--index-option=m=16`, `--store`, `--rollback`, `--drop-old`).
 - The first migration turns `articles` into an alias for `articles__v1`; the new collection is `articles__v2`. Code that uses `articles` keeps working: every store operation resolves aliases.
-- Same provider, model and width: vectors are copied in Postgres. Otherwise documents are re-embedded with the new provider. A collection with no recorded model (created before B5) needs `--copy` or `--reembed`.
+- Same provider, model and width: vectors are copied in Postgres. Otherwise documents are re-embedded with the new provider. A collection with no recorded model (created by an earlier build) needs `--copy` or `--reembed`.
 - Reads and writes stay on the old collection until the switch. Catch-up passes apply writes made during the copy; the final pass pauses writers (not searches) and switches in one transaction. Writers embed before taking any lock; a final pass that finds documents to embed releases the lock for another unlocked pass, and only the last allowed pass embeds inside it. `vector.migration.catch_up_threshold` (default 500), at most `vector.migration.catch_up_max_passes` unlocked passes (default 10).
 - Options left out of the migration definition come from the source collection (width, metric, index, index options, provider). `--dry-run` prints the resulting definition.
 - A failed or killed run resumes when rerun with the same definition. The old collection stays until `dropOldCollection()` / `--drop-old`.

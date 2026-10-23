@@ -51,7 +51,7 @@ final readonly class MigrationState
     }
 
     /**
-     * Keyword keys are present only with keyword search, so a migration recorded before B6 resumes unchanged.
+     * Keyword keys are present only with keyword search, so a migration recorded without them resumes unchanged.
      *
      * @return array<string, mixed>
      */

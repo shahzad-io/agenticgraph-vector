@@ -25,8 +25,8 @@ final class PgVectorCollectionRegistry
     ) {}
 
     /**
-     * Create the registry, alias and migration tables, or add the columns a registry created before B3
-     * (`index_options`), B5 (`embedding`) or B6 (`keyword`) lacks.
+     * Create the registry, alias and migration tables, or add the columns an older registry lacks
+     * (`index_options`, `embedding`, `keyword`).
      */
     public function ensureRegistryTable(): void
     {

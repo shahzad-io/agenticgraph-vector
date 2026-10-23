@@ -13,7 +13,8 @@
     "license": "MIT",
     "support": {
         "issues": "https://github.com/shahzad-io/agenticgraph-vector/issues",
-        "source": "https://github.com/shahzad-io/agenticgraph-vector"
+        "source": "https://github.com/shahzad-io/agenticgraph-vector",
+        "docs": "https://agenticgraph.dev/docs/vector-overview"
     },
     "authors": [
         {
@@ -23,7 +24,7 @@
         }
     ],
     "require": {
-        "php": "^8.2",
+        "php": "^8.3",
         "illuminate/contracts": "^12.61.1 || ^13.12.0",
         "illuminate/database": "^12.61.1 || ^13.12.0",
         "illuminate/http": "^12.61.1 || ^13.12.0",

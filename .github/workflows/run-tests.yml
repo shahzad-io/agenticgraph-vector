@@ -35,7 +35,7 @@ jobs:
           --health-retries=10
 
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         os: [ubuntu-latest]
         php: [8.4, 8.3]

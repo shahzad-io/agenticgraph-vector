@@ -37,7 +37,7 @@ final class BenchRunner
 
     public const MODES = ['dense', 'hybrid'];
 
-    /** Same-budget candidate recall: dense top K against hybrid fused top K (30 is the B7 reranker's candidate count). */
+    /** Same-budget candidate recall: dense top K against hybrid fused top K (30 is the reranker's default candidate count). */
     public const CANDIDATE_KS = [30, 50, 100];
 
     /** Every pipeline sends its own top 30 to the reranker (the candidate recall@30 budget); the reranker keeps TOP_K. */

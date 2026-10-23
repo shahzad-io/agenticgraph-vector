@@ -44,7 +44,7 @@ function aliasMigrationDocuments(int $count): array
     return array_map(fn (int $i): Document => Document::make("d{$i}", "document {$i}", ['i' => $i], [1.0, (float) $i, 0.0]), range(1, $count));
 }
 
-it('upgrades a registry created before B5; its collections have no recorded embeddings, so migrate needs a mode', function () {
+it('upgrades a registry without the embedding column; its collections have no recorded embeddings, so migrate needs a mode', function () {
     DB::connection('pgvector')->statement("CREATE TABLE {$this->registry} (
         name VARCHAR(255) PRIMARY KEY,
         dimensions INTEGER NOT NULL,

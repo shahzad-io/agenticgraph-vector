@@ -225,7 +225,7 @@ it('stores empty metadata as an object and merges into rows written with an empt
         ->and($builder->fetch(['new'])->first()?->metadata)->toBe(['a' => 1]);
 });
 
-it('adds index_options to a registry created before B3 and round-trips the requested index', function () {
+it('adds index_options to a registry created without it and round-trips the requested index', function () {
     $table = 'vector_registry_pre_b3_'.uniqid();
     DB::connection('pgvector')->statement("CREATE TABLE {$table} (
         name VARCHAR(255) PRIMARY KEY,
