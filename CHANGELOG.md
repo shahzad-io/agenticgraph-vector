@@ -19,3 +19,7 @@ Initial release. Laravel-native vector retrieval: store documents, embed text, s
 **Requirements:** PHP 8.3+, Laravel 12.61.1+ or 13.12+, `prism-php/prism` `^0.102.0`, PostgreSQL with pgvector (0.8+ for iterative scan).
 
 **Compatible core:** `shahzad/agenticgraph` 0.2.x, optional (tracing and `context()`). The package works without it.
+
+### Fixed
+
+- `vector:migrate --dry-run` no longer changes the database schema. Reads (`listCollections()`, `listAliases()`, `describeCollection()`, `countDocuments()`, `collectionExists()`, the migration record) no longer create the pgvector extension or the registry, alias and migration tables: a missing registry means nothing is registered yet. A dry run works for a database user without CREATE rights.

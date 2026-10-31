@@ -11,6 +11,7 @@ use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\PgVectorMetric;
 use AgenticGraph\Vector\Enums\StoreCapability;
+use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
 use AgenticGraph\Vector\Exceptions\VectorConnectionException;
 use AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException;
 use AgenticGraph\Vector\Exceptions\VectorDuplicateDocumentException;
@@ -54,6 +55,9 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
     /** Extension check and registry table done for this store instance (one per process). */
     private bool $prepared = false;
+
+    /** The registry tables were found complete, so reads need no preparing. */
+    private bool $registryCurrent = false;
 
     /**
      * @param  array<string, mixed>  $config
@@ -496,18 +500,14 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
     public function collectionExists(string $name): bool
     {
         return $this->run(function () use ($name): bool {
-            $this->preparePgVector();
-
-            return $this->registry->exists($name);
+            return $this->registryReadable() && $this->registry->exists($name);
         });
     }
 
     public function listCollections(): array
     {
         return $this->run(function (): array {
-            $this->preparePgVector();
-
-            return $this->registry->listCollectionNames();
+            return $this->registryReadable() ? $this->registry->listCollectionNames() : [];
         });
     }
 
@@ -527,9 +527,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
     public function describeCollection(string $name): array
     {
         return $this->run(function () use ($name): array {
-            $this->preparePgVector();
-
-            $resolved = $this->registry->resolve($name);
+            $resolved = $this->registry->resolve($this->readableName($name));
 
             return [
                 'collection' => $resolved['name'],
@@ -545,9 +543,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
     public function listAliases(): array
     {
         return $this->run(function (): array {
-            $this->preparePgVector();
-
-            return $this->registry->listAliases();
+            return $this->registryReadable() ? $this->registry->listAliases() : [];
         });
     }
 
@@ -578,18 +574,14 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
     public function countDocuments(string $collection): int
     {
         return $this->run(function () use ($collection): int {
-            $this->preparePgVector();
-
-            return (int) $this->connection()->scalar("SELECT COUNT(*) FROM {$this->storage($this->registry->resolve($collection))}");
+            return (int) $this->connection()->scalar("SELECT COUNT(*) FROM {$this->storage($this->registry->resolve($this->readableName($collection)))}");
         });
     }
 
     public function migration(string $alias): ?MigrationState
     {
         return $this->run(function () use ($alias): ?MigrationState {
-            $this->preparePgVector();
-
-            return $this->registry->migration($alias);
+            return $this->registryReadable() ? $this->registry->migration($alias) : null;
         });
     }
 
@@ -1200,6 +1192,41 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
         $this->registry->ensureRegistryTable();
         $this->prepared = true;
+    }
+
+    /**
+     * Reads run no schema statement, so a dry run stays read-only and works without CREATE rights:
+     * with no registry table yet, nothing is registered. A registry from an older version is upgraded first.
+     */
+    private function registryReadable(): bool
+    {
+        if ($this->prepared || $this->registryCurrent) {
+            return true;
+        }
+
+        if ($this->registry->isCurrent()) {
+            return $this->registryCurrent = true;
+        }
+
+        if (! $this->registry->tableExists()) {
+            return false;
+        }
+
+        $this->preparePgVector();
+
+        return true;
+    }
+
+    /**
+     * $name, for a read that needs the collection to exist.
+     */
+    private function readableName(string $name): string
+    {
+        if (! $this->registryReadable()) {
+            throw new VectorCollectionNotFoundException("Collection [{$name}] was not found.");
+        }
+
+        return $name;
     }
 
     private function resolveCollectionMetric(CollectionDefinition $definition): string

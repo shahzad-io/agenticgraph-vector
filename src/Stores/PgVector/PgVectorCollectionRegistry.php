@@ -80,6 +80,23 @@ final class PgVectorCollectionRegistry
         );
     }
 
+    public function tableExists(): bool
+    {
+        return Schema::connection($this->connection->getName())->hasTable($this->registryTable);
+    }
+
+    /**
+     * The registry, alias and migration tables exist with every column: ensureRegistryTable() would change nothing.
+     */
+    public function isCurrent(): bool
+    {
+        $schema = Schema::connection($this->connection->getName());
+
+        return $schema->hasColumns($this->registryTable, ['index_options', 'embedding', 'keyword'])
+            && $schema->hasTable($this->aliasTable())
+            && $schema->hasTable($this->migrationTable());
+    }
+
     /**
      * @param  array<string, mixed>  $indexOptions  the requested index (PgVectorIndex::toArray())
      * @param  array{provider: string, model: string, dimensions: int}|null  $embedding
