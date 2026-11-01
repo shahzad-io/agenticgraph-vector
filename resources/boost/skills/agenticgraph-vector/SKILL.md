@@ -393,7 +393,7 @@ Docs: `/docs/vector-reference-exceptions`
 ## Limitations
 
 - No in-place collection change. Dimensions, metric, index and model change through `Vector::migrate()` / `vector:migrate`.
-- No tenant isolation yet. Named stores exist; there is no routing between them.
+- No tenant isolation. Named stores exist; there is no routing between them.
 - No metadata index. pgvector searches with a filter use HNSW iterative scan (`iterative_scan`, default `relaxed_order`, pgvector 0.8+) up to `max_scan_tuples` rows; a filter matching very few documents can still return fewer than `take()` hits.
 - Scores are not probabilities.
 - Runtime config needs the manager reset (see Config).
