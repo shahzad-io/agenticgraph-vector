@@ -54,7 +54,7 @@ $products = Product::query()
 
 ## In an AgenticGraph workflow
 
-Requires `shahzad/agenticgraph`. With its tracing on, the search in `RetrieveNode` becomes a `vector.search` span under that node. The retrieve node stores `toContextItems()` (plain arrays, safe in a checkpoint); the generate node hands them to `context()`, which joins them into `{context}` and records them as `run()->sources()` and on the llm span.
+Requires `agenticgraph/agenticgraph`. With its tracing on, the search in `RetrieveNode` becomes a `vector.search` span under that node. The retrieve node stores `toContextItems()` (plain arrays, safe in a checkpoint); the generate node hands them to `context()`, which joins them into `{context}` and records them as `run()->sources()` and on the llm span.
 
 ```php
 namespace App\Nodes;

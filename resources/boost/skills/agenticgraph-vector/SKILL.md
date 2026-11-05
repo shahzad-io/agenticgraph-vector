@@ -5,11 +5,11 @@ description: "Use AgenticGraph vector search: named stores and configuration, th
 
 # AgenticGraph Vector
 
-docs-sha: 34f68f1
+docs-sha: 06d7b21
 
 Condensed from the AgenticGraph docs (`/docs/vector-...` paths below) at that commit. When a detail here and the package source disagree, the source wins.
 
-Other skills, use them when installed: `agenticgraph-core` for graphs, nodes and state, if `shahzad/agenticgraph` is installed. `agenticgraph-tracing` for the trace a `vector` span lands in.
+Other skills, use them when installed: `agenticgraph-core` for graphs, nodes and state, if `agenticgraph/agenticgraph` is installed. `agenticgraph-tracing` for the trace a `vector` span lands in.
 
 ## Rules
 
@@ -24,7 +24,7 @@ Other skills, use them when installed: `agenticgraph-core` for graphs, nodes and
 
 ## What it is
 
-- `shahzad/agenticgraph-vector` stores documents, embeds text and returns similar hits. It does not prompt, generate or cite. Reranking is an optional step on a search that reorders its hits.
+- `agenticgraph/vector` stores documents, embeds text and returns similar hits. It does not prompt, generate or cite. Reranking is an optional step on a search that reorders its hits.
 - Vectors live on a dedicated pgvector Postgres connection. Your primary database stays where it is; join hits back to it by document `id` or metadata.
 - It runs alone. Inside an AgenticGraph node, the same call can also become a `vector` span.
 - Namespace: `AgenticGraph\Vector`. Facades: `Vector` and `Embeddings`.
@@ -34,7 +34,7 @@ Docs: `/docs/vector-overview`
 ## Install and configure
 
 ```bash
-composer require shahzad/agenticgraph-vector
+composer require agenticgraph/vector
 php artisan vendor:publish --tag=vector-config
 ```
 

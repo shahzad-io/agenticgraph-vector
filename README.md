@@ -1,8 +1,8 @@
 # agenticgraph-vector
 
-[![Latest Version on Packagist](https://img.shields.io/packagist/v/shahzad/agenticgraph-vector.svg?style=flat-square)](https://packagist.org/packages/shahzad/agenticgraph-vector)
-[![Total Downloads](https://img.shields.io/packagist/dt/shahzad/agenticgraph-vector.svg?style=flat-square)](https://packagist.org/packages/shahzad/agenticgraph-vector)
-[![License](https://img.shields.io/packagist/l/shahzad/agenticgraph-vector.svg?style=flat-square)](https://packagist.org/packages/shahzad/agenticgraph-vector)
+[![Latest Version on Packagist](https://img.shields.io/packagist/v/agenticgraph/vector.svg?style=flat-square)](https://packagist.org/packages/agenticgraph/vector)
+[![Total Downloads](https://img.shields.io/packagist/dt/agenticgraph/vector.svg?style=flat-square)](https://packagist.org/packages/agenticgraph/vector)
+[![License](https://img.shields.io/packagist/l/agenticgraph/vector.svg?style=flat-square)](https://packagist.org/packages/agenticgraph/vector)
 
 **Pre-1.0:** minor versions may contain breaking changes. Read [CHANGELOG.md](CHANGELOG.md) before you upgrade.
 
@@ -24,14 +24,14 @@ The three packages are released together:
 
 | Package | Version | Works with |
 |---|---|---|
-| `shahzad/agenticgraph` (core) | 0.2.x | PHP 8.3+, Laravel 12.61.1+ or 13.12+, Prism 0.102 |
-| `shahzad/agenticgraph-vector` | 0.1.x | PHP 8.3+, Laravel 12.61.1+ or 13.12+, Prism 0.102, PostgreSQL with pgvector (0.8+ for iterative scan). Core 0.2.x is optional (tracing) |
+| `agenticgraph/agenticgraph` (core) | 0.2.x | PHP 8.3+, Laravel 12.61.1+ or 13.12+, Prism 0.102 |
+| `agenticgraph/vector` | 0.1.x | PHP 8.3+, Laravel 12.61.1+ or 13.12+, Prism 0.102, PostgreSQL with pgvector (0.8+ for iterative scan). Core 0.2.x is optional (tracing) |
 | `@agenticgraph/stream-client`, `@agenticgraph/stream-react`, `@agenticgraph/stream-vue` | 0.1.x | Core 0.2.x on the server (stream wire contract v1.1), Node.js 18+, React 18+ or Vue 3.4+ for the adapters |
 
 ## Installation
 
 ```bash
-composer require shahzad/agenticgraph-vector
+composer require agenticgraph/vector
 ```
 
 Define a pgvector connection in `config/database.php`, then set:
@@ -42,6 +42,10 @@ OPENAI_API_KEY=your-key
 ```
 
 See the [installation guide](https://agenticgraph.dev/docs/vector-installation) for details.
+
+### AI assistants
+
+Run `php artisan boost:install` and select the AgenticGraph skills, so your coding assistant knows how to ingest and search with this package.
 
 ## Quick example
 
@@ -77,7 +81,7 @@ $results->toContext();         // concatenated content for your LLM layer
 ## Optional AgenticGraph integration
 
 ```bash
-composer require shahzad/agenticgraph
+composer require agenticgraph/agenticgraph
 ```
 
 Vector operations inside graph nodes nest as `vector` spans in AgenticGraph traces. The package works fully without AgenticGraph.

@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-AgenticGraph Vector (`shahzad/agenticgraph-vector`) is before 1.0. Only the latest minor version gets security fixes.
+AgenticGraph Vector (`agenticgraph/vector`) is before 1.0. Only the latest minor version gets security fixes.
 
 ## Report a vulnerability
 

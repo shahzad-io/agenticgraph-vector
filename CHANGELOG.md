@@ -1,8 +1,8 @@
 # Changelog
 
-All notable changes to `shahzad/agenticgraph-vector` will be documented in this file.
+All notable changes to `agenticgraph/vector` will be documented in this file.
 
-## 0.1.0 (unreleased)
+## 0.1.0 - 2026-11-06
 
 Initial release. Laravel-native vector retrieval: store documents, embed text, search, and hand the results to your LLM layer.
 
@@ -18,7 +18,7 @@ Initial release. Laravel-native vector retrieval: store documents, embed text, s
 
 **Requirements:** PHP 8.3+, Laravel 12.61.1+ or 13.12+, `prism-php/prism` `^0.102.0`, PostgreSQL with pgvector (0.8+ for iterative scan).
 
-**Compatible core:** `shahzad/agenticgraph` 0.2.x, optional (tracing and `context()`). The package works without it.
+**Compatible core:** `agenticgraph/agenticgraph` 0.2.x, optional (tracing and `context()`). The package works without it.
 
 ### Fixed
 

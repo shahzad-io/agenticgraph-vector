@@ -73,7 +73,7 @@ final class StandaloneStressHelper
      */
     public static function agenticGraphStandaloneProof(): array
     {
-        $packageAbsent = ! InstalledVersions::isInstalled('shahzad/agenticgraph');
+        $packageAbsent = ! InstalledVersions::isInstalled('agenticgraph/agenticgraph');
         $tracerUnbound = ! app()->bound('Shahzad\AgenticGraph\Tracing\Tracer');
         $tracingAvailable = TraceSpan::isAgenticGraphTracingAvailable();
 

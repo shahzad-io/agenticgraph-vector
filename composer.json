@@ -1,5 +1,5 @@
 {
-    "name": "shahzad/agenticgraph-vector",
+    "name": "agenticgraph/vector",
     "description": "Laravel-native vector retrieval for AgenticGraph workflows.",
     "keywords": [
         "shahzad",
@@ -65,7 +65,7 @@
         "format": "vendor/bin/pint"
     },
     "suggest": {
-        "shahzad/agenticgraph": "Optional: enables automatic tracing of vector operations when used inside AgenticGraph nodes.",
+        "agenticgraph/agenticgraph": "Optional: enables automatic tracing of vector operations when used inside AgenticGraph nodes.",
         "phpunit/phpunit": "Required (directly or through Pest) to run AgenticGraph\\Vector\\Testing\\StoreConformanceTests against a store."
     },
     "config": {
