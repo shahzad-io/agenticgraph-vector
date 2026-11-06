@@ -38,14 +38,25 @@ Define a pgvector connection in `config/database.php`, then set:
 
 ```env
 VECTOR_DB_CONNECTION=pgvector
+VECTOR_EMBEDDINGS_PRISM_PROVIDER=openai
+VECTOR_EMBEDDINGS_MODEL=text-embedding-3-small
 OPENAI_API_KEY=your-key
+```
+
+There is no default embedding provider or model: set both (the values above are an example). The example connection in the installation guide reads these keys: `VECTOR_PG_HOST` (default `127.0.0.1`), `VECTOR_PG_PORT` (`5432`), `VECTOR_PG_DATABASE` (`myapp_vectors`), `VECTOR_PG_USERNAME` (`postgres`) and `VECTOR_PG_PASSWORD`. They belong to your own `database.php` connection; the package reads only `VECTOR_DB_CONNECTION`.
+
+For queued ingest (`->queue()->upsert()`), publish and run the migration for the run table:
+
+```bash
+php artisan vendor:publish --tag=vector-migrations
+php artisan migrate
 ```
 
 See the [installation guide](https://agenticgraph.dev/docs/vector-installation) for details.
 
 ### AI assistants
 
-Run `php artisan boost:install` and select the AgenticGraph skills, so your coding assistant knows how to ingest and search with this package.
+Run `php artisan boost:update`. It finds the AgenticGraph packages and asks which skills to add; tick `agenticgraph-vector`, so your coding assistant knows how to ingest and search with this package. A first-time Boost setup is `php artisan boost:install`.
 
 ## Quick example
 
