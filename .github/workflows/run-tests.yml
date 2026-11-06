@@ -54,14 +54,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      # BoostSkillsDriftTest reads core's source. Secret AGENTICGRAPH_CHECKOUT_TOKEN: a fine-grained PAT with read-only
-      # Contents access to shahzad-io/agenticgraph, needed while that repo is private.
+      # BoostSkillsDriftTest reads core's source.
       - name: Checkout core
         uses: actions/checkout@v5
         with:
           repository: shahzad-io/agenticgraph
           path: .ci/agenticgraph
-          token: ${{ secrets.AGENTICGRAPH_CHECKOUT_TOKEN }}
           persist-credentials: false
 
       - name: Setup PHP
