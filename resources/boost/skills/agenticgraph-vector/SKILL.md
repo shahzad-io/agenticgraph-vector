@@ -25,7 +25,7 @@ Other skills, use them when installed: `agenticgraph-core` for graphs, nodes and
 ## What it is
 
 - `agenticgraph/vector` stores documents, embeds text and returns similar hits. It does not prompt, generate or cite. Reranking is an optional step on a search that reorders its hits.
-- Vectors live in a named store. Drivers: `pgvector` (a dedicated Postgres connection, see [pgvector](#pgvector)) and `memory` (tests). Every store follows one contract, proven by the shared conformance suite; a feature a store lacks is a capability it does not declare. Your primary database stays where it is; join hits back to it by document `id` or metadata.
+- Vectors live in a named store. Drivers: `pgvector` (a dedicated Postgres connection, see [pgvector](#pgvector)), `qdrant` (Qdrant v1.20+ over REST, see [Qdrant](#qdrant)) and `memory` (tests). Every store follows one contract, proven by the shared conformance suite; a feature a store lacks is a capability it does not declare. Your primary database stays where it is; join hits back to it by document `id` or metadata.
 - It runs alone. Inside an AgenticGraph node, the same call can also become a `vector` span.
 - Namespace: `AgenticGraph\Vector`. Facades: `Vector` and `Embeddings`.
 
@@ -64,6 +64,7 @@ Docs: `/docs/vector-installation`
 | `stores.pgvector.metric` | `cosine` | Or `l2`, `inner_product`. Frozen at create. |
 | `stores.pgvector.batch_size` | `100` | Wins over `batch.size` |
 | `stores.pgvector.table_prefix` | `''` | Prefix of this store's tables (lowercase letters, digits, `_`; at most 12 characters) |
+| `stores.qdrant.url` | none | `VECTOR_QDRANT_URL`. See [Qdrant](#qdrant) for the other keys. |
 | `stores.pgvector.registry_table` | `{table_prefix}vector_collection_registry` | Name, dimensions, metric per collection; an explicit value is used as written |
 | `embeddings.default` | `prism` | Prism. No vendor default: set `VECTOR_EMBEDDINGS_PRISM_PROVIDER` and `VECTOR_EMBEDDINGS_MODEL` (example: `openai`, `text-embedding-3-small`), or the first embedding call throws. `dimensions` null (unset) asks the provider: one extra embed call per process when a collection is created without dimensions. Set `VECTOR_EMBEDDINGS_DIMENSIONS` to skip it. `api_key` null means Prism's provider key (e.g. `OPENAI_API_KEY`). `url` (`VECTOR_EMBEDDINGS_URL`) sends this entry's requests to another base URL, such as a gateway; the Prism reranker entry has its own `url` (`VECTOR_RERANK_PRISM_URL`). On an HTTP error from a configured url the exception ends with `(configured url: ...)`. Prism entries take `timeout` (30 s), `retries` (2, on 429, 5xx and connection errors only; `Retry-After` honored up to `retry_after_max_ms`, 2000, longer fails the request as retryable) and `retry_sleep_ms` (500, doubled per retry). |
 | `embeddings.providers.deterministic` | 8 dims | Local hashes for tests. Never tune scores on it. |
@@ -313,6 +314,26 @@ Docs: `/docs/vector-guide-score-ergonomics`
 - Two pgvector stores on one connection are kept apart by `table_prefix`. With the same connection, prefix and registry they share their collections. A store that finds a collection's table owned by another store (same prefix, another registry) throws `VectorQueryException` naming `table_prefix`; it never reuses the table. Set the prefix before the first collection: existing tables keep their names.
 
 Docs: `/docs/vector-configuration`
+
+## Qdrant
+
+```env
+VECTOR_STORE=qdrant
+VECTOR_QDRANT_URL=http://127.0.0.1:6333
+```
+
+- Config `stores.qdrant`: `url` (`VECTOR_QDRANT_URL`, no default), `api_key` (`VECTOR_QDRANT_API_KEY`), `timeout` (10 s, `VECTOR_QDRANT_TIMEOUT`), `connect_timeout` (3 s, `VECTOR_QDRANT_CONNECT_TIMEOUT`), `batch_size` (100, `VECTOR_QDRANT_BATCH_SIZE`). No automatic retry.
+- Capabilities: `ListIds`, `UpdateMetadata`, `DeleteByFilter`, `FilterNot`, `FilterContains`, `FilterRange`, `Aliases`. Not: `Keyword`, `KeywordWebsearch`, `KeywordLanguages`, `Migrations`, `RebuildIndex`, `AtomicBatches`, `UndeclaredFilters`.
+- Declare every field you filter on in `filterable`; the store makes a payload index for each at create.
+- Index: `index: 'hnsw'` with `indexOptions: ['m' => 16, 'ef_construct' => 100]`, integers. `options()` keys: `exact` (bool), `hnsw_ef` (int).
+- Limits:
+- No keyword or hybrid search: a collection with `keyword: true` is refused at create.
+- No migrations: change a collection by creating a new one, copying the documents, and switching an alias with `pointAlias()`.
+- Filters on declared fields only (`CollectionDefinition::$filterable`); another field throws `VectorUnsupportedOperationException`.
+- A new filterable field needs a new collection.
+- `insert()` checks then writes: two concurrent inserts of one id can both pass the check.
+- `updateMetadata()` is one batch request, not atomic.
+- Two Qdrant stores on one server share its collections.
 
 ## Build RAG
 

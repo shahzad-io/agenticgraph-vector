@@ -312,15 +312,18 @@ it('converts scores and the minScore threshold for each metric', function (strin
 
     $hits = qdrantStore()->search(new SearchQuery('docs', [1, 0], minScore: $minScore))->hits;
 
-    expect(qdrantSent()[0][2]['score_threshold'])->toEqualWithDelta($threshold, 1e-9)
+    // Qdrant's threshold is strict on f32 scores, so the driver sends the f32 just outside the inclusive bound.
+    expect(qdrantSent()[0][2]['score_threshold'])->toBe($threshold)
         ->and(array_map(fn ($hit) => $hit->score, $hits))->toEqualWithDelta($scores, 1e-9);
 })->with([
-    'cosine as is' => ['cosine', 0.5, 0.5, ['a' => 1.0, 'b' => 0.6], [1.0, 0.6]],
-    'cosine at 1.0' => ['cosine', 1.0, 1.0, ['a' => 1.0], [1.0]],
-    'dot as is' => ['inner_product', -2.0, -2.0, ['a' => 3.5, 'b' => -1.0], [3.5, -1.0]],
-    'l2 distance to 1 / (1 + d), threshold an upper distance' => ['l2', 0.5, 1.0, ['a' => 0.0, 'b' => 0.8944272], [1.0, 1 / 1.8944272]],
-    'l2 at 0 counts as 0.0001' => ['l2', 0.0, 9999.0, ['a' => 3.0], [0.25]],
-    'l2 below 0 counts as 0.0001' => ['l2', -1.0, 9999.0, ['a' => 1.0], [0.5]],
+    'cosine, one f32 below' => ['cosine', 0.5, 0.4999999701976776, ['a' => 1.0, 'b' => 0.6], [1.0, 0.6]],
+    'cosine at 1.0' => ['cosine', 1.0, 0.9999999403953552, ['a' => 1.0], [1.0]],
+    'cosine, not an f32' => ['cosine', 0.3, 0.29999998211860657, ['a' => 1.0], [1.0]],
+    'dot, one f32 below' => ['inner_product', -2.0, -2.000000238418579, ['a' => 3.5, 'b' => -1.0], [3.5, -1.0]],
+    'dot at 0' => ['inner_product', 0.0, -1.401298464324817E-45, ['a' => 3.5], [3.5]],
+    'l2 distance to 1 / (1 + d), threshold one f32 above the distance' => ['l2', 0.5, 1.0000001192092896, ['a' => 0.0, 'b' => 0.8944272], [1.0, 1 / 1.8944272]],
+    'l2 at 0 counts as 0.0001' => ['l2', 0.0, 9999.0009765625, ['a' => 3.0], [0.25]],
+    'l2 below 0 counts as 0.0001' => ['l2', -1.0, 9999.0009765625, ['a' => 1.0], [0.5]],
 ]);
 
 it('sorts equal scores by id inside the page', function () {
@@ -480,7 +483,7 @@ it('maps errors: no connection, missing collection, wrong size, anything else', 
     expect(fn () => qdrantStore()->countDocuments('docs'))->toThrow($exception, $message);
 })->with([
     'connection' => [fn () => throw new ConnectionException('refused'), VectorConnectionException::class, 'could not reach Qdrant'],
-    '404' => [fn () => Http::response(['status' => ['error' => 'Not found: Collection `docs` does not exist!']], 404), VectorCollectionNotFoundException::class, 'does not exist'],
+    '404' => [fn () => Http::response(['status' => ['error' => 'Not found: Collection `docs` does not exist!']], 404), VectorCollectionNotFoundException::class, 'Collection [docs] was not found.'],
     'dimension' => [fn () => Http::response(['status' => ['error' => 'Wrong input: Vector dimension error: expected dim: 2, got 3']], 400), VectorDimensionMismatchException::class, 'expected dim: 2'],
     'other' => [fn () => Http::response(['status' => ['error' => 'Bad request: nope']], 400), VectorQueryException::class, 'Bad request: nope'],
 ]);

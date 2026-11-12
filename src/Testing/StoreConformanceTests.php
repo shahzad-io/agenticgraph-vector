@@ -43,7 +43,6 @@ use DateTimeImmutable;
 use DateTimeZone;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use PHPUnit\Framework\Attributes\After;
 use Throwable;
 
 /**
@@ -79,31 +78,41 @@ trait StoreConformanceTests
         $this->markTestSkipped('makeSecondStore() is not implemented for this store.');
     }
 
-    #[After]
+    /**
+     * Registered by vectorStore() to run before the application is destroyed: an #[After] method runs after
+     * Testbench's tearDown, when the container is gone and a store that needs it (Http, config) cannot clean up.
+     */
     public function dropConformanceCollections(): void
     {
         $store = $this->conformanceStore;
+        $aliases = $store instanceof AliasStoreContract && $store->capabilities()->supports(StoreCapability::Aliases);
 
-        foreach ($this->conformanceCollections as $name) {
-            try {
-                // Aliases first, then their collections (a collection behind an alias cannot be deleted).
-                if ($store instanceof AliasStoreContract && $store->capabilities()->supports(StoreCapability::Aliases)) {
-                    if (array_key_exists($name, $store->listAliases())) {
-                        $store->deleteAlias($name);
+        // Two passes: every alias first, since a collection behind an alias cannot be deleted.
+        foreach ([true, false] as $aliasPass) {
+            foreach ($this->conformanceCollections as $name) {
+                try {
+                    if ($aliasPass) {
+                        if ($aliases && array_key_exists($name, $store->listAliases())) {
+                            $store->deleteAlias($name);
+                        }
+
+                        continue;
                     }
 
-                    foreach ($store->listCollections() as $collection) {
-                        if (str_starts_with($collection, "{$name}__v")) {
-                            $store->deleteCollection($collection);
+                    if ($aliases) {
+                        foreach ($store->listCollections() as $collection) {
+                            if (str_starts_with($collection, "{$name}__v")) {
+                                $store->deleteCollection($collection);
+                            }
                         }
                     }
-                }
 
-                if ($store?->collectionExists($name)) {
-                    $store->deleteCollection($name);
+                    if ($store?->collectionExists($name)) {
+                        $store->deleteCollection($name);
+                    }
+                } catch (Throwable) {
+                    // Best-effort cleanup.
                 }
-            } catch (Throwable) {
-                // Best-effort cleanup.
             }
         }
 
@@ -2186,6 +2195,7 @@ trait StoreConformanceTests
             config()->set('vector.embeddings.default', 'conformance');
 
             $this->conformanceStore = $this->makeStore();
+            $this->beforeApplicationDestroyed($this->dropConformanceCollections(...));
         }
 
         return $this->conformanceStore;

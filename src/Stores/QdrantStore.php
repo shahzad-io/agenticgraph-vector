@@ -42,7 +42,7 @@ use Throwable;
  * A point holds the payload `id` (the document id), `content` and `metadata`; its point id is a UUID v5 of the
  * document id. The collection's own metadata key `agenticgraph` is the registry: dimensions, metric, embedding
  * record and the declared filterable fields, each with a payload index made at create. Filters run on declared
- * fields only (a filter on a field with no payload index can miss matches on HNSW).
+ * fields only: the registry fixes the declared fields and their types at create.
  *
  * - `index`: null or `hnsw`. `indexOptions`: `m` and `ef_construct`, integers.
  * - `SearchQuery::$options`: `exact` (bool) and `hnsw_ef` (int). Any other key throws VectorQueryException.
@@ -112,9 +112,12 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
             $body['filter'] = $this->filter($query->collection, $query->filter);
         }
 
-        // Euclid scores are distances, and Qdrant's threshold on them is an upper bound.
+        // Qdrant's threshold is strict (score > t; Euclid: distance < t) on f32 scores. The contract is inclusive,
+        // so the driver sends the f32 just outside the bound. Euclid scores are distances: the bound is an upper one.
         if ($query->minScore !== null) {
-            $body['score_threshold'] = $metric === Metric::L2 ? $metric->maxDistanceForMinScore($query->minScore) : $query->minScore;
+            $body['score_threshold'] = $metric === Metric::L2
+                ? self::f32Outside($metric->maxDistanceForMinScore($query->minScore), above: true)
+                : self::f32Outside($query->minScore, above: false);
         }
 
         if ($params !== []) {
@@ -299,7 +302,7 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
             'metadata' => [self::REGISTRY => $registry],
         ]));
 
-        // Payload indexes before any write: an index made after the data can miss points on HNSW (open item O1).
+        // Payload indexes before any write, so the planner can use them from the first point.
         try {
             $this->request('PUT', $this->path($definition->name, 'index?wait=true'), ['field_name' => 'id', 'field_schema' => 'keyword']);
 
@@ -430,6 +433,28 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
     }
 
     /**
+     * The f32 next to $bound on its open side: below it for a lower bound, above it for an upper one. A strict
+     * comparison against it keeps exactly the f32 values that meet the bound inclusively.
+     */
+    private static function f32Outside(float $bound, bool $above): float
+    {
+        $bits = (int) unpack('V', pack('g', $bound))[1];
+        $ordered = $bits >= 0x80000000 ? -($bits & 0x7FFFFFFF) : $bits;
+        $nearest = (float) unpack('g', pack('g', $bound))[1];
+
+        // First the f32 closest to the bound on its inclusive side, then one step out.
+        if (! $above && $nearest < $bound) {
+            $ordered++;
+        } elseif ($above && $nearest > $bound) {
+            $ordered--;
+        }
+
+        $ordered += $above ? 1 : -1;
+
+        return (float) unpack('g', pack('V', $ordered < 0 ? -$ordered | 0x80000000 : $ordered))[1];
+    }
+
+    /**
      * @param  list<Document>  $documents
      * @param  array<string, mixed>  $globalMetadata
      * @param  (callable(int, int): void)|null  $onProgress
@@ -463,7 +488,8 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
             }
 
             if ($insert) {
-                // ponytail: check then write; two concurrent inserts of one id can both pass (open item O2).
+                // ponytail: check then write; two concurrent inserts of one id can both pass. v1.20 has update_mode insert_only,
+                // but it skips an existing point silently, so it cannot report the duplicate (O2).
                 $existing = $this->request('POST', $this->path($collection, 'points'), ['ids' => array_column($points, 'id'), 'with_payload' => ['id']]);
 
                 if ($existing !== []) {
@@ -693,6 +719,7 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
         $message = "Store [{$this->name}]: ".(string) ($response->json('status.error') ?? $response->body());
 
         throw match (true) {
+            $response->status() === 404 && preg_match('#^collections/([^/?]+)#', $path, $match) === 1 => new VectorCollectionNotFoundException('Collection ['.rawurldecode($match[1]).'] was not found.'),
             $response->status() === 404 => new VectorCollectionNotFoundException($message),
             str_contains($message, 'Vector dimension error') => new VectorDimensionMismatchException($message),
             default => new VectorQueryException($message),

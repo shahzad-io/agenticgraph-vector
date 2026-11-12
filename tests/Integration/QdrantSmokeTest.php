@@ -6,6 +6,8 @@ use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\NormalizedFilter;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
+use Illuminate\Http\Client\Events\RequestSending;
+use Illuminate\Support\Facades\Event;
 
 it('creates, writes, searches with a filter, and deletes on a live Qdrant', function () {
     if (! QdrantTestHelper::isAvailable()) {
@@ -36,4 +38,33 @@ it('creates, writes, searches with a filter, and deletes on a live Qdrant', func
     }
 
     expect($store->collectionExists($name))->toBeFalse();
+});
+
+it('makes exactly one HTTP request for each search after the first (E4)', function () {
+    if (! QdrantTestHelper::isAvailable()) {
+        $this->markTestSkipped(QdrantTestHelper::skipReason());
+    }
+
+    config()->set('vector.stores.qdrant.url', QdrantTestHelper::url());
+    $store = Vector::store('qdrant');
+    $name = 'e4_'.getmypid();
+    $store->createCollection(new CollectionDefinition($name, dimensions: 2, filterable: ['lang' => 'keyword']));
+
+    try {
+        $store->upsert($name, [new Document(id: 'a', content: 'A', metadata: ['lang' => 'en'], vector: [1, 0])]);
+        $search = fn () => $store->collection($name)->usingVector([1, 0])->where('lang', 'en')->take(2)->get();
+        $search();
+        $requests = [];
+        Event::listen(RequestSending::class, function (RequestSending $event) use (&$requests): void {
+            $requests[] = $event->request->method().' '.parse_url($event->request->url(), PHP_URL_PATH);
+        });
+
+        expect($search()->pluck('id'))->toBe(['a']);
+        $search();
+        $search();
+
+        expect($requests)->toBe(array_fill(0, 3, "POST /collections/{$name}/points/query"));
+    } finally {
+        $store->deleteCollection($name);
+    }
 });
