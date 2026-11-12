@@ -75,6 +75,15 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
     private bool $registryCurrent = false;
 
     /**
+     * The registry lookup of a search by collection or alias name, with whether the embedding index exists. Kept
+     * for the life of this instance; a create, delete, alias change, migration step or index rebuild through it
+     * clears it. A change made elsewhere is seen when its table is gone (the search retries once uncached).
+     *
+     * @var array<string, array<string, mixed>>
+     */
+    private array $searchTargets = [];
+
+    /**
      * @param  array<string, mixed>  $config
      */
     public function __construct(
@@ -104,19 +113,65 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
     {
         return $this->run(function () use ($query): SearchResult {
             $this->preparePgVector();
+            $cached = isset($this->searchTargets[$query->collection]);
 
-            return $this->connection()->transaction(function () use ($query): SearchResult {
-                PgVectorSearchOptions::apply($this->connection(), PgVectorSearchOptions::forSearch($this->config, $query->options, $query->filter !== null && $query->filter->conditions !== []));
-                PgVectorSearchOptions::raiseEfSearch($this->connection(), $query->options, $query->keywords === null ? $query->topK : max($query->topK, $query->depth));
+            try {
+                return $this->searchIn($query);
+            } catch (QueryException $exception) {
+                // undefined_table: the cached table was dropped or replaced by another process.
+                if (! $cached || $exception->getCode() !== '42P01') {
+                    throw $exception;
+                }
 
-                $collection = $this->registry->resolve($query->collection);
-                $this->assertVectorDimensions($query->vector, $collection['dimensions'], $query->collection);
+                $this->forgetSearchTargets();
 
-                return $query->keywords === null
-                    ? $this->denseSearch($query, $collection)
-                    : $this->hybridSearch($query, $collection);
-            });
+                return $this->searchIn($query);
+            }
         });
+    }
+
+    private function searchIn(SearchQuery $query): SearchResult
+    {
+        return $this->connection()->transaction(function () use ($query): SearchResult {
+            $collection = $this->searchTarget($query->collection);
+            $this->assertVectorDimensions($query->vector, $collection['dimensions'], $query->collection);
+            $filtered = $query->filter !== null && $query->filter->conditions !== [];
+            $options = PgVectorSearchOptions::forSearch($this->config, $query->options, $filtered);
+            PgVectorSearchOptions::apply($this->connection(), $options);
+
+            // A small collection keeps its vectors in TOAST, which the planner does not cost, so it picks an exact
+            // scan over the index. An unfiltered search asks for the index; a filtered one is left to the planner.
+            if ($query->keywords === null && ! $filtered && $collection['has_index'] && ! PgVectorSearchOptions::exact($options)
+                && (bool) ($this->config['prefer_index'] ?? true)) {
+                $this->connection()->statement('SET LOCAL enable_seqscan = off');
+            }
+
+            PgVectorSearchOptions::raiseEfSearch($this->connection(), $query->options, $query->keywords === null ? $query->topK : max($query->topK, $query->depth));
+
+            return $query->keywords === null
+                ? $this->denseSearch($query, $collection)
+                : $this->hybridSearch($query, $collection);
+        });
+    }
+
+    /**
+     * @return array{name: string, dimensions: int, metric: Metric, storage_identifier: string, index_options: array<string, mixed>|null, embedding: array<string, mixed>|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>, has_index: bool}
+     */
+    private function searchTarget(string $collection): array
+    {
+        if (! isset($this->searchTargets[$collection])) {
+            $resolved = $this->registry->resolve($collection);
+            $resolved['has_index'] = $this->existingIndex($this->storage($resolved), $resolved['index_options']) !== null;
+            $this->searchTargets[$collection] = $resolved;
+        }
+
+        /** @var array{name: string, dimensions: int, metric: Metric, storage_identifier: string, index_options: array<string, mixed>|null, embedding: array<string, mixed>|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>, has_index: bool} */
+        return $this->searchTargets[$collection];
+    }
+
+    private function forgetSearchTargets(): void
+    {
+        $this->searchTargets = [];
     }
 
     public function capabilities(): StoreCapabilities
@@ -161,12 +216,13 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
             array_push($bindings, $vector, $metric->maxDistanceForMinScore($query->minScore));
         }
 
-        array_push($bindings, $vector, $query->topK);
+        // ORDER BY the alias: the vector is bound once (twice with minScore), so each row is scored once.
+        $bindings[] = $query->topK;
 
         $rows = $this->connection()->select(
             "WITH candidates AS MATERIALIZED (
                 SELECT id, content, metadata, {$distance} AS distance FROM {$this->storage($collection)}
-                WHERE {$filter['sql']}{$minScore} ORDER BY {$distance} LIMIT ?
+                WHERE {$filter['sql']}{$minScore} ORDER BY distance LIMIT ?
              )
              SELECT id, content, metadata, {$score} AS score FROM candidates ORDER BY distance, id COLLATE \"C\"",
             $bindings,
@@ -220,7 +276,7 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
         $rows = $this->connection()->select(
             "WITH input AS MATERIALIZED (SELECT ?::text AS text),
              keyword_query AS MATERIALIZED (SELECT parsed.*, {$any} AS q_any FROM (SELECT {$parsed} FROM input) parsed),
-             dense AS MATERIALIZED (SELECT id, {$distance} AS distance FROM {$storage} WHERE {$filter['sql']} ORDER BY {$distance} LIMIT ?),
+             dense AS MATERIALIZED (SELECT id, {$distance} AS distance FROM {$storage} WHERE {$filter['sql']} ORDER BY distance LIMIT ?),
              dense_ranked AS (SELECT id, row_number() OVER (ORDER BY distance, id COLLATE \"C\") AS dense_rank FROM dense),
              keyword AS MATERIALIZED (
                 SELECT id, ts_rank_cd(keywords, {$own}) AS keyword_score FROM {$storage}, keyword_query
@@ -231,7 +287,7 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
              SELECT s.id, s.content, s.metadata, s.{$distance} AS distance, d.dense_rank, k.keyword_score, k.keyword_rank
              FROM candidates c JOIN {$storage} s ON s.id = c.id
              LEFT JOIN dense_ranked d ON d.id = c.id LEFT JOIN keyword_ranked k ON k.id = c.id",
-            [$query->keywords, $vector, ...$filter['bindings'], $vector, $limit, ...$filter['bindings'], $limit, $vector],
+            [$query->keywords, $vector, ...$filter['bindings'], $limit, ...$filter['bindings'], $limit, $vector],
         );
 
         $byId = [];
@@ -336,6 +392,8 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
     public function rebuildIndex(string $collection): void
     {
+        $this->forgetSearchTargets();
+
         $this->run(function () use ($collection): void {
             $this->preparePgVector();
             $this->rebuildEmbeddingIndex($this->registry->resolve($collection));
@@ -466,6 +524,8 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
     public function createCollection(CollectionDefinition $definition): void
     {
+        $this->forgetSearchTargets();
+
         $this->run(function () use ($definition): void {
             $this->preparePgVector();
 
@@ -512,6 +572,8 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
     public function deleteCollection(string $name): void
     {
+        $this->forgetSearchTargets();
+
         $this->run(function () use ($name): void {
             $this->preparePgVector();
 
@@ -576,6 +638,8 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
     public function deleteAlias(string $alias): void
     {
+        $this->forgetSearchTargets();
+
         $this->run(function () use ($alias): void {
             $this->preparePgVector();
             $this->connection()->transaction(fn () => $this->registry->removeAlias($alias));
@@ -584,6 +648,8 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
     public function pointAlias(string $alias, string $collection): void
     {
+        $this->forgetSearchTargets();
+
         $this->run(function () use ($alias, $collection): void {
             $this->preparePgVector();
             $this->registry->pointAlias($alias, $collection);
@@ -592,6 +658,8 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
     public function adoptCollection(string $name, string $physical): void
     {
+        $this->forgetSearchTargets();
+
         $this->run(function () use ($name, $physical): void {
             $this->preparePgVector();
             $this->connection()->transaction(fn () => $this->registry->adopt($name, $physical));
@@ -614,6 +682,8 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
     public function saveMigration(MigrationState $state): void
     {
+        $this->forgetSearchTargets();
+
         $this->run(function () use ($state): void {
             $this->preparePgVector();
             $this->registry->saveMigration($state);
@@ -622,6 +692,8 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
     public function migrateBatch(MigrationState $state, int $limit): MigrationState
     {
+        $this->forgetSearchTargets();
+
         return $this->run(function () use ($state, $limit): MigrationState {
             $this->preparePgVector();
 
@@ -677,6 +749,8 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
     public function catchUpMigration(MigrationState $state): int
     {
+        $this->forgetSearchTargets();
+
         return $this->run(function () use ($state): int {
             $this->preparePgVector();
             $target = $this->registry->resolve($state->target);
@@ -691,6 +765,8 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
     public function finishMigration(MigrationState $state, int $threshold, bool $embedInLock = true): MigrationState
     {
+        $this->forgetSearchTargets();
+
         return $this->run(function () use ($state, $threshold, $embedInLock): MigrationState {
             $this->preparePgVector();
 

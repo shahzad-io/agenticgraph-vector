@@ -27,6 +27,7 @@ Several stores behind one contract, and a Qdrant driver.
 - `pointAlias()` creates the alias when it does not exist and re-points it when it does. It refuses the name of a physical collection.
 - The shipped config no longer sets `stores.pgvector.registry_table`. Its default is `{table_prefix}vector_collection_registry`, the same name as before when `table_prefix` is empty.
 - A search after the first one in a request makes one store call: collection descriptions are cached per scoped manager.
+- **pgvector search latency.** A dense search binds the query vector once (nine significant digits), caches its registry lookup per store instance, and asks for the index (`SET LOCAL enable_seqscan = off`) when it has no filter. New store setting `prefer_index` (`VECTOR_PGVECTOR_PREFER_INDEX`, default `true`) and search option `exact` (index scans off, index kept). Small collections, whose vectors the planner costs too low, now get index results, which are approximate, where before they got exact ones; pass `exact: true` for the old results. One SciFact search (5,183 documents) goes from about 20 ms to about 2 ms.
 
 ### Deprecated
 
