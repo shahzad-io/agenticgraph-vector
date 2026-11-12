@@ -231,8 +231,7 @@ final class MemoryStore implements MigrationStoreContract, VectorStoreContract
         $changes = [];
 
         foreach ($metadataById as $id => $metadata) {
-            $changes[(string) $id] = $this->storable($this->metadataValidator->normalize($metadata));
-            CollectionDefinition::assertDeclaredTypes($this->collections[$collection]['filterable'], $changes[(string) $id], $id);
+            $changes[(string) $id] = CollectionDefinition::assertDeclaredTypes($this->collections[$collection]['filterable'], $this->storable($this->metadataValidator->normalize($metadata)), $id);
         }
 
         $updated = [];
@@ -377,8 +376,8 @@ final class MemoryStore implements MigrationStoreContract, VectorStoreContract
 
     public function pointAlias(string $alias, string $collection): void
     {
-        if (! isset($this->aliases[$alias])) {
-            throw new VectorCollectionNotFoundException("Alias [{$alias}] was not found.");
+        if (isset($this->collections[$alias])) {
+            throw new VectorQueryException("[{$alias}] is a collection, not an alias.");
         }
 
         if (! isset($this->collections[$collection])) {
@@ -482,6 +481,8 @@ final class MemoryStore implements MigrationStoreContract, VectorStoreContract
     private function copyDocuments(MigrationState $state, array $source, array $ids): void
     {
         if ($state->mode === 'copy') {
+            $this->assertTargetTypes($state, array_intersect_key($source, array_flip($ids)));
+
             foreach ($ids as $id) {
                 $this->collections[$state->target]['documents'][$id] = $source[$id];
             }
@@ -493,6 +494,18 @@ final class MemoryStore implements MigrationStoreContract, VectorStoreContract
             static fn (string $id): Document => new Document(id: $id, content: $source[$id]['content'], metadata: $source[$id]['metadata']),
             $ids,
         ), [], true, null);
+    }
+
+    /**
+     * A migration copy checks each document's metadata against the target's declared fields, before it writes.
+     *
+     * @param  array<string, array{content: string, metadata: array<string, mixed>, vector: list<float>}>  $documents
+     */
+    private function assertTargetTypes(MigrationState $state, array $documents): void
+    {
+        foreach ($documents as $id => $document) {
+            CollectionDefinition::assertDeclaredTypes($this->collections[$state->target]['filterable'], $document['metadata'], $id);
+        }
     }
 
     private function catchUpPass(MigrationState $state, ?int $threshold): int
@@ -524,6 +537,8 @@ final class MemoryStore implements MigrationStoreContract, VectorStoreContract
                 "Migration of [{$state->alias}] did not switch: {$difference} documents changed since the last pass, above catch_up_threshold {$threshold}. Run it again to continue.",
             );
         }
+
+        $this->assertTargetTypes($state, array_intersect_key($source, array_flip($metadataOnly)));
 
         foreach ($metadataOnly as $id) {
             $this->collections[$state->target]['documents'][$id]['metadata'] = $source[$id]['metadata'];
@@ -586,8 +601,7 @@ final class MemoryStore implements MigrationStoreContract, VectorStoreContract
                     throw VectorDuplicateDocumentException::forId($name, $id);
                 }
 
-                $metadata = $this->storable($metadata);
-                CollectionDefinition::assertDeclaredTypes($resolved['filterable'], $metadata, $document->id);
+                $metadata = CollectionDefinition::assertDeclaredTypes($resolved['filterable'], $this->storable($metadata), $document->id);
 
                 $rows[$id] = [
                     'content' => $document->content,
@@ -637,7 +651,7 @@ final class MemoryStore implements MigrationStoreContract, VectorStoreContract
     private function storable(array $metadata): array
     {
         /** @var array<string, mixed> $decoded */
-        $decoded = json_decode(json_encode((object) $metadata, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+        $decoded = json_decode(json_encode((object) $metadata, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION), true, flags: JSON_THROW_ON_ERROR);
 
         return $decoded;
     }

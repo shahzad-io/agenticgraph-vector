@@ -59,6 +59,9 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 {
     use InteractsWithBuilder;
 
+    /** A whole float (3.0) stays a float in JSONB. Rows written before this keep their old form. */
+    private const METADATA_JSON = JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION;
+
     private readonly PgVectorCollectionRegistry $registry;
 
     private readonly PgVectorFilterTranslator $filterTranslator;
@@ -417,8 +420,8 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
             $rows = [];
             foreach ($metadataById as $id => $metadata) {
                 $metadata = $this->metadataValidator->normalize($metadata);
-                CollectionDefinition::assertDeclaredTypes($filterable, $metadata, $id);
-                $rows[] = [(string) $id, json_encode((object) $metadata, JSON_THROW_ON_ERROR)];
+                $metadata = CollectionDefinition::assertDeclaredTypes($filterable, $metadata, $id);
+                $rows[] = [(string) $id, json_encode((object) $metadata, self::METADATA_JSON)];
             }
 
             // Rows written by older builds may hold empty metadata as a JSON array; || on an array would append.
@@ -633,6 +636,8 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
             $next = $this->connection()->transaction(function () use ($state, $limit, $target, $from, $to, $after, $bindings): MigrationState {
                 if ($state->mode === 'copy') {
+                    $this->assertTargetTypes($target, "SELECT id, metadata FROM {$from}{$after} ORDER BY id LIMIT ?", $bindings);
+
                     /** @var object{count: int|string, last_id: string|null} $page */
                     $page = $this->connection()->selectOne(
                         "WITH page AS (SELECT id, content, embedding, metadata FROM {$from}{$after} ORDER BY id LIMIT ?),
@@ -747,6 +752,9 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
             return null;
         }
 
+        // Re-embedded rows are validated by the write; the rows copied as they are, here.
+        $this->assertTargetTypes($target, $reembed ? "SELECT s.id, s.metadata {$metadataOnly}" : "SELECT s.id, s.metadata {$rewrite}");
+
         if ($reembed) {
             $this->connection()->update("UPDATE {$to} AS t SET metadata = s.metadata FROM {$from} s WHERE s.id = t.id AND t.content = s.content AND t.metadata IS DISTINCT FROM s.metadata");
 
@@ -763,6 +771,24 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
         $this->connection()->delete("DELETE FROM {$to} AS t WHERE NOT EXISTS (SELECT 1 FROM {$from} s WHERE s.id = t.id)");
 
         return $difference;
+    }
+
+    /**
+     * A migration copy checks each row's metadata against the target's declared fields: a value of the wrong type
+     * stops the batch, naming the id and the field. $select returns id and metadata.
+     *
+     * @param  array{filterable: array<string, FieldType>}  $target
+     * @param  list<mixed>  $bindings
+     */
+    private function assertTargetTypes(array $target, string $select, array $bindings = []): void
+    {
+        if ($target['filterable'] === []) {
+            return;
+        }
+
+        foreach ($this->connection()->select($select, $bindings) as $row) {
+            CollectionDefinition::assertDeclaredTypes($target['filterable'], $this->decodeMetadata($row->metadata), (string) $row->id);
+        }
     }
 
     private function verifyMigration(MigrationState $state): void
@@ -1051,7 +1077,7 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
         foreach ($documents as $document) {
             $metadata = $this->metadataValidator->normalize($document->metadata);
-            CollectionDefinition::assertDeclaredTypes($filterable, $metadata, $document->id);
+            $metadata = CollectionDefinition::assertDeclaredTypes($filterable, $metadata, $document->id);
             $vector = $this->requireVector($document, $dimensions, $collection);
 
             $placeholders[] = '(?, ?, ?::vector, ?::jsonb)';
@@ -1060,7 +1086,7 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
                 (string) $document->id,
                 $document->content,
                 PgVectorVectorFormatter::format($vector),
-                json_encode((object) $metadata, JSON_THROW_ON_ERROR),
+                json_encode((object) $metadata, self::METADATA_JSON),
             );
         }
 
@@ -1100,7 +1126,7 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
         foreach ($documents as $document) {
             $metadata = $this->metadataValidator->normalize(array_merge($globalMetadata, $document->metadata));
-            CollectionDefinition::assertDeclaredTypes($filterable, $metadata, $document->id);
+            $metadata = CollectionDefinition::assertDeclaredTypes($filterable, $metadata, $document->id);
             $vector = $this->requireVector($document, $dimensions, $collection);
 
             $placeholders[] = '(?, ?, ?::vector, ?::jsonb)';
@@ -1109,7 +1135,7 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
                 (string) $document->id,
                 $document->content,
                 PgVectorVectorFormatter::format($vector),
-                json_encode((object) $metadata, JSON_THROW_ON_ERROR),
+                json_encode((object) $metadata, self::METADATA_JSON),
             );
         }
 

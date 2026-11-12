@@ -8,10 +8,8 @@ use AgenticGraph\Vector\Contracts\CollectionStoreContract;
 use AgenticGraph\Vector\Contracts\DocumentStoreContract;
 use AgenticGraph\Vector\Contracts\SearchStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
-use AgenticGraph\Vector\Enums\FieldType;
 use AgenticGraph\Vector\Enums\FilterOperator;
 use AgenticGraph\Vector\Enums\StoreCapability;
-use AgenticGraph\Vector\Exceptions\VectorInvalidFilterException;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Ingest\QueuedIngest;
@@ -649,8 +647,8 @@ final class Builder
     }
 
     /**
-     * The operator's capability, then the collection's declared fields: a declared field takes only the operators
-     * of its FieldType, and a field that is not declared needs the UndeclaredFilters capability.
+     * The operator's capability. The declared-field checks (FieldType operators and values, UndeclaredFilters)
+     * run in InstrumentedStore, so a direct store call gets them too.
      */
     private function assertFilterSupported(?NormalizedFilter $filter): void
     {
@@ -661,29 +659,6 @@ final class Builder
 
             if ($capability !== null) {
                 $this->assertSupported($capability, "The {$condition->operator->value} filter");
-            }
-        }
-
-        if ($conditions === [] || ! $this->store instanceof CollectionStoreContract) {
-            return;
-        }
-
-        $declared = $this->store->describeCollection($this->collection)['filterable'];
-        $undeclared = $this->store->capabilities()->supports(StoreCapability::UndeclaredFilters);
-
-        foreach ($conditions as $condition) {
-            $type = isset($declared[$condition->field]) ? FieldType::from($declared[$condition->field]) : null;
-
-            if ($type === null && ! $undeclared) {
-                throw new VectorUnsupportedOperationException(
-                    "Field [{$condition->field}] is not declared filterable on collection [{$this->collection}], and this store filters declared fields only. Declare it in CollectionDefinition::\$filterable.",
-                );
-            }
-
-            if ($type !== null && ! $type->allows($condition->operator)) {
-                throw new VectorInvalidFilterException(
-                    "The {$condition->operator->value} filter is not allowed on field [{$condition->field}], declared {$type->value}.",
-                );
             }
         }
     }

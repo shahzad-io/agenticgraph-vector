@@ -1321,8 +1321,8 @@ trait StoreConformanceTests
     {
         $this->requireCapabilities(StoreCapability::UndeclaredFilters);
 
-        [$alias, $state] = $this->migratedAlias();
-        $store = $this->migrationStore();
+        [$alias, $state] = $this->pointedAlias();
+        $store = $this->aliasStore();
         $builder = $store->collection($alias);
 
         $builder->insert([
@@ -1346,10 +1346,33 @@ trait StoreConformanceTests
         $this->assertSame(['doc-1'], array_map(strval(...), $store->fetch($alias, ['doc-1'])->pluck('id')));
     }
 
+    public function test_conformance_point_alias_creates_re_points_and_refuses_a_collection_name(): void
+    {
+        $store = $this->aliasStore();
+        $first = $this->vectorCollection();
+        $second = $this->vectorCollection();
+        $alias = $this->vectorCollectionName();
+        $store->collection($first)->upsert([Document::make('in-first', 'in first', vector: [1.0, 0.0, 0.0])]);
+
+        $store->pointAlias($alias, $first);
+        $this->assertSame($first, $store->listAliases()[$alias]);
+        $this->assertSame(1, $store->collection($alias)->fetch(['in-first'])->count());
+
+        $store->pointAlias($alias, $second);
+        $this->assertSame($second, $store->listAliases()[$alias]);
+        $this->assertSame(0, $store->collection($alias)->fetch(['in-first'])->count());
+
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $store->pointAlias($first, $second), 'is a collection');
+        $this->assertArrayNotHasKey($first, $store->listAliases());
+        $this->assertSame(1, $store->collection($first)->fetch(['in-first'])->count());
+        $this->assertConformanceThrows(VectorCollectionNotFoundException::class, fn () => $store->pointAlias($alias, 'conformance_missing_collection'));
+        $this->assertSame($second, $store->listAliases()[$alias]);
+    }
+
     public function test_conformance_alias_semantics_and_namespace(): void
     {
-        [$alias, $state] = $this->migratedAlias();
-        $store = $this->migrationStore();
+        [$alias, $state] = $this->pointedAlias();
+        $store = $this->aliasStore();
 
         $this->assertTrue($store->collectionExists($alias));
         $this->assertNotContains($alias, $store->listCollections());
@@ -1708,7 +1731,8 @@ trait StoreConformanceTests
 
         // A missing field, null, a DateTimeInterface for a datetime and an integer for a float are accepted.
         $builder->upsert([Document::make('ok', 'ok', ['kind' => null, 'at' => new DateTimeImmutable('2026-05-01 12:00:00', new DateTimeZone('UTC')), 'price' => 4], [1.0, 0.0, 0.0])]);
-        $this->assertEquals(['kind' => null, 'at' => '2026-05-01T12:00:00Z', 'price' => 4], $builder->fetch(['ok'])->first()?->metadata);
+        $this->assertEquals(['kind' => null, 'at' => '2026-05-01T12:00:00Z', 'price' => 4.0], $builder->fetch(['ok'])->first()?->metadata);
+        $this->assertSame(4.0, $builder->fetch(['ok'])->first()?->metadata['price'] ?? null);
     }
 
     public function test_conformance_a_selective_filter_on_a_declared_field_still_returns_top_k(): void
@@ -1812,17 +1836,115 @@ trait StoreConformanceTests
 
     public function test_conformance_float_and_integer_metadata_keep_their_types(): void
     {
-        $builder = $this->vectorBuilder();
-        // ponytail: a whole float (3.0) comes back as the integer 3 on every store today (JSON without
-        // JSON_PRESERVE_ZERO_FRACTION); open in the multi-store spec, add it here once decided.
-        $builder->upsert([Document::make('a', 'a', ['int' => 3, 'float' => 1.5, 'negative' => -2, 'list' => [1, 2.5]], [1.0, 0.0, 0.0])]);
+        $name = $this->vectorCollectionName();
+        $this->vectorStore()->createCollection(new CollectionDefinition($name, dimensions: 3, metric: 'cosine', filterable: ['price' => FieldType::Float]));
+        $builder = $this->vectorStore()->collection($name);
+        $builder->upsert([Document::make('a', 'a', ['int' => 3, 'float' => 1.5, 'whole' => 3.0, 'negative' => -2, 'list' => [1, 2.5, 4.0], 'price' => 4], [1.0, 0.0, 0.0])]);
 
         foreach ([$builder->fetch(['a'])->first()?->metadata, $builder->usingVector([1.0, 0.0, 0.0])->get()->first()?->metadata] as $metadata) {
             $this->assertSame(3, $metadata['int'] ?? null);
             $this->assertSame(1.5, $metadata['float'] ?? null);
+            $this->assertSame(3.0, $metadata['whole'] ?? null);
             $this->assertSame(-2, $metadata['negative'] ?? null);
-            $this->assertSame([1, 2.5], $metadata['list'] ?? null);
+            $this->assertSame([1, 2.5, 4.0], $metadata['list'] ?? null);
+            // An integer on a declared float field is stored as a float.
+            $this->assertSame(4.0, $metadata['price'] ?? null);
         }
+
+        if ($this->vectorStore()->capabilities()->supports(StoreCapability::UpdateMetadata)) {
+            $builder->updateMetadata(['a' => ['price' => 7]]);
+            $this->assertSame(7.0, $builder->fetch(['a'])->first()?->metadata['price'] ?? null);
+        }
+    }
+
+    public function test_conformance_a_zero_vector_is_refused_under_cosine_only(): void
+    {
+        $zero = Document::make('zero', 'zero', vector: [0.0, 0.0, 0.0]);
+        $builder = $this->vectorBuilder();
+        $builder->upsert([Document::make('a', 'a', vector: [1.0, 0.0, 0.0])]);
+
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $builder->upsert([$zero]), 'zero vector');
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $builder->insert([$zero]), 'zero vector');
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $builder->usingVector([0.0, 0.0, 0.0])->get(), 'zero vector');
+        $this->assertConformanceThrows(VectorQueryException::class, fn () => $this->vectorStore()->search(new SearchQuery($this->lastVectorCollection(), [0.0, 0.0, 0.0])), 'zero vector');
+        $this->assertSame(0, $builder->fetch(['zero'])->count());
+
+        foreach (['l2', 'inner_product'] as $metric) {
+            $other = $this->vectorBuilder(metric: $metric);
+            $other->upsert([$zero, Document::make('a', 'a', vector: [1.0, 0.0, 0.0])]);
+
+            $this->assertSame(['a', 'zero'], $this->sortedIds(array_map(strval(...), $other->usingVector([0.0, 0.0, 0.0])->take(10)->get()->pluck('id'))), $metric);
+        }
+    }
+
+    public function test_conformance_declared_filter_values_must_have_the_declared_type(): void
+    {
+        $builder = $this->declaredFixture();
+        $collection = $this->lastVectorCollection();
+
+        foreach ([
+            'keyword eq int' => fn () => $builder->where('kind', 5),
+            'integer eq float' => fn () => $builder->where('count', 1.5),
+            'integer eq string' => fn () => $builder->where('count', '1'),
+            'integer in string' => fn () => $builder->whereIn('count', ['1']),
+            'float gt string' => fn () => $builder->where('price', '>', '2026-01-01T00:00:00Z'),
+            'bool eq int' => fn () => $builder->where('active', 1),
+            'datetime gt number' => fn () => $builder->where('at', '>', 5),
+            'keyword_list contains int' => fn () => $builder->whereContains('tags', 1),
+        ] as $case => $filtered) {
+            $this->assertConformanceThrows(VectorInvalidFilterException::class, fn () => $filtered()->usingVector([1.0, 0.0, 0.0])->get(), 'must be');
+        }
+
+        // The checks run in the store that Vector::store() returns, so a direct call gets them too.
+        $filter = NormalizedFilter::from([['field' => 'count', 'operator' => 'eq', 'value' => '1']]);
+        $this->assertConformanceThrows(VectorInvalidFilterException::class, fn () => $this->vectorStore()->search(new SearchQuery($collection, [1.0, 0.0, 0.0], $filter)), 'must be');
+        $filter = NormalizedFilter::from([['field' => 'kind', 'operator' => 'gt', 'value' => 1]]);
+        $this->assertConformanceThrows(VectorInvalidFilterException::class, fn () => $this->vectorStore()->search(new SearchQuery($collection, [1.0, 0.0, 0.0], $filter)), 'is not allowed on field');
+
+        if (! $this->vectorStore()->capabilities()->supports(StoreCapability::UndeclaredFilters)) {
+            $this->assertConformanceThrows(VectorUnsupportedOperationException::class, fn () => $builder->where('undeclared', 'x')->usingVector([1.0, 0.0, 0.0])->get(), 'not declared');
+        }
+    }
+
+    public function test_conformance_a_migration_copy_validates_values_against_the_target_fields(): void
+    {
+        $this->migrationStore();
+        $builder = $this->vectorBuilder();
+        $name = $this->lastVectorCollection();
+        $builder->upsert([
+            Document::make('good', 'good', ['count' => 1], [1.0, 0.0, 0.0]),
+            Document::make('bad', 'bad', ['count' => 'five'], [0.0, 1.0, 0.0]),
+        ]);
+
+        $this->assertConformanceThrows(
+            VectorQueryException::class,
+            fn () => $this->migrator()->migrate($name, new CollectionDefinition($name, dimensions: 3, metric: 'cosine', filterable: ['count' => FieldType::Integer])),
+            'Document [bad]: metadata field [count]',
+        );
+        // The batch stopped: no switch, and the name still reads the source.
+        $this->assertNotSame('switched', $this->migrationStore()->migration($name)?->phase);
+        $this->assertSame(1, $this->vectorStore()->collection($name)->fetch(['bad'])->count());
+    }
+
+    public function test_conformance_a_language_map_without_keyword_languages_is_accepted_and_not_applied(): void
+    {
+        $this->requireCapabilities(StoreCapability::Keyword);
+
+        if ($this->vectorStore()->capabilities()->supports(StoreCapability::KeywordLanguages)) {
+            $this->markTestSkipped('The store applies the language map (KeywordLanguages).');
+        }
+
+        $name = $this->vectorCollectionName();
+        $this->vectorStore()->createCollection(new CollectionDefinition($name, dimensions: 3, metric: 'cosine', keyword: true, languages: ['fr' => 'french']));
+        $builder = $this->vectorStore()->collection($name);
+        $builder->upsert([
+            Document::make('fr', 'les chats dorment', ['lang' => 'fr'], [1.0, 0.0, 0.0]),
+            Document::make('en', 'the cats sleep', ['lang' => 'en'], [0.0, 1.0, 0.0]),
+        ]);
+
+        // Words match as written: no French stemming of "chat" to "chats".
+        $this->assertSame(['fr'], $this->keywordMatches($builder, 'chats', 'any'));
+        $this->assertSame([], $this->keywordMatches($builder, 'chat', 'any'));
     }
 
     public function test_conformance_a_delete_of_an_unknown_id_does_nothing(): void
@@ -2006,6 +2128,25 @@ trait StoreConformanceTests
         $builder->upsert($this->vectorDocuments(3));
 
         return [$name, $this->migrator()->migrate($name, new CollectionDefinition($name, dimensions: 3, metric: 'cosine'))];
+    }
+
+    /**
+     * Two collections of the same three documents (3 dimensions) and an alias on the second, set up by pointAlias.
+     * Returns the alias and a state whose source is the first collection and whose target is the second.
+     *
+     * @return array{0: string, 1: MigrationState}
+     */
+    private function pointedAlias(): array
+    {
+        $store = $this->aliasStore();
+        $source = $this->vectorCollection();
+        $target = $this->vectorCollection();
+        $alias = $this->vectorCollectionName();
+        $store->collection($source)->upsert($this->vectorDocuments(3));
+        $store->collection($target)->upsert($this->vectorDocuments(3));
+        $store->pointAlias($alias, $target);
+
+        return [$alias, new MigrationState($alias, $source, $target, 'copy', 'switched', [])];
     }
 
     private function conformanceAliasCall(): mixed

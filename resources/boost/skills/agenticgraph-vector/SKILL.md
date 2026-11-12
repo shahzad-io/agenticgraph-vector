@@ -95,9 +95,9 @@ Vector::store('pgvector')->deleteCollection('articles');
 ```
 
 - Omit `dimensions` to use the embedding provider's width. With `VECTOR_EMBEDDINGS_DIMENSIONS` unset, that width costs one extra embed call per process.
-- `metric`: `cosine` (default), `l2` or `inner_product` (`Metric`). A store refuses a metric it cannot serve with `VectorQueryException`.
+- `metric`: `cosine` (default), `l2` or `inner_product` (`Metric`). A store refuses a metric it cannot serve with `VectorQueryException`. Under `cosine`, a zero vector is refused on write and on search with `VectorQueryException`; `l2` and `inner_product` accept it.
 - `index`, `indexOptions`, `languages` and `options()` are store-defined and validated by the store. pgvector's are under [pgvector](#pgvector); the memory store ignores index options.
-- Declare the metadata fields you filter on: `filterable: ['lang' => FieldType::Keyword, 'year' => FieldType::Integer, 'tags' => FieldType::KeywordList]` (`use AgenticGraph\Vector\Enums\FieldType;`). A declared field is validated on write: a value of another type throws `VectorQueryException`; a missing field and null pass. `describeCollection()` returns the map under `filterable`. A store without the `UndeclaredFilters` capability filters declared fields only.
+- Declare the metadata fields you filter on: `filterable: ['lang' => FieldType::Keyword, 'year' => FieldType::Integer, 'tags' => FieldType::KeywordList]` (`use AgenticGraph\Vector\Enums\FieldType;`). A declared field is validated on write: a value of another type throws `VectorQueryException`; a missing field and null pass. An integer on a `Float` field is stored as a float. Metadata keeps its number types: `3` comes back as an integer, `3.0` as a float (rows written before 0.2.0 may hold `3.0` as `3`). `describeCollection()` returns the map under `filterable`. A store without the `UndeclaredFilters` capability filters declared fields only.
 - Dimensions, metric, index, declared fields and embeddings are fixed at create. Creating the same name with the same definition does nothing; a different one throws `VectorQueryException`. To change them, migrate (below).
 - `new CollectionDefinition(name: 'articles', embeddings: 'prism_large')` names a provider from `vector.embeddings.providers`. The collection records its provider, model and width and embeds documents and `similarTo()` queries with it; a later change of the default does not affect it.
 
@@ -124,7 +124,8 @@ Vector::store('pgvector')->listAliases();
 - Reads and writes stay on the old collection until the switch. Catch-up passes apply writes made during the copy; the final pass pauses writers (not searches) and switches in one transaction. Writers embed before taking any lock; a final pass that finds documents to embed releases the lock for another unlocked pass, and only the last allowed pass embeds inside it. `vector.migration.catch_up_threshold` (default 500), at most `vector.migration.catch_up_max_passes` unlocked passes (default 10).
 - Options left out of the migration definition come from the source collection (width, metric, index, index options, provider, declared fields). `--dry-run` prints the resulting definition. A copy does not re-validate existing values against newly declared fields.
 - A failed or killed run resumes when rerun with the same definition. The old collection stays until `dropOldCollection()` / `--drop-old`.
-- Needs the `Migrations` capability (pgvector, memory); aliases alone are the `Aliases` capability. `deleteCollection()` on an alias, or on the collection behind one, throws; use `deleteAlias()` first. `deleteAlias()` also removes the alias's migration rows and refuses while its migration is unfinished.
+- A migration copy checks every value against the target's declared fields; a value of the wrong type stops the batch with `VectorQueryException` naming the id and the field.
+- Needs the `Migrations` capability (pgvector, memory); aliases alone are the `Aliases` capability: `pointAlias($alias, $collection)` creates the alias or re-points it, and refuses a name that is a collection. `deleteCollection()` on an alias, or on the collection behind one, throws; use `deleteAlias()` first. `deleteAlias()` also removes the alias's migration rows and refuses while its migration is unfinished.
 
 Docs: `/docs/vector-guide-changing-embedding-model`
 
@@ -202,7 +203,7 @@ $ids = $results->pluck('id');
 - `similarTo($text)` embeds the query; `usingVector($vector)` takes a precomputed one. Setting one clears the other. `get()` without either throws `VectorQueryException`.
 - Filters on top-level metadata keys: `where('lang', 'en')`, `where('year', '>=', 2020)` (`=`, `!=`, `<>`, `>`, `>=`, `<`, `<=`, or `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`), `whereIn()`, `whereNotIn()`, `whereContains('tags', 'x')`. `take()` defaults to 10.
 - `ne` and `whereNotIn()` also match documents without the field. `whereContains()` matches array fields only. Equality is type-exact (`'5'` does not match a stored `5`); another type never matches and never errors. Ranges take numbers, or dates as `DateTimeInterface` or `Y-m-d\TH:i:s\Z` strings; another string throws `VectorInvalidFilterException`.
-- On a declared field (`filterable`), every store gives the same result for the operators of its type; another operator throws `VectorInvalidFilterException` when the query is built:
+- On a declared field (`filterable`), every store gives the same result for the operators of its type; another operator, or a filter value of another type (`where('year', '2020')` on an `Integer` field), throws `VectorInvalidFilterException` when the query runs:
 
 | Type | eq, ne | in, not_in | gt, gte, lt, lte | contains |
 |---|---|---|---|---|
@@ -251,7 +252,7 @@ $results->first()?->scores;       // ['vector' => float, 'keyword' => ?float, 'f
 - Match mode: `hybrid(match: 'any')` (default, `vector.hybrid.match`) matches documents with any of the query's words, ranked by how many and how close; use it for questions. `hybrid(match: 'websearch')` needs every word and reads `"phrases"`, `-excluded`, `or`; use it for search-box input. Questions in `websearch` mode rarely match anything.
 - `keywords('...')` sets the keyword query; it defaults to the `similarTo()` text and is required with `usingVector()`.
 - Languages (capability `KeywordLanguages`, pgvector): set `lang` metadata on documents; the language map picks the store's text configuration per document, other values and none use `simple`, which keeps stop words ("how", "the"), so `any` mode matches on them. `languages:` and `languageField:` change the map; changing it is a migration. pgvector's map values are under [pgvector](#pgvector).
-- The memory store records the map but matches with `simple` semantics for every document, in both modes, so it has no `KeywordLanguages`.
+- A store with `Keyword` but without `KeywordLanguages` accepts a language map and does not apply it. The memory store records the map but matches with `simple` semantics for every document, in both modes.
 
 Docs: `/docs/vector-guide-hybrid-search`
 

@@ -9,7 +9,10 @@ use AgenticGraph\Vector\Contracts\AliasStoreContract;
 use AgenticGraph\Vector\Contracts\IndexStoreContract;
 use AgenticGraph\Vector\Contracts\MigrationStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
+use AgenticGraph\Vector\Enums\FieldType;
 use AgenticGraph\Vector\Enums\StoreCapability;
+use AgenticGraph\Vector\Exceptions\VectorInvalidFilterException;
+use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
 use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\Tracing\VectorTraceContext;
@@ -32,6 +35,11 @@ use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
  * describeCollection() is cached per name for the life of this instance (one request or job: the manager is
  * scoped), so a search makes no extra store call for it. A create, delete, alias change or migration step through
  * this instance clears the cache; a change made by another process shows from the next request on. A queued ingest batch is an `upsert` span like any other.
+ *
+ * The store-neutral checks run here, so every store gives the same answer: a zero vector under cosine is refused
+ * on write and on search (VectorQueryException); a filter on a field that is not declared needs UndeclaredFilters
+ * (VectorUnsupportedOperationException); on a declared field, an operator its FieldType does not allow or a value
+ * of another type throws VectorInvalidFilterException.
  */
 final class InstrumentedStore implements IndexStoreContract, MigrationStoreContract, VectorStoreContract
 {
@@ -52,6 +60,9 @@ final class InstrumentedStore implements IndexStoreContract, MigrationStoreContr
 
     public function search(SearchQuery $query): SearchResult
     {
+        $this->assertVectorUsable($query->collection, [$query->vector]);
+        $this->assertFilterAllowed($query->collection, $query->filter);
+
         return TraceSpan::operation(
             'search',
             fn (): SearchResult => $this->store->search($query),
@@ -75,6 +86,7 @@ final class InstrumentedStore implements IndexStoreContract, MigrationStoreContr
 
     public function insert(string $collection, array $documents, ?callable $onProgress = null): void
     {
+        $this->assertVectorUsable($collection, array_map(static fn ($document): ?array => $document->vector, $documents));
         TraceSpan::operation(
             'insert',
             fn () => $this->store->insert($collection, $documents, $onProgress),
@@ -84,6 +96,7 @@ final class InstrumentedStore implements IndexStoreContract, MigrationStoreContr
 
     public function upsert(string $collection, array $documents, array $globalMetadata = [], ?callable $onProgress = null): void
     {
+        $this->assertVectorUsable($collection, array_map(static fn ($document): ?array => $document->vector, $documents));
         TraceSpan::operation(
             'upsert',
             fn () => $this->store->upsert($collection, $documents, $globalMetadata, $onProgress),
@@ -117,6 +130,7 @@ final class InstrumentedStore implements IndexStoreContract, MigrationStoreContr
 
     public function deleteByFilter(string $collection, NormalizedFilter $filter): void
     {
+        $this->assertFilterAllowed($collection, $filter);
         TraceSpan::operation(
             'delete_by_filter',
             fn () => $this->store->deleteByFilter($collection, $filter),
@@ -126,6 +140,8 @@ final class InstrumentedStore implements IndexStoreContract, MigrationStoreContr
 
     public function listIds(string $collection, ?NormalizedFilter $filter = null, ?string $cursor = null, int $limit = 100): IdPage
     {
+        $this->assertFilterAllowed($collection, $filter);
+
         return TraceSpan::operation(
             'list_ids',
             fn (): IdPage => $this->store->listIds($collection, $filter, $cursor, $limit),
@@ -283,5 +299,57 @@ final class InstrumentedStore implements IndexStoreContract, MigrationStoreContr
         }
 
         return $this->store;
+    }
+
+    /**
+     * A zero vector has no direction, so cosine cannot score it. Describes the collection only when one is present.
+     *
+     * @param  list<list<float>|null>  $vectors
+     */
+    private function assertVectorUsable(string $collection, array $vectors): void
+    {
+        foreach ($vectors as $vector) {
+            if ($vector !== null && $vector !== [] && array_filter($vector) === []
+                && $this->describeCollection($collection)['metric'] === 'cosine') {
+                throw new VectorQueryException("A zero vector cannot be scored under cosine (collection [{$collection}]).");
+            }
+        }
+    }
+
+    private function assertFilterAllowed(string $collection, ?NormalizedFilter $filter): void
+    {
+        if ($filter === null || $filter->conditions === []) {
+            return;
+        }
+
+        $declared = $this->describeCollection($collection)['filterable'];
+        $undeclared = $this->store->capabilities()->supports(StoreCapability::UndeclaredFilters);
+
+        foreach ($filter->conditions as $condition) {
+            if (! isset($declared[$condition->field])) {
+                if (! $undeclared) {
+                    throw new VectorUnsupportedOperationException(
+                        "Field [{$condition->field}] is not declared filterable on collection [{$collection}], and store [{$this->name}] filters declared fields only. Declare it in CollectionDefinition::\$filterable.",
+                    );
+                }
+
+                continue;
+            }
+
+            $type = FieldType::from($declared[$condition->field]);
+
+            if (! $type->allows($condition->operator)) {
+                throw new VectorInvalidFilterException("The {$condition->operator->value} filter is not allowed on field [{$condition->field}], declared {$type->value}.");
+            }
+
+            // contains takes one element of the list.
+            $valueType = $type === FieldType::KeywordList ? FieldType::Keyword : $type;
+
+            foreach (is_array($condition->value) ? $condition->value : [$condition->value] as $value) {
+                if (! $valueType->accepts($value)) {
+                    throw new VectorInvalidFilterException("Filter value for field [{$condition->field}] must be {$type->value}, got ".get_debug_type($value).'.');
+                }
+            }
+        }
     }
 }

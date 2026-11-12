@@ -68,11 +68,13 @@ final readonly class CollectionDefinition
 
     /**
      * Throw VectorQueryException when a declared field holds a value of another type. A missing field and null pass.
+     * Returns the metadata with an integer on a declared float field cast to float, so it is stored as a float.
      *
      * @param  array<string, FieldType>  $fields
      * @param  array<string, mixed>  $metadata  stored metadata (dates already UTC strings)
+     * @return array<string, mixed>
      */
-    public static function assertDeclaredTypes(array $fields, array $metadata, string|int $id): void
+    public static function assertDeclaredTypes(array $fields, array $metadata, string|int $id): array
     {
         foreach ($fields as $field => $type) {
             $value = $metadata[$field] ?? null;
@@ -80,7 +82,13 @@ final readonly class CollectionDefinition
             if ($value !== null && ! $type->accepts($value)) {
                 throw new VectorQueryException("Document [{$id}]: metadata field [{$field}] is declared {$type->value} and got ".get_debug_type($value).'.');
             }
+
+            if ($type === FieldType::Float && is_int($value)) {
+                $metadata[$field] = (float) $value;
+            }
         }
+
+        return $metadata;
     }
 
     /**

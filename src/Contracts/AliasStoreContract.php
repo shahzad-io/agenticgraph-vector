@@ -22,7 +22,8 @@ interface AliasStoreContract
     public function deleteAlias(string $alias): void;
 
     /**
-     * Point an existing alias at another collection.
+     * Point an alias at a collection: create the alias when it does not exist, re-point it when it does. A name
+     * that is a collection is refused with VectorQueryException; an unknown collection throws not found.
      */
     public function pointAlias(string $alias, string $collection): void;
 

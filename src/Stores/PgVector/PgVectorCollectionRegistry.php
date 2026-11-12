@@ -234,13 +234,19 @@ final class PgVectorCollectionRegistry
     {
         $this->assertValidCollectionName($alias);
 
+        if ($this->connection->scalar("SELECT COUNT(*) FROM {$this->registryTable} WHERE name = ?", [$alias])) {
+            throw new VectorQueryException("[{$alias}] is a collection, not an alias.");
+        }
+
         if (! $this->connection->scalar("SELECT COUNT(*) FROM {$this->registryTable} WHERE name = ?", [$collection])) {
             throw new VectorCollectionNotFoundException("Collection [{$collection}] was not found.");
         }
 
-        if ($this->connection->update("UPDATE {$this->aliasTable()} SET collection = ?, updated_at = CURRENT_TIMESTAMP WHERE alias = ?", [$collection, $alias]) === 0) {
-            throw new VectorCollectionNotFoundException("Alias [{$alias}] was not found.");
-        }
+        $this->connection->statement(
+            "INSERT INTO {$this->aliasTable()} (alias, collection) VALUES (?, ?)
+             ON CONFLICT (alias) DO UPDATE SET collection = EXCLUDED.collection, updated_at = CURRENT_TIMESTAMP",
+            [$alias, $collection],
+        );
     }
 
     /**
