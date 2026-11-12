@@ -68,6 +68,10 @@ return [
             'timeout' => (float) env('VECTOR_QDRANT_TIMEOUT', 10),
             'connect_timeout' => (float) env('VECTOR_QDRANT_CONNECT_TIMEOUT', 3),
             'batch_size' => (int) env('VECTOR_QDRANT_BATCH_SIZE', 100),
+
+            // Prepended to every collection and alias name this store creates or reads. Two stores with
+            // the same url and the same prefix share their collections.
+            'collection_prefix' => env('VECTOR_QDRANT_COLLECTION_PREFIX', ''),
         ],
 
         // In-process reference store (exact search, no index). Data lives as long as the

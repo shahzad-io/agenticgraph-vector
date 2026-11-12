@@ -47,7 +47,9 @@ use Throwable;
  * - `index`: null or `hnsw`. `indexOptions`: `m` and `ef_construct`, integers.
  * - `SearchQuery::$options`: `exact` (bool) and `hnsw_ef` (int). Any other key throws VectorQueryException.
  * - No keyword search, no migrations. A new filterable field needs a new collection and an alias switch.
- * - insert() checks then writes: two concurrent inserts of one id can both pass the check.
+ * - insert() checks, then writes in insert_only mode: in a race the existing point is kept and the duplicate is not reported.
+ * - `collection_prefix` (config): prepended to every collection and alias name this store creates or reads; the lists
+ *   return only names with the prefix, without it. Stores with the same url and prefix share their collections.
  */
 final class QdrantStore implements AliasStoreContract, VectorStoreContract
 {
@@ -349,7 +351,14 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
 
     public function listCollections(): array
     {
-        $names = array_map(static fn (array $collection): string => (string) $collection['name'], $this->request('GET', 'collections')['collections']);
+        $names = [];
+
+        foreach ($this->request('GET', 'collections')['collections'] as $collection) {
+            if (($name = $this->unprefixed((string) $collection['name'])) !== null) {
+                $names[] = $name;
+            }
+        }
+
         sort($names, SORT_STRING);
 
         return $names;
@@ -383,7 +392,9 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
         $aliases = [];
 
         foreach ($this->request('GET', 'aliases')['aliases'] as $alias) {
-            $aliases[(string) $alias['alias_name']] = (string) $alias['collection_name'];
+            if (($name = $this->unprefixed((string) $alias['alias_name'])) !== null) {
+                $aliases[$name] = $this->unprefixed((string) $alias['collection_name']) ?? (string) $alias['collection_name'];
+            }
         }
 
         ksort($aliases, SORT_STRING);
@@ -399,7 +410,7 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
         }
 
         $this->registries = [];
-        $this->request('POST', 'collections/aliases', ['actions' => [['delete_alias' => ['alias_name' => $alias]]]]);
+        $this->request('POST', 'collections/aliases', ['actions' => [['delete_alias' => ['alias_name' => $this->prefix().$alias]]]]);
     }
 
     /**
@@ -412,7 +423,7 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
         }
 
         $this->registries = [];
-        $this->request('POST', 'collections/aliases', ['actions' => [['create_alias' => ['collection_name' => $collection, 'alias_name' => $alias]]]]);
+        $this->request('POST', 'collections/aliases', ['actions' => [['create_alias' => ['collection_name' => $this->prefix().$collection, 'alias_name' => $this->prefix().$alias]]]]);
     }
 
     public function countDocuments(string $collection): int
@@ -488,8 +499,8 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
             }
 
             if ($insert) {
-                // ponytail: check then write; two concurrent inserts of one id can both pass. v1.20 has update_mode insert_only,
-                // but it skips an existing point silently, so it cannot report the duplicate (O2).
+                // Check, then write in insert_only mode (Q5): in a race the existing point is kept, but insert_only skips it
+                // silently, so that duplicate is not reported (O2).
                 $existing = $this->request('POST', $this->path($collection, 'points'), ['ids' => array_column($points, 'id'), 'with_payload' => ['id']]);
 
                 if ($existing !== []) {
@@ -497,7 +508,7 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
                 }
             }
 
-            $this->request('PUT', $this->path($collection, 'points?wait=true'), ['points' => array_values($points)]);
+            $this->request('PUT', $this->path($collection, 'points?wait=true'), ['points' => array_values($points)] + ($insert ? ['update_mode' => 'insert_only'] : []));
             $processed += count($chunk);
 
             if ($onProgress !== null) {
@@ -675,9 +686,22 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
         }
     }
 
+    private function prefix(): string
+    {
+        return (string) ($this->config['collection_prefix'] ?? '');
+    }
+
+    /**
+     * The store's name for a Qdrant collection or alias name, or null when the name lacks this store's prefix.
+     */
+    private function unprefixed(string $name): ?string
+    {
+        return str_starts_with($name, $this->prefix()) ? substr($name, strlen($this->prefix())) : null;
+    }
+
     private function path(string $collection, string $suffix = ''): string
     {
-        return 'collections/'.rawurlencode($collection).($suffix === '' ? '' : "/{$suffix}");
+        return 'collections/'.rawurlencode($this->prefix().$collection).($suffix === '' ? '' : "/{$suffix}");
     }
 
     /**
@@ -719,7 +743,7 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
         $message = "Store [{$this->name}]: ".(string) ($response->json('status.error') ?? $response->body());
 
         throw match (true) {
-            $response->status() === 404 && preg_match('#^collections/([^/?]+)#', $path, $match) === 1 => new VectorCollectionNotFoundException('Collection ['.rawurldecode($match[1]).'] was not found.'),
+            $response->status() === 404 && preg_match('#^collections/([^/?]+)#', $path, $match) === 1 => new VectorCollectionNotFoundException('Collection ['.($this->unprefixed(rawurldecode($match[1])) ?? rawurldecode($match[1])).'] was not found.'),
             $response->status() === 404 => new VectorCollectionNotFoundException($message),
             str_contains($message, 'Vector dimension error') => new VectorDimensionMismatchException($message),
             default => new VectorQueryException($message),

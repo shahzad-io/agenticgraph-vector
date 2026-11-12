@@ -1394,7 +1394,7 @@ trait StoreConformanceTests
         $this->assertConformanceThrows(
             VectorQueryException::class,
             fn () => $store->createCollection(new CollectionDefinition($alias, dimensions: 4, metric: 'cosine')),
-            'migrate',
+            $store->capabilities()->supports(StoreCapability::Migrations) ? 'migrate' : 'different definition',
         );
         $this->assertConformanceThrows(VectorQueryException::class, fn () => $store->deleteCollection($alias), 'is an alias');
         $this->assertConformanceThrows(VectorQueryException::class, fn () => $store->deleteCollection($state->target), "is the target of alias [{$alias}]");
@@ -1991,7 +1991,7 @@ trait StoreConformanceTests
 
     public function test_conformance_list_collections_excludes_aliases(): void
     {
-        [$alias, $state] = $this->migratedAlias();
+        [$alias, $state] = $this->pointedAlias();
         $collections = $this->vectorStore()->listCollections();
 
         $this->assertNotContains($alias, $collections);
@@ -2070,6 +2070,7 @@ trait StoreConformanceTests
 
     public function test_conformance_a_dry_run_of_an_unknown_alias_throws_not_found_and_creates_nothing(): void
     {
+        $this->requireCapabilities(StoreCapability::Migrations);
         $name = $this->vectorCollectionName();
         $before = $this->vectorStore()->listCollections();
 

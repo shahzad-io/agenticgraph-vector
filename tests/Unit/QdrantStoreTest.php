@@ -226,7 +226,42 @@ it('inserts with a check of the ids, then the write', function () {
     qdrantStore()->insert('docs', [new Document(id: 'a', content: 'A', vector: [1, 0])]);
 
     expect(array_map(fn ($sent) => [$sent[0], $sent[1]], qdrantSent()))->toBe([['POST', 'collections/docs/points'], ['PUT', 'collections/docs/points?wait=true']])
-        ->and(qdrantSent()[0][2])->toBe(['ids' => [pid('a')], 'with_payload' => ['id']]);
+        ->and(qdrantSent()[0][2])->toBe(['ids' => [pid('a')], 'with_payload' => ['id']])
+        ->and(qdrantSent()[1][2]['update_mode'])->toBe('insert_only');
+});
+
+it('sends upsert without update_mode', function () {
+    fakeQdrant();
+
+    qdrantStore()->upsert('docs', [new Document(id: 'a', content: 'A', vector: [1, 0])]);
+
+    expect(qdrantSent()[0][2])->not->toHaveKey('update_mode');
+});
+
+it('prefixes every collection and alias name with collection_prefix and lists only its own names (Q4)', function () {
+    fakeQdrant(routes: [
+        'GET /collections' => ['result' => ['collections' => [['name' => 'p_docs'], ['name' => 'docs'], ['name' => 'p_old']]]],
+        'GET /aliases' => ['result' => ['aliases' => [['alias_name' => 'p_live', 'collection_name' => 'p_docs'], ['alias_name' => 'live', 'collection_name' => 'docs']]]],
+        'GET /collections/p_missing' => Http::response(['status' => ['error' => 'Not found: Collection `p_missing` doesn\'t exist!']], 404),
+    ]);
+    $store = qdrantStore(['collection_prefix' => 'p_']);
+
+    expect($store->listCollections())->toBe(['docs', 'old'])
+        ->and($store->listAliases())->toBe(['live' => 'docs'])
+        ->and(fn () => $store->describeCollection('missing'))->toThrow(VectorCollectionNotFoundException::class, 'Collection [missing] was not found.');
+
+    $store->pointAlias('next', 'old');
+    $store->deleteAlias('live');
+    $store->upsert('docs', [new Document(id: 'a', content: 'A', vector: [1, 0])]);
+
+    expect(collect(qdrantSent())->map(fn ($sent) => $sent[0].' '.$sent[1])->filter(fn ($route) => ! str_starts_with($route, 'GET'))->values()->all())->toBe([
+        'POST collections/aliases',
+        'POST collections/aliases',
+        'PUT collections/p_docs/points?wait=true',
+    ])->and(collect(qdrantSent())->where(1, 'collections/aliases')->pluck(2)->all())->toBe([
+        ['actions' => [['create_alias' => ['collection_name' => 'p_old', 'alias_name' => 'p_next']]]],
+        ['actions' => [['delete_alias' => ['alias_name' => 'p_live']]]],
+    ]);
 });
 
 it('refuses an insert of an existing id or a repeated id, and writes nothing', function () {

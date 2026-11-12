@@ -2,6 +2,49 @@
 
 All notable changes to `agenticgraph/vector` will be documented in this file.
 
+## 0.2.0 - Unreleased
+
+Several stores behind one contract, and a Qdrant driver.
+
+### Added
+
+- **Qdrant driver** (`qdrant`, Qdrant v1.20+ over REST through the Laravel HTTP client, no SDK, no automatic retry). Config `stores.qdrant`: `url`, `api_key`, `timeout`, `connect_timeout`, `batch_size`, `collection_prefix`. Capabilities: `ListIds`, `UpdateMetadata`, `DeleteByFilter`, `FilterNot`, `FilterContains`, `FilterRange`, `Aliases`. Limits:
+  - no keyword or hybrid search (`keyword: true` is refused at create);
+  - no migrations: create a new collection, copy the documents, and switch an alias with `pointAlias()`;
+  - filters on declared fields only, and a new filterable field needs a new collection;
+  - `insert()` checks the ids, then writes in `insert_only` mode: in a race with another writer the existing point is kept and that duplicate is not reported;
+  - `updateMetadata()` is one batch request, not atomic;
+  - two Qdrant stores with the same URL and the same `collection_prefix` share their collections.
+- **Neutral `Metric` enum** (`cosine`, `l2`, `inner_product`) used by every contract class and store.
+- **Declared filterable fields:** `CollectionDefinition::$filterable` maps a field to a `FieldType` (`Keyword`, `Integer`, `Float`, `Bool`, `Datetime`, `KeywordList`). A declared field is validated on write, and its operators give the same result on every store.
+- **New capability flags:** `KeywordWebsearch`, `KeywordLanguages`, `AtomicBatches`, `Migrations` (split from `Aliases`, with its own `MigrationStoreContract`), `UndeclaredFilters`.
+- **`table_prefix`** on a pgvector store, so two pgvector stores can share one connection.
+
+### Changed
+
+- A zero vector under `cosine` is refused on insert, upsert and search with `VectorQueryException`. `l2` and `inner_product` accept it.
+- Floats keep their type: metadata `3.0` comes back as `3.0`, and an integer written to a declared `Float` field is stored as a float. Data written before keeps its old form.
+- `pointAlias()` creates the alias when it does not exist and re-points it when it does. It refuses the name of a physical collection.
+- The shipped config no longer sets `stores.pgvector.registry_table`. Its default is `{table_prefix}vector_collection_registry`, the same name as before when `table_prefix` is empty.
+- A search after the first one in a request makes one store call: collection descriptions are cached per scoped manager.
+
+### Deprecated
+
+- `PgVectorMetric`. Use `Metric`. It stays as a thin enum until 1.0.
+
+### Upgrade from 0.1.0
+
+An app on pgvector or memory runs with no code change. Check these points:
+
+- **Custom capability list.** A `MemoryStore` built with your own `StoreCapabilities`, or a custom store from `Vector::extend()`, must list the new flags it supports, or the matching features are refused: `KeywordWebsearch` for the websearch keyword syntax, `KeywordLanguages` for a per-document language map, `AtomicBatches`, `Migrations` (no longer implied by `Aliases`; implement `MigrationStoreContract` too) and `UndeclaredFilters` for filters on fields that `filterable` does not declare.
+- **`PgVectorMetric`** is deprecated. Replace it with `Metric`; the cases have the same values.
+- **Declared filterable fields.** Optional on pgvector and memory, which keep filtering undeclared fields. Required on Qdrant, which refuses a filter on a field it was not told about. A declared field rejects a value of another type on write.
+- **Zero vectors under `cosine`** now throw `VectorQueryException` on insert, upsert and search.
+- **Floats keep their type.** Code that compared a returned `3.0` with `3` using `===` sees a float now.
+- **`pointAlias()` creates the alias.** Code that called it only to re-point keeps working. A call that used to fail on a missing alias now creates it.
+- **`table_prefix` and `registry_table`.** With an empty prefix nothing changes. If your published config still sets `registry_table`, it is used as written. Set a prefix only for a second pgvector store on the same connection; existing collections keep their tables.
+- **Qdrant.** Set `VECTOR_QDRANT_URL` and declare every field you filter on. Read the limits above before you move a pgvector collection that uses keyword search or migrations.
+
 ## 0.1.0 - 2026-11-06
 
 Initial release. Laravel-native vector retrieval: store documents, embed text, search, and hand the results to your LLM layer.

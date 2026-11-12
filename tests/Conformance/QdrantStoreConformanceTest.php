@@ -5,7 +5,6 @@ namespace AgenticGraph\Vector\Tests\Conformance;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\Facades\Vector;
 use AgenticGraph\Vector\Testing\StoreConformanceTests;
-use AgenticGraph\Vector\Tests\Support\PgvectorTestHelper;
 use AgenticGraph\Vector\Tests\Support\QdrantTestHelper;
 use AgenticGraph\Vector\Tests\TestCase;
 
@@ -26,13 +25,9 @@ final class QdrantStoreConformanceTest extends TestCase
 
     protected function makeSecondStore(): VectorStoreContract
     {
-        // Two Qdrant stores on one server share its collections, so the second store is pgvector (exit E3).
-        if (! PgvectorTestHelper::isAvailable()) {
-            $this->markTestSkipped(PgvectorTestHelper::skipReason());
-        }
+        // A collection_prefix keeps the second store's collections apart on the same server (Q4).
+        config()->set('vector.stores.qdrant_b', [...config('vector.stores.qdrant'), 'url' => QdrantTestHelper::url(), 'collection_prefix' => 'conf_b_', 'batch_size' => 37]);
 
-        config()->set('vector.stores.pgvector_b', [...config('vector.stores.pgvector'), 'registry_table' => null, 'table_prefix' => 'conf_q_', 'batch_size' => 37]);
-
-        return Vector::store('pgvector_b');
+        return Vector::store('qdrant_b');
     }
 }

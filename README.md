@@ -99,7 +99,7 @@ VECTOR_QDRANT_URL=http://127.0.0.1:6333
 VECTOR_QDRANT_API_KEY=
 ```
 
-Other keys of `stores.qdrant`: `VECTOR_QDRANT_TIMEOUT` (10 s), `VECTOR_QDRANT_CONNECT_TIMEOUT` (3 s), `VECTOR_QDRANT_BATCH_SIZE` (100). The driver uses the REST API through the Laravel HTTP client, with no SDK and no automatic retry.
+Other keys of `stores.qdrant`: `VECTOR_QDRANT_TIMEOUT` (10 s), `VECTOR_QDRANT_CONNECT_TIMEOUT` (3 s), `VECTOR_QDRANT_BATCH_SIZE` (100), `VECTOR_QDRANT_COLLECTION_PREFIX` (empty). The driver uses the REST API through the Laravel HTTP client, with no SDK and no automatic retry.
 
 Capabilities: `ListIds`, `UpdateMetadata`, `DeleteByFilter`, `FilterNot`, `FilterContains`, `FilterRange`, `Aliases`. Declare every field you filter on:
 
@@ -113,9 +113,9 @@ Limits:
 - No migrations: change a collection by creating a new one, copying the documents, and switching an alias with `pointAlias()`.
 - Filters on declared fields only (`CollectionDefinition::$filterable`); another field throws `VectorUnsupportedOperationException`.
 - A new filterable field needs a new collection.
-- `insert()` checks then writes: two concurrent inserts of one id can both pass the check.
+- `insert()` checks the ids, then writes in Qdrant's `insert_only` mode. If another writer adds the same id between the check and the write, the existing point is kept and the duplicate is not reported.
 - `updateMetadata()` is one batch request, not atomic.
-- Two Qdrant stores on one server share its collections.
+- `collection_prefix` (`VECTOR_QDRANT_COLLECTION_PREFIX`, empty by default) is prepended to every collection and alias name the store creates or reads; `listCollections()` and `listAliases()` return only the names with the prefix, without it. Two Qdrant stores with the same URL and the same prefix share their collections.
 
 ## Optional AgenticGraph integration
 
