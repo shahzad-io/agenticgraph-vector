@@ -56,6 +56,9 @@ return [
             // Searches with a filter keep scanning the HNSW index until they have take() hits (pgvector 0.8+):
             // off, relaxed_order or strict_order. Searches without a filter do not use it.
             'iterative_scan' => env('VECTOR_PGVECTOR_ITERATIVE_SCAN', 'relaxed_order'),
+            // An unfiltered, non-exact search on a collection with an index uses the index (SET LOCAL enable_seqscan = off).
+            // Without it the planner picks an exact scan on small collections, whose vectors it costs too low.
+            'prefer_index' => (bool) env('VECTOR_PGVECTOR_PREFER_INDEX', true),
             // The most rows one iterative scan visits (pgvector's default).
             'max_scan_tuples' => (int) env('VECTOR_PGVECTOR_MAX_SCAN_TUPLES', 20000),
         ],

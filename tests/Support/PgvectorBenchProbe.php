@@ -73,10 +73,8 @@ final class PgvectorBenchProbe implements BenchStoreProbe
 
     public function exactSearch(string $collection): array
     {
-        // Without the HNSW index, Postgres orders every row by distance: an exact search.
-        $this->db()->statement('DROP INDEX IF EXISTS '.$this->storage($collection).'_embedding_idx');
-
-        return [];
+        // The store's exact option: index scans off for each search, the index kept.
+        return [PgVectorSearchOptions::EXACT => true];
     }
 
     private function db(): Connection

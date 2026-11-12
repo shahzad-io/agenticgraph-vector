@@ -17,6 +17,8 @@ use Illuminate\Database\Connection;
  *   has topK hits. Default from the store config `iterative_scan` (relaxed_order) for searches with a filter.
  * - hnsw.max_scan_tuples (int): the most rows an iterative scan visits (store config `max_scan_tuples`, 20000)
  * - ivfflat.probes (int): IVFFlat recall/latency tradeoff
+ * - exact (bool): true scores every row (index scans off for this transaction), with the index left in place. HNSW
+ *   and IVFFlat serve no bitmap scans, so bitmap scans stay on (a filter or the keyword index may still use them).
  */
 final class PgVectorSearchOptions
 {
@@ -27,6 +29,8 @@ final class PgVectorSearchOptions
     public const HNSW_MAX_SCAN_TUPLES = 'hnsw.max_scan_tuples';
 
     public const IVFFLAT_PROBES = 'ivfflat.probes';
+
+    public const EXACT = 'exact';
 
     public const ITERATIVE_SCAN_MODES = ['off', 'relaxed_order', 'strict_order'];
 
@@ -71,6 +75,10 @@ final class PgVectorSearchOptions
      */
     public static function apply(Connection $connection, array $options): void
     {
+        if (self::exact($options)) {
+            $connection->statement('SET LOCAL enable_indexscan = off');
+        }
+
         if (array_key_exists(self::HNSW_EF_SEARCH, $options)) {
             $connection->statement(
                 'SET LOCAL hnsw.ef_search = '.self::positiveInt($options[self::HNSW_EF_SEARCH]),
@@ -97,6 +105,20 @@ final class PgVectorSearchOptions
                 'SET LOCAL ivfflat.probes = '.self::positiveInt($options[self::IVFFLAT_PROBES]),
             );
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     */
+    public static function exact(array $options): bool
+    {
+        $exact = $options[self::EXACT] ?? false;
+
+        if (! is_bool($exact)) {
+            throw new VectorQueryException('exact must be true or false.');
+        }
+
+        return $exact;
     }
 
     private static function positiveInt(mixed $value): int
