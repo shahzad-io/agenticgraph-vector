@@ -43,7 +43,12 @@ return [
             'index' => 'hnsw',
             'metric' => 'cosine',
             'batch_size' => (int) env('VECTOR_PGVECTOR_BATCH_SIZE', 100),
-            'registry_table' => 'vector_collection_registry',
+            // Prefix of this store's tables: the data tables, and the registry, alias and migration tables unless
+            // registry_table names the registry. Two stores on one connection with the same prefix and registry
+            // share their collections; give each its own prefix to keep them apart. Set it before the first
+            // collection: existing tables keep their names.
+            'table_prefix' => env('VECTOR_PGVECTOR_TABLE_PREFIX', ''),
+            // 'registry_table' => 'vector_collection_registry', // default: {table_prefix}vector_collection_registry
             'install_extension' => (bool) env('VECTOR_PGVECTOR_INSTALL_EXTENSION', true),
             // Check once per process that the vector extension exists. false skips the check.
             'verify_extension' => (bool) env('VECTOR_PGVECTOR_VERIFY_EXTENSION', true),

@@ -63,7 +63,8 @@ Docs: `/docs/vector-installation`
 | `stores.pgvector.verify_extension` | `true` | Extension check once per process. `VECTOR_PGVECTOR_VERIFY_EXTENSION` |
 | `stores.pgvector.metric` | `cosine` | Or `l2`, `inner_product`. Frozen at create. |
 | `stores.pgvector.batch_size` | `100` | Wins over `batch.size` |
-| `stores.pgvector.registry_table` | `vector_collection_registry` | Name, dimensions, metric per collection |
+| `stores.pgvector.table_prefix` | `''` | Prefix of this store's tables (lowercase letters, digits, `_`; at most 12 characters) |
+| `stores.pgvector.registry_table` | `{table_prefix}vector_collection_registry` | Name, dimensions, metric per collection; an explicit value is used as written |
 | `embeddings.default` | `prism` | Prism. No vendor default: set `VECTOR_EMBEDDINGS_PRISM_PROVIDER` and `VECTOR_EMBEDDINGS_MODEL` (example: `openai`, `text-embedding-3-small`), or the first embedding call throws. `dimensions` null (unset) asks the provider: one extra embed call per process when a collection is created without dimensions. Set `VECTOR_EMBEDDINGS_DIMENSIONS` to skip it. `api_key` null means Prism's provider key (e.g. `OPENAI_API_KEY`). `url` (`VECTOR_EMBEDDINGS_URL`) sends this entry's requests to another base URL, such as a gateway; the Prism reranker entry has its own `url` (`VECTOR_RERANK_PRISM_URL`). On an HTTP error from a configured url the exception ends with `(configured url: ...)`. Prism entries take `timeout` (30 s), `retries` (2, on 429, 5xx and connection errors only; `Retry-After` honored up to `retry_after_max_ms`, 2000, longer fails the request as retryable) and `retry_sleep_ms` (500, doubled per retry). |
 | `embeddings.providers.deterministic` | 8 dims | Local hashes for tests. Never tune scores on it. |
 | `events.enabled` | `true` | `VectorOperationCompleted` / `VectorOperationFailed` / `VectorEmbeddingCompleted` / `VectorRerankCompleted` / `VectorRerankFailed` |
@@ -309,7 +310,7 @@ Docs: `/docs/vector-guide-score-ergonomics`
 - `options()` keys: `hnsw.ef_search`, `hnsw.iterative_scan` (`off`, `relaxed_order`, `strict_order`), `hnsw.max_scan_tuples`, `ivfflat.probes`.
 - Language map values are Postgres text search configurations on the search path (by default `en`/`english` -> `english`, `es`/`spanish` -> `spanish`); keyword scores are `ts_rank_cd`.
 - Ids are `TEXT`; `listIds()` goes in byte order of the id.
-- Two pgvector stores on one connection need different `registry_table` values.
+- Two pgvector stores on one connection are kept apart by `table_prefix`. With the same connection, prefix and registry they share their collections. A store that finds a collection's table owned by another store (same prefix, another registry) throws `VectorQueryException` naming `table_prefix`; it never reuses the table. Set the prefix before the first collection: existing tables keep their names.
 
 Docs: `/docs/vector-configuration`
 

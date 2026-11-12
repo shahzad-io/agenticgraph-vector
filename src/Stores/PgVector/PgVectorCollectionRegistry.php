@@ -17,13 +17,35 @@ use Illuminate\Support\Facades\Schema;
 /**
  * The registry table (one row per physical collection), its `_aliases` table (alias -> collection)
  * and its `_migrations` table (one row per migration of an alias).
+ *
+ * A data table is named `{table_prefix}vcol_` + 32 hex characters of sha256(collection name). Two stores on one
+ * connection with the same prefix and the same registry share their collections; with another prefix they never
+ * share a table. An existing row keeps its storage_identifier, so a prefix set later renames nothing.
  */
 final class PgVectorCollectionRegistry
 {
+    /** Postgres keeps 63 bytes of a name: the prefix leaves room for `vcol_`, 32 hex characters and `_embedding_idx`. */
+    public const MAX_TABLE_PREFIX = 63 - 5 - 32 - 14;
+
     public function __construct(
         private readonly Connection $connection,
         private readonly string $registryTable,
-    ) {}
+        private readonly string $tablePrefix = '',
+    ) {
+        self::assertValidTablePrefix($tablePrefix);
+    }
+
+    /**
+     * Lowercase letters, digits and underscores, not starting with a digit, at most MAX_TABLE_PREFIX characters.
+     */
+    public static function assertValidTablePrefix(string $prefix): void
+    {
+        if ($prefix !== '' && ! preg_match('/^[a-z_][a-z0-9_]{0,'.(self::MAX_TABLE_PREFIX - 1).'}$/', $prefix)) {
+            throw new VectorQueryException(
+                "Invalid pgvector table_prefix [{$prefix}]: use lowercase letters, digits and underscores, not starting with a digit, at most ".self::MAX_TABLE_PREFIX.' characters.',
+            );
+        }
+    }
 
     /**
      * Create the registry, alias and migration tables, or add the columns an older registry lacks
@@ -113,13 +135,19 @@ final class PgVectorCollectionRegistry
             throw new VectorQueryException("Collection [{$definition->name}] already exists.");
         }
 
+        // An adopted collection keeps the identifier of its old name, which may be this name: the next free name
+        // of this registry is sha256("name#1"), "name#2" and so on.
         $storageIdentifier = $this->storageIdentifier($definition->name);
 
-        // An adopted collection keeps the identifier of its old name, which may be this name; another registry on
-        // the same connection (a second pgvector store) may already hold a table of this name.
-        if ($this->connection->scalar("SELECT COUNT(*) FROM {$this->registryTable} WHERE storage_identifier = ?", [$storageIdentifier])
-            || $this->connection->scalar('SELECT to_regclass(?) IS NOT NULL', [$storageIdentifier])) {
-            $storageIdentifier = 'vcol_'.bin2hex(random_bytes(16));
+        for ($n = 1; $this->connection->scalar("SELECT COUNT(*) FROM {$this->registryTable} WHERE storage_identifier = ?", [$storageIdentifier]); $n++) {
+            $storageIdentifier = $this->storageIdentifier("{$definition->name}#{$n}");
+        }
+
+        // A table this registry does not know belongs to another store on the connection: never reuse it.
+        if ($this->connection->scalar('SELECT to_regclass(?) IS NOT NULL', [$storageIdentifier])) {
+            throw new VectorQueryException(
+                "Collection [{$definition->name}]: table [{$storageIdentifier}] exists and is not in registry [{$this->registryTable}], so another store on this connection uses it. Give one of the stores its own table_prefix setting.",
+            );
         }
 
         $this->connection->insert(
@@ -392,14 +420,15 @@ final class PgVectorCollectionRegistry
 
     public function storageIdentifier(string $collection): string
     {
-        $this->assertValidCollectionName($collection);
+        $this->assertValidCollectionName(explode('#', $collection)[0]);
 
-        return 'vcol_'.substr(hash('sha256', $collection), 0, 32);
+        return $this->tablePrefix.'vcol_'.substr(hash('sha256', $collection), 0, 32);
     }
 
     public function qualifiedStorageName(string $storageIdentifier): string
     {
-        if (! preg_match('/^vcol_[a-f0-9]{32}$/', $storageIdentifier)) {
+        // Any valid prefix: a row keeps the name it was created with.
+        if (! preg_match('/^(?:[a-z_][a-z0-9_]{0,'.(self::MAX_TABLE_PREFIX - 1).'})?vcol_[a-f0-9]{32}$/', $storageIdentifier)) {
             throw new VectorInvalidFilterException('Invalid collection storage identifier.');
         }
 

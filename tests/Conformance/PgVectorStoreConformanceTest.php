@@ -23,7 +23,7 @@ final class PgVectorStoreConformanceTest extends TestCase
 
     protected function makeSecondStore(): VectorStoreContract
     {
-        config()->set('vector.stores.pgvector_b', [...config('vector.stores.pgvector'), 'registry_table' => 'vector_registry_b', 'batch_size' => 37]);
+        config()->set('vector.stores.pgvector_b', [...config('vector.stores.pgvector'), 'registry_table' => null, 'table_prefix' => 'conf_b_', 'batch_size' => 37]);
 
         return Vector::store('pgvector_b');
     }

@@ -87,9 +87,11 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
         ?PgVectorExtensionGuard $extensionGuard = null,
         private readonly string $name = 'pgvector',
     ) {
+        $prefix = (string) ($config['table_prefix'] ?? '');
         $this->registry = $registry ?? new PgVectorCollectionRegistry(
             $this->connection(),
-            (string) ($config['registry_table'] ?? 'vector_collection_registry'),
+            (string) ($config['registry_table'] ?? "{$prefix}vector_collection_registry"),
+            $prefix,
         );
         $this->filterTranslator = $filterTranslator ?? new PgVectorFilterTranslator;
         $this->extensionGuard = $extensionGuard ?? new PgVectorExtensionGuard(
