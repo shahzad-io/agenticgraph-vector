@@ -48,12 +48,15 @@ final class RetrievalMetrics
     }
 
     /**
+     * nDCG@k with linear gains: a document's grade (1 when $grades has none, so binary sets score as before).
+     *
      * @param  array<string, list<string>>  $qrels
      * @param  array<string, list<string>>  $ranked
+     * @param  array<string, array<string, int>>  $grades  query id => document id => grade
      */
-    public static function ndcgAtK(array $qrels, array $ranked, int $k): float
+    public static function ndcgAtK(array $qrels, array $ranked, int $k, array $grades = []): float
     {
-        return self::average($qrels, $ranked, static fn (array $relevant, array $rankedIds): float => self::ndcgForQuery(array_slice($rankedIds, 0, $k), $relevant, $k));
+        return $qrels === [] ? 0.0 : array_sum(self::ndcgPerQuery($qrels, $ranked, $k, $grades)) / count($qrels);
     }
 
     /**
@@ -71,11 +74,18 @@ final class RetrievalMetrics
      *
      * @param  array<string, list<string>>  $qrels
      * @param  array<string, list<string>>  $ranked
+     * @param  array<string, array<string, int>>  $grades
      * @return array<string, float>
      */
-    public static function ndcgPerQuery(array $qrels, array $ranked, int $k): array
+    public static function ndcgPerQuery(array $qrels, array $ranked, int $k, array $grades = []): array
     {
-        return self::perQuery($qrels, $ranked, static fn (array $relevant, array $rankedIds): float => self::ndcgForQuery(array_slice($rankedIds, 0, $k), $relevant, $k));
+        $scores = [];
+
+        foreach ($qrels as $queryId => $relevant) {
+            $scores[(string) $queryId] = self::ndcgForQuery(array_slice($ranked[$queryId] ?? [], 0, $k), $relevant, $k, $grades[$queryId] ?? []);
+        }
+
+        return $scores;
     }
 
     /**
@@ -127,8 +137,9 @@ final class RetrievalMetrics
     /**
      * @param  list<string>  $rankedIds
      * @param  list<string>  $relevantIds
+     * @param  array<string, int>  $grades  document id => grade
      */
-    private static function ndcgForQuery(array $rankedIds, array $relevantIds, int $k): float
+    private static function ndcgForQuery(array $rankedIds, array $relevantIds, int $k, array $grades = []): float
     {
         $dcg = 0.0;
 
@@ -137,14 +148,15 @@ final class RetrievalMetrics
                 continue;
             }
 
-            $dcg += 1.0 / log($index + 2, 2);
+            $dcg += ($grades[$docId] ?? 1) / log($index + 2, 2);
         }
 
-        $idealCount = min(count($relevantIds), $k);
+        $ideal = array_map(static fn (string $docId): int => $grades[$docId] ?? 1, $relevantIds);
+        rsort($ideal);
         $idcg = 0.0;
 
-        for ($i = 0; $i < $idealCount; $i++) {
-            $idcg += 1.0 / log($i + 2, 2);
+        foreach (array_slice($ideal, 0, $k) as $i => $grade) {
+            $idcg += $grade / log($i + 2, 2);
         }
 
         if ($idcg === 0.0) {

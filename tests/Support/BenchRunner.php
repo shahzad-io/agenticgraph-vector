@@ -5,18 +5,16 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Tests\Support;
 
 use AgenticGraph\Vector\Contracts\AliasStoreContract;
+use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Events\VectorEmbeddingCompleted;
-use AgenticGraph\Vector\Events\VectorOperationCompleted;
 use AgenticGraph\Vector\Facades\Embeddings;
 use AgenticGraph\Vector\Facades\Vector;
 use AgenticGraph\Vector\Ingest\TextSplitter;
-use AgenticGraph\Vector\Stores\PgVector\PgVectorSearchOptions;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\SearchHit;
 use AgenticGraph\Vector\ValueObjects\SearchQuery;
 use AgenticGraph\Vector\VectorServiceProvider;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Orchestra\Testbench\Foundation\Application;
 use Prism\Prism\PrismServiceProvider;
@@ -24,7 +22,8 @@ use RuntimeException;
 use Throwable;
 
 /**
- * bin/vector-bench: the retrieval benchmark on pgvector (dev only, Testbench based). See benchmarks/README.md.
+ * bin/vector-bench: the retrieval benchmark on any configured store (dev only, Testbench based). See benchmarks/README.md.
+ * It talks to the store through the contract; what differs by store sits behind a BenchStoreProbe.
  * A RuntimeException is a setup error (exit 2); run() returns 0 when done and 1 on a quality drop.
  */
 final class BenchRunner
@@ -43,6 +42,12 @@ final class BenchRunner
     /** Every pipeline sends its own top 30 to the reranker (the candidate recall@30 budget); the reranker keeps TOP_K. */
     public const RERANK_CANDIDATES = 30;
 
+    /** Estimated embedding tokens above which a run needs --yes (R5). */
+    public const MAX_TOKENS = 1_000_000;
+
+    /** Documents per upsert call at ingest: the most document vectors held in memory at once. */
+    public const INGEST_CHUNK = 1000;
+
     /**
      * A keyword weight that puts every keyword candidate above every dense-only one, so a hybrid search's fused
      * top K is the keyword list (needs weight * (1/(k+K) - 1/(k+K+1)) > 1/(k+1): above 420 for k 60, K 100).
@@ -54,16 +59,21 @@ final class BenchRunner
         'truncate:', 'out:', 'compare::', 'tolerance:', 'price-per-1m-tokens:', 'report:', 'help',
         'collection:', 'child:', 'slice:', 'results:', 'filtered', 'iterative-scan:', 'match:', 'keyword-weight:', 'keep',
         'rerank:', 'rerank-price-per-1k-searches:', 'rerank-price-per-1m-tokens:', 'chunk:', 'rerank-candidates:',
-        'rerank-price-per-1m-input-tokens:', 'rerank-price-per-1m-output-tokens:',
+        'rerank-price-per-1m-input-tokens:', 'rerank-price-per-1m-output-tokens:', 'store:', 'exact', 'yes', 'max-tokens:',
+        'compare-stores:',
     ];
 
     public const USAGE = <<<'TXT'
     Usage: bin/vector-bench --dataset=<scifact|wixqa-expert|wixqa-simulated> --model=<provider:model|deterministic> [options]
+      --store=NAME               a vector.stores name (default: vector.default)
+      --exact                    exact search (no approximate index), for cross-store agreement checks
+      --max-tokens=1000000       estimated embedding tokens above which a run needs --yes (cost guard)
+      --yes                      start an embedding run above --max-tokens
       --dimensions=N             embedding dimensions (sent to the provider)
       --mode=dense,hybrid        retrieval modes, comma separated (hybrid: vector and keyword search, RRF)
       --filtered                 filtered query set: each query searches only the documents whose derived
                                  field (WixQA product, SciFact bucket) equals its relevant documents' value
-      --iterative-scan=off,relaxed_order  run every mode once per HNSW iterative scan setting
+      --iterative-scan=off,relaxed_order  run every mode once per HNSW iterative scan setting (stores that have one)
                                  (report keys mode@setting; default: the store config, key mode)
       --match=any,websearch      hybrid keyword match modes to sweep (default: vector.hybrid.match)
       --keyword-weight=0,0.5,1   hybrid keyword weights to sweep (default: vector.hybrid.keyword_weight);
@@ -85,18 +95,26 @@ final class BenchRunner
                                  parent before scoring (rerank: the chunks are reranked, then collapsed)
       --out=~/ag2-scratch/bench  report folder (never inside a repo)
       --compare[=file]           fail on a quality drop against the baseline
-                                 (default benchmarks/baselines/<dataset>/<model-slug>.json)
+                                 (default benchmarks/baselines/<store>/<dataset>/<model-slug>.json)
       --tolerance=0.01           allowed absolute quality drop for --compare
       --price-per-1m-tokens=X    embedding price, for the cost section
       --collection=NAME          search an existing collection or alias holding the corpus (no ingest, not dropped)
     Or: bin/vector-bench --report=<report.json> --compare=<baseline.json> [--tolerance=0.01]
       compares an existing report without a run.
-    Env: OPENAI_API_KEY (or <PROVIDER>_API_KEY), VECTOR_PG_HOST, VECTOR_PG_PORT, VECTOR_PG_DATABASE,
-    VECTOR_PG_USERNAME, VECTOR_PG_PASSWORD (defaults: the test database on 127.0.0.1:5433).
+    Or: bin/vector-bench --compare-stores=<a.json>,<b.json>[,...]
+      one table for runs of one dataset on several stores, with the top 10 agreement of each run with the first.
+    Env: OPENAI_API_KEY (or <PROVIDER>_API_KEY), and the store's own keys (see benchmarks/README.md).
 
     TXT;
 
-    private string $container = '';
+    private ?string $container = null;
+
+    private string $store = '';
+
+    /** @var array<string, mixed>|null the search options of --exact, else null */
+    private ?array $exactOptions = null;
+
+    private BenchStoreProbe $probe;
 
     /** @var list<float> */
     private array $memory = [];
@@ -115,6 +133,10 @@ final class BenchRunner
             self::child((string) $options['child'], (string) $options['slice'], (string) $options['results']);
 
             return 0;
+        }
+
+        if (isset($options['compare-stores'])) {
+            return self::compareStores(explode(',', (string) $options['compare-stores']));
         }
 
         if (isset($options['report'])) {
@@ -137,10 +159,11 @@ final class BenchRunner
     {
         $app = Application::create(options: ['extra' => ['dont-discover' => ['*']]]);
         $app['config']->set('vector', require self::ROOT.'/config/vector.php');
-        $app['config']->set('database.default', 'pgvector');
-        // public, not the per-process test schema: the query children and later runs share the collections.
-        $app['config']->set('database.connections.pgvector', ['search_path' => 'public'] + PgvectorTestHelper::connectionConfig());
-        $app['config']->set('vector.stores.pgvector.connection', 'pgvector');
+
+        foreach (array_keys((array) $app['config']->get('vector.stores')) as $store) {
+            self::probeClass((string) $store)::configure($app['config'], (string) $store);
+        }
+
         $app['config']->set('vector.embeddings.default', $driver);
         $app['config']->set("vector.embeddings.providers.{$driver}", $embedding);
         $app->register(PrismServiceProvider::class);
@@ -148,11 +171,24 @@ final class BenchRunner
     }
 
     /**
+     * The probe class of a store's driver: <Driver>BenchProbe when it exists, else GenericBenchProbe.
+     *
+     * @return class-string<BenchStoreProbe>
+     */
+    public static function probeClass(string $store): string
+    {
+        $driver = (string) (config("vector.stores.{$store}.driver") ?? $store);
+        $class = __NAMESPACE__.'\\'.ucfirst(strtolower($driver)).'BenchProbe';
+
+        return class_exists($class) && is_subclass_of($class, BenchStoreProbe::class) ? $class : GenericBenchProbe::class;
+    }
+
+    /**
      * Child process: a slice of pre-embedded queries after the parent's go signal, one JSON line per query.
      */
     public static function child(string $jobFile, string $slice, string $resultsFile): void
     {
-        /** @var array{collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, queries: list<array{id: string, text: string, vector: list<float>, filter: string|int|null}>} $job */
+        /** @var array{store: string, collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, queries: list<array{id: string, text: string, vector: list<float>, filter: string|int|null}>} $job */
         $job = self::readJson($jobFile);
         [$index, $of] = array_map('intval', explode('/', $slice));
         self::boot('deterministic', []);
@@ -178,7 +214,7 @@ final class BenchRunner
      * One query of a job: dense, or hybrid (the job's match mode and keyword weight; default any and 1) with the query
      * text as keywords; filtered by the derived field when set.
      *
-     * @param  array{collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, match?: string, keyword_weight?: float}  $job
+     * @param  array{store: string, collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, match?: string, keyword_weight?: float}  $job
      * @param  array{text: string, vector: list<float>, filter: string|int|null}  $query
      * @return list<string>
      */
@@ -198,7 +234,7 @@ final class BenchRunner
     /**
      * The keyword candidate list of a hybrid job at its top_k: the hits that matched the keywords, in keyword order.
      *
-     * @param  array{collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, match?: string, keyword_weight?: float}  $job
+     * @param  array{store: string, collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, match?: string, keyword_weight?: float}  $job
      * @param  array{text: string, vector: list<float>, filter: string|int|null}  $query
      * @return list<string>
      */
@@ -210,13 +246,13 @@ final class BenchRunner
     }
 
     /**
-     * @param  array{collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, match?: string, keyword_weight?: float, collapse?: bool}  $job
+     * @param  array{store: string, collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, match?: string, keyword_weight?: float, collapse?: bool}  $job
      * @param  array{text: string, vector: list<float>, filter: string|int|null}  $query
      * @return list<SearchHit>
      */
     public static function searchHits(array $job, array $query): array
     {
-        $builder = Vector::store('pgvector')->collection($job['collection'])->usingVector($query['vector'])->options($job['options'])->take($job['top_k']);
+        $builder = Vector::store($job['store'])->collection($job['collection'])->usingVector($query['vector'])->options($job['options'])->take($job['top_k']);
         $builder = $job['field'] !== null ? $builder->where($job['field'], $query['filter']) : $builder;
         $builder = ($job['collapse'] ?? false) ? $builder->collapse() : $builder;
         $builder = $job['mode'] === 'hybrid' ? $builder->keywords($query['text'])->hybrid(match: $job['match'] ?? 'any', keywordWeight: $job['keyword_weight'] ?? 1.0) : $builder;
@@ -323,42 +359,6 @@ final class BenchRunner
             'output_tokens' => self::sumTokens(array_column($split, 'output_tokens')),
             'unsplit' => count($unsplit),
         ];
-    }
-
-    /**
-     * The documents with the cached vector of their text (key: sha256 of the content); the others unchanged.
-     *
-     * @param  list<Document>  $documents
-     * @param  array<string, list<float>>  $cache
-     * @return list<Document>
-     */
-    public static function withCachedVectors(array $documents, array $cache): array
-    {
-        return array_map(static function (Document $document) use ($cache): Document {
-            $vector = $cache[hash('sha256', $document->content)] ?? null;
-
-            return $vector === null ? $document : new Document($document->id, $document->content, $document->metadata, $vector);
-        }, $documents);
-    }
-
-    /**
-     * Cache entries (sha256 of the content => vector) for the documents not cached yet, from the stored vectors.
-     *
-     * @param  list<Document>  $documents
-     * @param  array<string|int, string>  $stored  id => pgvector text ("[0.1,0.2]")
-     * @return array<string, list<float>>
-     */
-    public static function documentVectors(array $documents, array $stored): array
-    {
-        $entries = [];
-
-        foreach ($documents as $document) {
-            if ($document->vector === null && isset($stored[$document->id])) {
-                $entries[hash('sha256', $document->content)] = array_map('floatval', json_decode($stored[$document->id], true, flags: JSON_THROW_ON_ERROR));
-            }
-        }
-
-        return $entries;
     }
 
     /**
@@ -503,7 +503,7 @@ final class BenchRunner
 
                 foreach ($queries as $query) {
                     $job = ['collection' => $collection, 'top_k' => $k, 'mode' => 'hybrid', 'field' => $field, 'match' => $match,
-                        'options' => ($scan === null ? [] : [PgVectorSearchOptions::HNSW_ITERATIVE_SCAN => $scan]) + [PgVectorSearchOptions::HNSW_EF_SEARCH => max(40, $k)]];
+                        'options' => $this->searchOptions(max(40, $k), $scan), 'store' => $this->store];
                     $ranked[$query['id']] = array_values(array_unique([...$dense[$k][$query['id']], ...self::keywordIds($job, $query)]));
                     $sizes[] = count($ranked[$query['id']]);
                 }
@@ -601,10 +601,6 @@ final class BenchRunner
             throw new RuntimeException('Unknown --mode='.implode(',', array_diff($modes, self::MODES)).'. Available: '.implode(', ', self::MODES).'.');
         }
 
-        if (array_diff($iterative, [null, ...PgVectorSearchOptions::ITERATIVE_SCAN_MODES]) !== []) {
-            throw new RuntimeException('--iterative-scan takes '.implode(', ', PgVectorSearchOptions::ITERATIVE_SCAN_MODES).'.');
-        }
-
         if (array_diff($matches, [null, ...SearchQuery::KEYWORD_MATCH_MODES]) !== []) {
             throw new RuntimeException('--match takes '.implode(', ', SearchQuery::KEYWORD_MATCH_MODES).'.');
         }
@@ -617,6 +613,10 @@ final class BenchRunner
 
         if ($sweep && ! in_array('hybrid', $modes, true)) {
             throw new RuntimeException('--match and --keyword-weight sweep the hybrid mode; add hybrid to --mode.');
+        }
+
+        if (isset($options['exact']) && isset($options['collection'])) {
+            throw new RuntimeException('--exact may change the collection (a probe can drop its index), so it cannot reuse --collection.');
         }
 
         if ($filtered && isset($options['collection'])) {
@@ -637,7 +637,7 @@ final class BenchRunner
 
         @mkdir($out.'/cache', 0777, true);
 
-        // Preflight: env keys, pgvector, dataset checksums, embedding endpoint.
+        // Preflight: env keys, the store, dataset checksums, embedding endpoint.
         if ($model === 'deterministic') {
             $driver = 'deterministic';
             $embedding = ['dimensions' => $dimensions ?? 8];
@@ -650,10 +650,6 @@ final class BenchRunner
             if ($vendor !== 'ollama' && (getenv($keyEnv) === false || getenv($keyEnv) === '')) {
                 throw new RuntimeException("Missing env key {$keyEnv} for --model={$model}.");
             }
-        }
-
-        if (! PgvectorTestHelper::isAvailable()) {
-            throw new RuntimeException('pgvector is not reachable. Check VECTOR_PG_HOST, VECTOR_PG_PORT, VECTOR_PG_DATABASE, VECTOR_PG_USERNAME, VECTOR_PG_PASSWORD (and VECTOR_PGVECTOR_INTEGRATION).');
         }
 
         $dataset = BenchDataset::load((string) $options['dataset']);
@@ -686,6 +682,29 @@ final class BenchRunner
         }
 
         self::boot($driver, $embedding);
+        $this->store = isset($options['store']) ? (string) $options['store'] : (string) config('vector.default');
+
+        if (! is_array(config("vector.stores.{$this->store}"))) {
+            throw new RuntimeException("Unknown --store={$this->store}. Configured: ".implode(', ', array_keys((array) config('vector.stores'))).'.');
+        }
+
+        $probeClass = self::probeClass($this->store);
+        $this->probe = new $probeClass($this->store);
+        $store = Vector::store($this->store);
+
+        try {
+            $store->healthCheck();
+        } catch (Throwable $exception) {
+            throw new RuntimeException("Store [{$this->store}] is not reachable: ".$exception->getMessage(), previous: $exception);
+        }
+
+        foreach ($iterative as $scan) {
+            $this->probe->searchOptions(null, $scan);
+        }
+
+        if (in_array('hybrid', $modes, true) && ! $store->capabilities()->supports(StoreCapability::Keyword)) {
+            throw new RuntimeException("Store [{$this->store}] has no keyword search, so --mode=hybrid cannot run.");
+        }
         $overfetch = $splitter === null ? 1 : (int) config('vector.collapse.overfetch', 3);
 
         // A reranker failure aborts the run instead of failing open into the dense order.
@@ -706,37 +725,6 @@ final class BenchRunner
         // Embed a preflight probe only when this run embeds something: an ingest, or queries missing from the cache.
         $reused = isset($options['collection']) ? (string) $options['collection'] : null;
 
-        try {
-            $provider = Embeddings::using();
-            $dimensions = $provider->dimensions();
-            $cacheFile = "{$out}/cache/{$dataset['name']}.{$slug}.{$dimensions}.json";
-            /** @var array<string, array{vector: list<float>, ms: int, tokens: ?int}> $cache */
-            $cache = is_file($cacheFile) ? self::readJson($cacheFile) : [];
-
-            if ($reused === null || array_diff(array_column($dataset['queries'], 'id'), array_keys($cache)) !== []) {
-                $provider->embed('vector-bench preflight');
-            }
-        } catch (Throwable $exception) {
-            throw new RuntimeException('Embedding endpoint preflight failed: '.$exception->getMessage(), previous: $exception);
-        }
-
-        $this->container = trim((string) shell_exec('docker ps --filter publish='.escapeshellarg((string) PgvectorTestHelper::connectionConfig()['port']).' --format "{{.Names}}" 2>/dev/null'));
-
-        Event::listen(VectorEmbeddingCompleted::class, function (VectorEmbeddingCompleted $event): void {
-            $this->embedCalls[] = $event;
-        });
-        $upsertEmbeddingMs = 0;
-        Event::listen(VectorOperationCompleted::class, static function (VectorOperationCompleted $event) use (&$upsertEmbeddingMs): void {
-            $upsertEmbeddingMs += $event->operation === 'upsert' ? (int) $event->embeddingMs : 0;
-        });
-
-        // Ingest once, or search an existing collection (for example one a migration built).
-        $collection = $reused ?? 'bench_'.substr(hash('sha256', $dataset['name'].$slug.getmypid().microtime()), 0, 12);
-        $store = Vector::store('pgvector');
-        $db = DB::connection('pgvector');
-        $this->sample(true);
-
-        $hybrid = in_array('hybrid', $modes, true);
         $documents = array_map(
             static fn (array $row): Document => Document::make(
                 $row['id'],
@@ -746,12 +734,47 @@ final class BenchRunner
             $dataset['corpus'],
         );
         $documents = $splitter === null ? $documents : array_merge(...array_map($splitter->chunk(...), $documents));
-        // Document vectors, cached per dataset, model and dimensions by the sha256 of each text: a rerun ingests without embedding.
-        $documentCacheFile = "{$out}/cache/{$dataset['name']}.{$slug}.{$dimensions}.documents.json";
-        /** @var array<string, list<float>> $documentCache */
-        $documentCache = $reused === null && is_file($documentCacheFile) ? self::readJson($documentCacheFile) : [];
-        $documents = self::withCachedVectors($documents, $documentCache);
-        $documentsCached = $reused === null && array_filter($documents, static fn (Document $document): bool => $document->vector === null) === [];
+
+        try {
+            $provider = Embeddings::using();
+            $dimensions = $provider->dimensions();
+            // Vectors cached by the sha256 of their text: queries per dataset, documents per corpus file (WixQA
+            // shares one), so no run embeds the same text twice for a model and width. Earlier JSON caches convert once.
+            $queryCache = new VectorCache("{$out}/cache/{$dataset['name']}.{$slug}.{$dimensions}.queries", $model, $dimensions);
+            $documentCache = new VectorCache("{$out}/cache/corpus-".substr((string) data_get($dataset['meta'], 'files.corpus.sha256'), 0, 12).".{$slug}.{$dimensions}.documents", $model, $dimensions);
+            self::convertJsonCaches($out, "{$dataset['name']}.{$slug}.{$dimensions}", $queryCache, $dataset['queries'], $documentCache, $documents);
+            /** @var array<string, Document> $missing sha256 => the first document with that text */
+            $missing = [];
+
+            foreach ($reused === null ? $documents : [] as $document) {
+                $sha = VectorCache::sha($document->content);
+                $documentCache->has($sha) || isset($missing[$sha]) || $missing[$sha] = $document;
+            }
+
+            $queriesMissing = array_filter($dataset['queries'], static fn (array $query): bool => ! $queryCache->has(VectorCache::sha($query['text'])));
+
+            if ($missing !== [] || $queriesMissing !== []) {
+                $provider->embed('vector-bench preflight');
+            }
+        } catch (Throwable $exception) {
+            throw new RuntimeException('Embedding endpoint preflight failed: '.$exception->getMessage(), previous: $exception);
+        }
+
+        self::costGuard(count($missing), (int) array_sum(array_map(static fn (Document $document): int => strlen($document->content), $missing)),
+            count($queriesMissing), (int) array_sum(array_map(static fn (array $query): int => strlen($query['text']), $queriesMissing)),
+            $price, (int) ($options['max-tokens'] ?? self::MAX_TOKENS), isset($options['yes']));
+        $this->container = $this->probe->container();
+
+        Event::listen(VectorEmbeddingCompleted::class, function (VectorEmbeddingCompleted $event): void {
+            $this->embedCalls[] = $event;
+        });
+
+        // Ingest once, or search an existing collection (for example one a migration built).
+        $collection = $reused ?? 'bench_'.substr(hash('sha256', $dataset['name'].$slug.getmypid().microtime()), 0, 12);
+        $this->sample(true);
+
+        $hybrid = in_array('hybrid', $modes, true);
+        $documentsCached = $reused === null && $missing === [];
 
         if ($reused === null) {
             $store->createCollection(new CollectionDefinition(name: $collection, dimensions: $dimensions, keyword: $hybrid ?: null));
@@ -764,62 +787,66 @@ final class BenchRunner
         try {
             self::say($reused === null ? "Ingesting {$dataset['name']}: ".count($dataset['corpus']).' documents'.($splitter === null ? '' : ' as '.count($documents).' chunks')." into {$collection}" : "Searching {$reused} (no ingest)");
             $this->embedCalls = [];
+            $ingestEmbeddingMs = 0;
             $started = hrtime(true);
-            $reused !== null || $store->collection($collection)
-                ->onProgress(function (int $done, int $total): void {
-                    $this->sample();
 
-                    if ($done === $total || $done % 1000 === 0) {
-                        self::say("Ingested {$done}/{$total}");
-                    }
-                })
-                ->upsert($documents);
+            // Embed what the cache lacks, one store batch per request, writing each batch to the cache as it returns.
+            foreach (array_chunk($missing, $store->batchSize()) as $batch) {
+                $embedStarted = hrtime(true);
+                $vectors = $provider->embedBatch(array_map(static fn (Document $document): string => $document->content, $batch));
+                $ingestEmbeddingMs += self::ms($embedStarted);
+                $documentCache->put(array_map(static fn (Document $document, array $vector): array => ['id' => (string) $document->id, 'sha256' => VectorCache::sha($document->content), 'vector' => $vector], $batch, $vectors));
+                $this->sample();
+            }
+
+            // Upsert a chunk at a time with its vectors read from the cache: the store embeds nothing.
+            foreach ($reused === null ? array_chunk($documents, self::INGEST_CHUNK) : [] as $index => $chunk) {
+                $vectors = $documentCache->get(array_map(static fn (Document $document): string => VectorCache::sha($document->content), $chunk));
+                $store->upsert($collection, array_map(static fn (Document $document): Document => new Document($document->id, $document->content, $document->metadata, $vectors[VectorCache::sha($document->content)]), $chunk));
+                $this->sample();
+                self::say('Ingested '.min(($index + 1) * self::INGEST_CHUNK, count($documents)).'/'.count($documents));
+            }
+
             $ingestMs = self::ms($started);
             $ingestCalls = $this->embedCalls;
             $this->sample(true);
 
-            $storage = (string) $db->table((string) config('vector.stores.pgvector.registry_table', 'vector_collection_registry'))
-                ->where('name', $store->describeCollection($collection)['collection'])->value('storage_identifier');
-
-            if ($reused === null && ! $documentsCached) {
-                $documentCache += self::documentVectors($documents, $db->table($storage)->pluck('embedding', 'id')->all());
-                file_put_contents($documentCacheFile, json_encode($documentCache, JSON_THROW_ON_ERROR));
-            }
-
+            $this->probe->waitUntilReady($collection);
             $started = hrtime(true);
-            $reused !== null || $db->statement("REINDEX INDEX {$storage}_embedding_idx");
-            $rebuildMs = self::ms($started);
-            /** @var object{t: int|string, i: int|string, a: int|string} $sizes */
-            $sizes = $db->selectOne('SELECT pg_table_size(?::regclass) AS t, pg_indexes_size(?::regclass) AS i, pg_total_relation_size(?::regclass) AS a', [$storage, $storage, $storage]);
-            $indexDef = (string) $db->scalar('SELECT pg_get_indexdef(?::regclass)', ["{$storage}_embedding_idx"]);
+            $rebuilt = $reused === null && ! isset($options['exact']) && $this->probe->rebuildIndex($collection);
+            $rebuildMs = $rebuilt ? self::ms($started) : null;
+            $this->exactOptions = isset($options['exact']) ? $this->probe->exactSearch($collection) : null;
+            $sizes = $this->probe->sizes($collection);
+            $indexDef = $this->probe->index($collection);
             $this->sample(true);
 
-            // Query embeddings, one call per query, cached per dataset, model and dimensions (loaded at preflight).
-            $cached = true;
+            // Query embeddings, one timed call per query text the cache lacks, written to the cache as they return.
+            $cached = $queriesMissing === [];
 
-            foreach ($dataset['queries'] as $query) {
-                if (isset($cache[$query['id']])) {
-                    continue;
+            foreach ($queriesMissing as $query) {
+                $sha = VectorCache::sha($query['text']);
+
+                if (! $queryCache->has($sha)) {
+                    $this->embedCalls = [];
+                    $started = hrtime(true);
+                    $vector = $provider->embed($query['text']);
+                    $queryCache->put([['id' => $query['id'], 'sha256' => $sha, 'vector' => $vector, 'extra' => ['ms' => self::ms($started), 'tokens' => self::tokens($this->embedCalls)]]]);
                 }
-
-                $cached = false;
-                $this->embedCalls = [];
-                $started = hrtime(true);
-                $vector = $provider->embed($query['text']);
-                $cache[$query['id']] = ['vector' => $vector, 'ms' => self::ms($started), 'tokens' => self::tokens($this->embedCalls)];
             }
 
-            file_put_contents($cacheFile, json_encode($cache, JSON_THROW_ON_ERROR));
+            $queryVectors = $queryCache->get(array_map(static fn (array $query): string => VectorCache::sha($query['text']), $dataset['queries']));
             $queries = array_map(static fn (array $query): array => [
                 'id' => $query['id'],
                 'text' => $query['text'],
-                'vector' => $cache[$query['id']]['vector'],
+                'vector' => $queryVectors[VectorCache::sha($query['text'])],
                 'filter' => $queryFilters[$query['id']] ?? null,
             ], $dataset['queries']);
-            $queryEmbedding = array_map(static fn (array $query): array => $cache[$query['id']], $dataset['queries']);
+            /** @var list<array{ms: int, tokens: int|null}> $queryEmbedding */
+            $queryEmbedding = array_map(static fn (array $query): array => $queryCache->extra(VectorCache::sha($query['text'])) + ['ms' => 0, 'tokens' => null], $dataset['queries']);
             $results = [];
             $perQuery = [];
             $candidateRanked = [];
+            $rankings = [];
             $variants = self::variants($modes, $matches, $weights, $sweep);
 
             foreach ($variants as $variant => $settings) {
@@ -830,7 +857,8 @@ final class BenchRunner
                         'top_k' => self::TOP_K,
                         'mode' => $settings['mode'],
                         'field' => $field,
-                        'options' => $scan === null ? [] : [PgVectorSearchOptions::HNSW_ITERATIVE_SCAN => $scan],
+                        'store' => $this->store,
+                        'options' => $this->searchOptions(null, $scan),
                         'collapse' => $splitter !== null,
                         'queries' => $queries,
                         ...($settings['mode'] === 'hybrid' ? ['match' => $settings['match'], 'keyword_weight' => $settings['keyword_weight']] : []),
@@ -875,10 +903,11 @@ final class BenchRunner
                     self::say("{$key}: candidate recall at ".implode(', ', self::CANDIDATE_KS));
                     $candidates = [];
                     $rerankHits = [];
-                    $perQuery[$key] = ['ndcg_at_10' => RetrievalMetrics::ndcgPerQuery($dataset['qrels'], $ranked, self::TOP_K), 'recall_at_5' => RetrievalMetrics::recallPerQuery($dataset['qrels'], $ranked, 5)];
+                    $rankings[$key] = $ranked;
+                    $perQuery[$key] = ['ndcg_at_10' => RetrievalMetrics::ndcgPerQuery($dataset['qrels'], $ranked, self::TOP_K, $dataset['grades']), 'recall_at_5' => RetrievalMetrics::recallPerQuery($dataset['qrels'], $ranked, 5)];
 
                     foreach (self::CANDIDATE_KS as $k) {
-                        $kJob = ['top_k' => $k, 'options' => $job['options'] + [PgVectorSearchOptions::HNSW_EF_SEARCH => max(40, $k * $overfetch)]] + $job;
+                        $kJob = ['top_k' => $k, 'options' => $this->searchOptions(max(40, $k * $overfetch), $scan)] + $job;
                         $kRanked = [];
 
                         foreach ($queries as $query) {
@@ -898,7 +927,7 @@ final class BenchRunner
 
                     $results[$key] = [
                         ...($settings['mode'] === 'hybrid' ? ['settings' => ['match' => $settings['match'], 'keyword_weight' => $settings['keyword_weight']]] : []),
-                        'quality' => BenchReport::quality($dataset['qrels'], $ranked),
+                        'quality' => BenchReport::quality($dataset['qrels'], $ranked, $dataset['grades']),
                         'candidates' => $candidates,
                         'below_take' => count(array_filter($ranked, static fn (array $ids): bool => count($ids) < self::TOP_K)),
                         'concurrency' => $runs,
@@ -909,14 +938,15 @@ final class BenchRunner
                         self::say("{$twin}: reranking ".count($queries)." queries ({$rerankCandidates} candidates each, one client)");
                         $reranked = self::rerankRanked($rerank, $rerankHits, $queries, "{$out}/cache/rerank.{$dataset['name']}.{$rerank}.".trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower((string) $rerankModel)), '-').'.json', $splitter === null ? self::TOP_K : self::TOP_K * $overfetch);
                         $reranked['ranked'] = $splitter === null ? $reranked['ranked'] : self::collapseRanked($reranked['ranked'], $rerankHits);
+                        $rankings[$twin] = $reranked['ranked'];
                         $perQuery[$twin] = [
-                            'ndcg_at_10' => RetrievalMetrics::ndcgPerQuery($dataset['qrels'], $reranked['ranked'], self::TOP_K),
+                            'ndcg_at_10' => RetrievalMetrics::ndcgPerQuery($dataset['qrels'], $reranked['ranked'], self::TOP_K, $dataset['grades']),
                             'recall_at_5' => RetrievalMetrics::recallPerQuery($dataset['qrels'], $reranked['ranked'], 5),
                             'candidate_recall_at_30' => $perQuery[$key]['candidate_recall_at_30'],
                         ];
                         $results[$twin] = [
                             ...($settings['mode'] === 'hybrid' ? ['settings' => ['match' => $settings['match'], 'keyword_weight' => $settings['keyword_weight']]] : []),
-                            'quality' => BenchReport::quality($dataset['qrels'], $reranked['ranked']),
+                            'quality' => BenchReport::quality($dataset['qrels'], $reranked['ranked'], $dataset['grades']),
                             'candidates' => $candidates,
                             'below_take' => count(array_filter($reranked['ranked'], static fn (array $ids): bool => count($ids) < self::TOP_K)),
                             'rerank' => ['reranker' => $rerank, 'model' => $rerankModel, 'candidates' => $rerankCandidates, ...($splitter === null ? [] : [
@@ -973,6 +1003,8 @@ final class BenchRunner
                 'citation' => $meta['citation'],
                 'revision' => data_get($meta, 'source.revision') ?? data_get($meta, 'source.sha256'),
                 'files' => array_map(static fn (array $file): string => $file['sha256'], (array) $meta['files']),
+                'primary_metric' => $meta['primary_metric'] ?? 'ndcg_at_10',
+                'graded' => $dataset['grades'] !== [],
             ],
             'model' => ['name' => $model, 'slug' => $slug, 'dimensions' => $dimensions],
             'truncate' => $truncate,
@@ -984,12 +1016,20 @@ final class BenchRunner
                 'warmup' => $warmup,
                 'subset' => [count($dataset['corpus']), count($dataset['queries'])] !== $full,
             ],
-            'store' => ['name' => 'pgvector', 'index' => $indexDef, 'collection' => $reused],
+            'store' => [
+                'name' => $this->store,
+                'driver' => (string) (config("vector.stores.{$this->store}.driver") ?? $this->store),
+                'engine' => $this->probe->engineVersion(),
+                'index' => $indexDef,
+                'exact' => isset($options['exact']),
+                'capabilities' => array_map(static fn (StoreCapability $capability): string => $capability->value, $store->capabilities()->capabilities),
+                'collection' => $reused,
+            ],
             'ingest' => [
                 'documents' => count($dataset['corpus']),
                 'wall_ms' => $ingestMs,
                 'docs_per_second' => $reused !== null ? 0.0 : round(count($dataset['corpus']) / max($ingestMs / 1000, 1e-9), 1),
-                'embedding_ms' => $upsertEmbeddingMs,
+                'embedding_ms' => $ingestEmbeddingMs,
                 'embedding_calls' => count($ingestCalls),
                 'embedding_tokens' => $ingestTokens,
                 'cached' => $documentsCached,
@@ -1007,13 +1047,13 @@ final class BenchRunner
             'modes' => $results,
             'union' => $union,
             'resources' => [
-                'table_bytes' => (int) $sizes->t,
-                'index_bytes' => (int) $sizes->i,
-                'total_bytes' => (int) $sizes->a,
-                'container' => $this->container ?: null,
+                'table_bytes' => $sizes['table_bytes'] ?? null,
+                'index_bytes' => $sizes['index_bytes'] ?? null,
+                'total_bytes' => $sizes['total_bytes'] ?? null,
+                'container' => $this->container,
                 'memory_mib_max' => $this->memory === [] ? null : round(max($this->memory), 1),
                 'memory_samples' => count($this->memory),
-                'memory_note' => $this->container === '' ? 'no docker container publishes the pgvector port' : null,
+                'memory_note' => $this->container === null ? 'no docker container found for the store' : null,
             ],
             'cost' => [
                 'price_per_1m_tokens' => $price,
@@ -1023,8 +1063,6 @@ final class BenchRunner
             ],
             'infrastructure' => [
                 'php' => PHP_VERSION,
-                'postgres' => (string) $db->scalar('SELECT version()'),
-                'pgvector' => (string) $db->scalar("SELECT extversion FROM pg_extension WHERE extname = 'vector'"),
                 'os' => php_uname('s').' '.php_uname('r'),
             ],
             'runtime_ms' => self::ms($runStarted),
@@ -1045,6 +1083,7 @@ final class BenchRunner
         $base = "{$out}/{$dataset['name']}.{$slug}.".date('Ymd-His');
         file_put_contents("{$base}.json", json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");
         file_put_contents("{$base}.md", BenchReport::markdown($report));
+        file_put_contents("{$base}.ranked.json", json_encode($rankings, JSON_THROW_ON_ERROR));
         fwrite(STDOUT, BenchReport::markdown($report)."\nReport: {$base}.json\n");
 
         return array_key_exists('compare', $options) ? self::compareReport($report, $options) : 0;
@@ -1059,7 +1098,7 @@ final class BenchRunner
         $tolerance = (float) ($options['tolerance'] ?? 0.01);
         $baselineFile = is_string($options['compare'] ?? null)
             ? $options['compare']
-            : self::ROOT.'/benchmarks/baselines/'.data_get($report, 'dataset.name').'/'.data_get($report, 'model.slug').(data_get($report, 'chunk') === null ? '' : '.chunked').'.json';
+            : self::ROOT.'/benchmarks/baselines/'.data_get($report, 'store.name').'/'.data_get($report, 'dataset.name').'/'.data_get($report, 'model.slug').(data_get($report, 'chunk') === null ? '' : '.chunked').'.json';
 
         if (! is_file($baselineFile)) {
             throw new RuntimeException("No baseline at {$baselineFile}.");
@@ -1078,6 +1117,74 @@ final class BenchRunner
         fwrite(STDOUT, "No quality drop beyond {$tolerance} against {$baselineFile}.\n");
 
         return 0;
+    }
+
+    /**
+     * Before a run embeds: print what it will embed, the estimated tokens (4 characters a token) and the cost at the
+     * given price; above $maxTokens, refuse unless $confirmed (--yes).
+     */
+    public static function costGuard(int $documents, int $documentChars, int $queries, int $queryChars, ?float $price, int $maxTokens, bool $confirmed): void
+    {
+        if ($documents === 0 && $queries === 0) {
+            return;
+        }
+
+        $tokens = (int) ceil(($documentChars + $queryChars) / 4);
+        self::say(sprintf('To embed: %d documents and %d queries, about %d tokens%s.', $documents, $queries, $tokens,
+            $price === null ? ' (no --price-per-1m-tokens, no cost estimate)' : sprintf(', about %.4f at %s per 1M tokens', $tokens * $price / 1_000_000, $price)));
+
+        if ($tokens > $maxTokens && ! $confirmed) {
+            throw new RuntimeException("About {$tokens} tokens to embed is above --max-tokens={$maxTokens}. Pass --yes to start the run.");
+        }
+    }
+
+    /**
+     * --compare-stores: the comparison table of reports of one dataset on several stores, printed and written beside
+     * the first report.
+     *
+     * @param  list<string>  $files
+     */
+    public static function compareStores(array $files): int
+    {
+        $reports = array_map(self::readJson(...), $files);
+        $rankings = array_map(static fn (string $file): ?array => is_file($ranked = preg_replace('/\.json$/', '.ranked.json', $file)) ? self::readJson((string) $ranked) : null, $files);
+        /** @var list<array<string, mixed>> $reports */
+        $markdown = BenchReport::storeComparison($reports, $rankings);
+        $out = dirname($files[0]).'/'.data_get($reports[0], 'dataset.name').'.stores.'.date('Ymd-His').'.md';
+        file_put_contents($out, $markdown);
+        fwrite(STDOUT, $markdown."\nComparison: {$out}\n");
+
+        return 0;
+    }
+
+    /**
+     * Convert the JSON caches of the earlier format once: queries by query id (to the checksum of the query's text),
+     * documents by text checksum (named by the run's documents with that text).
+     *
+     * @param  list<array{id: string, text: string}>  $queries
+     * @param  list<Document>  $documents
+     */
+    public static function convertJsonCaches(string $out, string $prefix, VectorCache $queryCache, array $queries, VectorCache $documentCache, array $documents): void
+    {
+        $queryJson = "{$out}/cache/{$prefix}.json";
+
+        if (is_file($queryJson)) {
+            /** @var array<string, array{vector: list<float>, ms: int, tokens: ?int}> $old */
+            $old = self::readJson($queryJson);
+            $queryCache->convert($queryJson, array_values(array_filter(array_map(static fn (array $query): ?array => isset($old[$query['id']]) ? [
+                'id' => $query['id'], 'sha256' => VectorCache::sha($query['text']), 'vector' => $old[$query['id']]['vector'],
+                'extra' => ['ms' => $old[$query['id']]['ms'], 'tokens' => $old[$query['id']]['tokens']],
+            ] : null, $queries))));
+        }
+
+        $documentJson = "{$out}/cache/{$prefix}.documents.json";
+
+        if (is_file($documentJson)) {
+            /** @var array<string, list<float>> $old */
+            $old = self::readJson($documentJson);
+            $ids = array_column(array_map(static fn (Document $document): array => ['sha' => VectorCache::sha($document->content), 'id' => (string) $document->id], $documents), 'id', 'sha');
+            $documentCache->convert($documentJson, array_map(static fn (string $sha, array $vector): array => ['id' => $ids[$sha] ?? null, 'sha256' => $sha, 'vector' => $vector], array_keys($old), array_values($old)));
+        }
     }
 
     /**
@@ -1137,11 +1244,21 @@ final class BenchRunner
     }
 
     /**
-     * Sample the pgvector container's memory, at most every 2 seconds unless forced.
+     * The search options of an index setting, or the exact search options of --exact.
+     *
+     * @return array<string, mixed>
+     */
+    private function searchOptions(?int $ef, ?string $scan): array
+    {
+        return $this->exactOptions ?? $this->probe->searchOptions($ef, $scan);
+    }
+
+    /**
+     * Sample the store container's memory, at most every 2 seconds unless forced.
      */
     private function sample(bool $force = false): void
     {
-        if ($this->container === '' || (! $force && microtime(true) - $this->lastSample < 2.0)) {
+        if ($this->container === null || (! $force && microtime(true) - $this->lastSample < 2.0)) {
             return;
         }
 

@@ -60,6 +60,9 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
 
     private const REGISTRY = 'agenticgraph';
 
+    /** Qdrant names hold up to 255 bytes: the prefix leaves room for a long collection name. */
+    public const MAX_COLLECTION_PREFIX = 64;
+
     private const DISTANCES = ['cosine' => 'Cosine', 'inner_product' => 'Dot', 'l2' => 'Euclid'];
 
     private const INDEX_TYPES = [
@@ -78,7 +81,21 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
         private readonly EmbeddingsManager $embeddings,
         private readonly MetadataValidator $metadataValidator,
         private readonly string $name = 'qdrant',
-    ) {}
+    ) {
+        self::assertValidCollectionPrefix($this->prefix());
+    }
+
+    /**
+     * Letters, digits, underscores and hyphens, at most MAX_COLLECTION_PREFIX characters (the pgvector table_prefix rule).
+     */
+    public static function assertValidCollectionPrefix(string $prefix): void
+    {
+        if ($prefix !== '' && ! preg_match('/^[A-Za-z0-9_-]{1,'.self::MAX_COLLECTION_PREFIX.'}$/', $prefix)) {
+            throw new VectorQueryException(
+                "Invalid Qdrant collection_prefix [{$prefix}]: use letters, digits, underscores and hyphens, at most ".self::MAX_COLLECTION_PREFIX.' characters.',
+            );
+        }
+    }
 
     public function capabilities(): StoreCapabilities
     {

@@ -4,13 +4,19 @@ use AgenticGraph\Vector\Facades\Vector;
 use AgenticGraph\Vector\Tests\Support\BenchDataset;
 use AgenticGraph\Vector\Tests\Support\BenchReport;
 use AgenticGraph\Vector\Tests\Support\BenchRunner;
+use AgenticGraph\Vector\Tests\Support\GenericBenchProbe;
+use AgenticGraph\Vector\Tests\Support\PgvectorBenchProbe;
+use AgenticGraph\Vector\Tests\Support\QdrantBenchProbe;
 use AgenticGraph\Vector\Tests\Support\RetrievalMetrics;
+use AgenticGraph\Vector\Tests\Support\VectorCache;
 use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\ValueObjects\SearchHit;
 use Prism\Prism\Facades\Prism;
 use Prism\Prism\Testing\StructuredResponseFake;
 use Prism\Prism\ValueObjects\Usage;
+
+const BENCH_REGISTRY = ['tier' => 'small', 'kind' => 'text', 'primary_metric' => 'ndcg_at_10', 'license' => 'MIT', 'license_note' => 'test data'];
 
 function benchReport(array $quality = [], array $overrides = []): array
 {
@@ -20,7 +26,7 @@ function benchReport(array $quality = [], array $overrides = []): array
         'model' => ['name' => 'openai:text-embedding-3-small', 'dimensions' => 1536],
         'truncate' => 0,
         'sizes' => ['documents' => 100, 'queries' => 10, 'top_k' => 10, 'warmup' => 5, 'subset' => false],
-        'store' => ['name' => 'pgvector', 'index' => 'CREATE INDEX ...'],
+        'store' => ['name' => 'main', 'driver' => 'memory', 'engine' => null, 'index' => 'hnsw', 'exact' => false, 'capabilities' => ['list_ids', 'keyword'], 'collection' => null],
         'ingest' => ['documents' => 100, 'wall_ms' => 1000, 'docs_per_second' => 100.0, 'embedding_ms' => 800, 'embedding_calls' => 1, 'embedding_tokens' => 5000, 'index_rebuild_ms' => 20],
         'query_embedding' => ['calls' => 10, 'tokens' => 90, 'cached' => false, 'p50_ms' => 100, 'p95_ms' => 150, 'p99_ms' => 160],
         'modes' => ['dense' => [
@@ -29,7 +35,7 @@ function benchReport(array $quality = [], array $overrides = []): array
         ]],
         'resources' => ['table_bytes' => 1, 'index_bytes' => 2, 'total_bytes' => 3, 'container' => null, 'memory_mib_max' => null, 'memory_samples' => 0, 'memory_note' => 'no container'],
         'cost' => ['price_per_1m_tokens' => 0.02, 'ingest' => 0.0001, 'queries' => 0.0000018],
-        'infrastructure' => ['php' => '8.4', 'postgres' => 'PostgreSQL 16', 'pgvector' => '0.8.0'],
+        'infrastructure' => ['php' => '8.4', 'os' => 'Darwin 24'],
     ];
 
     return array_replace_recursive($report, $overrides);
@@ -78,14 +84,14 @@ it('renders the markdown summary with every quality metric and the throughput ro
     }
 
     expect($markdown)->toContain('| dense | 1 | 500.0 | 1.5 | 2 | 2.5 |')
-        ->and($markdown)->toContain('Index rebuild (REINDEX): 20 ms');
+        ->and($markdown)->toContain('Index rebuild: 20 ms');
 });
 
 it('refuses a dataset file whose sha256 differs from the manifest', function () {
     $dir = sys_get_temp_dir().'/vector-bench-'.uniqid();
     mkdir($dir.'/d', 0777, true);
     file_put_contents($dir.'/d/corpus.json', '[]');
-    file_put_contents($dir.'/manifest.json', json_encode(['datasets' => ['d' => ['files' => [
+    file_put_contents($dir.'/manifest.json', json_encode(['datasets' => ['d' => [...BENCH_REGISTRY, 'files' => [
         'corpus' => ['path' => 'd/corpus.json', 'sha256' => hash('sha256', '[{"id":"1","text":"x"}]')],
     ]]]]));
 
@@ -149,15 +155,15 @@ it('derives the filtered set: WixQA product, SciFact bucket, queries whose relev
 });
 
 it('gives benchmark documents lang en and runs hybrid queries in any match mode', function () {
-    config()->set('vector.stores.pgvector', ['driver' => 'memory']);
+    config()->set('vector.stores.bench', ['driver' => 'memory']);
     config()->set('vector.hybrid.match', 'websearch');
-    $store = Vector::store('pgvector');
+    $store = Vector::store('bench');
     $store->createCollection(new CollectionDefinition('bench_unit', dimensions: 2, keyword: true));
     $store->collection('bench_unit')->upsert([
         Document::make('near', 'unrelated text', BenchRunner::documentMetadata(null, null), [1.0, 0.0]),
         Document::make('far', 'reset a password', BenchRunner::documentMetadata('bucket', 3), [0.0, 1.0]),
     ]);
-    $job = ['collection' => 'bench_unit', 'top_k' => 2, 'mode' => 'hybrid', 'field' => null, 'options' => []];
+    $job = ['store' => 'bench', 'collection' => 'bench_unit', 'top_k' => 2, 'mode' => 'hybrid', 'field' => null, 'options' => []];
 
     // A question no document holds every word of: websearch (the config here) would find no keyword hit.
     expect(BenchRunner::documentMetadata(null, null))->toBe(['lang' => 'en'])
@@ -197,15 +203,15 @@ it('expands hybrid into sweep keys and reads the keyword candidate list in keywo
             'hybrid' => ['mode' => 'hybrid', 'match' => 'websearch', 'keyword_weight' => 0.25],
         ]);
 
-    config()->set('vector.stores.pgvector', ['driver' => 'memory']);
-    $store = Vector::store('pgvector');
+    config()->set('vector.stores.bench', ['driver' => 'memory']);
+    $store = Vector::store('bench');
     $store->createCollection(new CollectionDefinition('bench_kw', dimensions: 2, keyword: true));
     $store->collection('bench_kw')->upsert([
         Document::make('near', 'unrelated', [], [1.0, 0.0]),
         Document::make('one', 'reset', [], [0.0, 1.0]),
         Document::make('two', 'reset password', [], [0.1, 1.0]),
     ]);
-    $job = ['collection' => 'bench_kw', 'top_k' => 3, 'mode' => 'dense', 'field' => null, 'options' => [], 'match' => 'any'];
+    $job = ['store' => 'bench', 'collection' => 'bench_kw', 'top_k' => 3, 'mode' => 'dense', 'field' => null, 'options' => [], 'match' => 'any'];
     $query = ['text' => 'reset my password', 'vector' => [1.0, 0.0], 'filter' => null];
 
     // Keyword order: two (both words) before one; the dense-only document is not in the keyword list.
@@ -300,8 +306,8 @@ it('compares a chunked run only with a chunked baseline', function () {
 });
 
 it('scores chunk hits as their parents and collapses reranked chunks after the rerank', function () {
-    config()->set('vector.stores.pgvector', ['driver' => 'memory']);
-    $store = Vector::store('pgvector');
+    config()->set('vector.stores.bench', ['driver' => 'memory']);
+    $store = Vector::store('bench');
     $store->createCollection(new CollectionDefinition('bench_chunks', dimensions: 2));
     $store->collection('bench_chunks')->upsert([
         Document::make('a#0', 'a0', ['parent_id' => 'a'], [1.0, 0.0]),
@@ -309,7 +315,7 @@ it('scores chunk hits as their parents and collapses reranked chunks after the r
         Document::make('b#0', 'b0', ['parent_id' => 'b'], [0.5, 0.5]),
         Document::make('plain', 'plain', [], [0.0, 1.0]),
     ]);
-    $job = ['collection' => 'bench_chunks', 'top_k' => 3, 'mode' => 'dense', 'field' => null, 'options' => []];
+    $job = ['store' => 'bench', 'collection' => 'bench_chunks', 'top_k' => 3, 'mode' => 'dense', 'field' => null, 'options' => []];
     $query = ['text' => 'q', 'vector' => [1.0, 0.0], 'filter' => null];
     $hits = BenchRunner::searchHits($job, $query);
 
@@ -322,15 +328,37 @@ it('takes a rerank candidate count only at a candidate recall depth', function (
     (new BenchRunner)->run(['dataset' => 'wixqa-expert', 'model' => 'deterministic', 'rerank' => 'deterministic', 'rerank-candidates' => '40']);
 })->throws(RuntimeException::class, '--rerank-candidates takes 30, 50, 100.');
 
-it('caches document vectors by the sha256 of their text and reuses them only for the same text', function () {
-    $documents = [Document::make('a', 'alpha text'), Document::make('b', 'beta text'), Document::make('c', 'gamma text', vector: [9.0, 9.0])];
+it('caches vectors as float32 rows keyed by text checksum, reads only what it is asked for, and converts JSON caches once (H2)', function () {
+    $dir = sys_get_temp_dir().'/ag2-vector-cache-'.getmypid();
+    @mkdir($dir.'/cache', 0777, true);
+    $cache = new VectorCache("{$dir}/cache/c", 'm', 2);
+    $cache->put([['id' => 'a', 'sha256' => VectorCache::sha('alpha'), 'vector' => [0.5, 0.25]], ['id' => 'b', 'sha256' => VectorCache::sha('beta'), 'vector' => [1.0, -2.0], 'extra' => ['ms' => 7]]]);
+    $cache->put([['id' => 'a2', 'sha256' => VectorCache::sha('alpha'), 'vector' => [9.0, 9.0]]]);
+    file_put_contents("{$dir}/cache/c.f32", 'torn', FILE_APPEND);
 
-    $cache = BenchRunner::documentVectors($documents, ['a' => '[0.5,0.25]', 'c' => '[1,1]']);
-    $again = BenchRunner::withCachedVectors([Document::make('a2', 'alpha text', ['lang' => 'en']), Document::make('b', 'beta text')], $cache);
+    $again = new VectorCache("{$dir}/cache/c", 'm', 2);
+    expect($again->count())->toBe(2)
+        ->and(filesize("{$dir}/cache/c.f32"))->toBe(16)
+        ->and($again->get([VectorCache::sha('beta'), 'missing']))->toBe([VectorCache::sha('beta') => [1.0, -2.0]])
+        ->and($again->get([VectorCache::sha('alpha')]))->toBe([VectorCache::sha('alpha') => [0.5, 0.25]])
+        ->and($again->extra(VectorCache::sha('beta')))->toBe(['ms' => 7])
+        ->and(fn () => new VectorCache("{$dir}/cache/c", 'other', 2))->toThrow(RuntimeException::class, 'holds m at 2 dimensions');
 
-    expect($cache)->toBe([hash('sha256', 'alpha text') => [0.5, 0.25]])
-        ->and(array_map(fn (Document $document): ?array => $document->vector, $again))->toBe([[0.5, 0.25], null])
-        ->and([$again[0]->id, $again[0]->metadata])->toBe(['a2', ['lang' => 'en']]);
+    file_put_contents("{$dir}/cache/d.json", json_encode(['q1' => ['vector' => [0.1, 0.2], 'ms' => 3, 'tokens' => 4]]));
+    file_put_contents("{$dir}/cache/d.documents.json", json_encode([VectorCache::sha('gamma') => [0.0, 1.0]]));
+    $queries = new VectorCache("{$dir}/cache/q", 'm', 2);
+    $documents = new VectorCache("{$dir}/cache/docs", 'm', 2);
+    BenchRunner::convertJsonCaches($dir, 'd', $queries, [['id' => 'q1', 'text' => 'what?']], $documents, [Document::make('g', 'gamma')]);
+
+    expect($queries->extra(VectorCache::sha('what?')))->toBe(['ms' => 3, 'tokens' => 4])
+        ->and(array_map(fn (array $v): array => array_map(fn (float $x): float => round($x, 6), $v), $queries->get([VectorCache::sha('what?')])))->toBe([VectorCache::sha('what?') => [0.1, 0.2]])
+        ->and($documents->get([VectorCache::sha('gamma')]))->toBe([VectorCache::sha('gamma') => [0.0, 1.0]])
+        ->and(is_file("{$dir}/cache/d.json.converted") && ! is_file("{$dir}/cache/d.json"))->toBeTrue()
+        ->and(json_decode(explode("\n", (string) file_get_contents("{$dir}/cache/docs.index.jsonl"))[1], true))->toBe(['id' => 'g', 'sha256' => VectorCache::sha('gamma')]);
+
+    array_map('unlink', glob("{$dir}/cache/*") ?: []);
+    rmdir("{$dir}/cache");
+    rmdir($dir);
 });
 
 it('records input and output rerank tokens and prices them apart, old cache entries all as input', function () {
@@ -356,4 +384,67 @@ it('records input and output rerank tokens and prices them apart, old cache entr
         ->and($cost['per_query'])->toBe(round((0.0036 + 0.0006) / 3, 6))
         ->and(BenchRunner::rerankCost(null, 1_000_000, null, 1.0, 1_000_000, 4.0))->toBe(5.0)
         ->and(BenchReport::markdown(benchReport(overrides: ['cost' => ['rerank' => $cost]])))->toContain('- Rerank token prices split: 1 per 1M input tokens (2000 this run), 4 per 1M output tokens (400 this run); 1 cached requests without the split priced all as input');
+});
+
+it('refuses a datasets.json entry without its registry keys (H8)', function () {
+    $dir = sys_get_temp_dir().'/vector-bench-'.uniqid();
+    mkdir($dir);
+    file_put_contents($dir.'/manifest.json', json_encode(['datasets' => ['d' => ['tier' => 'huge', 'files' => []], 'e' => [...BENCH_REGISTRY, 'kind' => 'pictures', 'files' => []]]]));
+
+    expect(fn () => BenchDataset::load('d', $dir.'/manifest.json', $dir))->toThrow(RuntimeException::class, 'needs `tier` in datasets.json (small, medium, large)')
+        ->and(fn () => BenchDataset::load('e', $dir.'/manifest.json', $dir))->toThrow(RuntimeException::class, 'needs `kind`');
+
+    unlink($dir.'/manifest.json');
+    rmdir($dir);
+});
+
+it('has the registry keys for every dataset in datasets.json (H8)', function () {
+    $datasets = json_decode((string) file_get_contents(BenchDataset::MANIFEST), true)['datasets'];
+
+    foreach ($datasets as $name => $meta) {
+        foreach (BenchDataset::REGISTRY_KEYS as $key => $allowed) {
+            expect(array_key_exists($key, $meta))->toBeTrue("{$name} lacks {$key}");
+            $allowed === null || expect($allowed)->toContain($meta[$key]);
+        }
+    }
+});
+
+it('prints the embedding estimate and refuses a run above the token limit without --yes (H9)', function () {
+    BenchRunner::costGuard(0, 0, 0, 0, null, 10, false);
+    BenchRunner::costGuard(2, 40, 1, 4, 0.02, 11, false);
+
+    expect(fn () => BenchRunner::costGuard(2, 40, 1, 8, 0.02, 11, false))->toThrow(RuntimeException::class, 'About 12 tokens to embed is above --max-tokens=11. Pass --yes');
+    BenchRunner::costGuard(2, 40, 1, 8, 0.02, 11, true);
+});
+
+it('resolves the probe of a store by its driver name, else the generic probe (H1)', function () {
+    config()->set('vector.stores.vectors_a', ['driver' => 'qdrant']);
+    config()->set('vector.stores.vectors_b', ['driver' => 'memory']);
+
+    expect(BenchRunner::probeClass('vectors_a'))->toBe(QdrantBenchProbe::class)
+        ->and(BenchRunner::probeClass('pgvector'))->toBe(PgvectorBenchProbe::class)
+        ->and(BenchRunner::probeClass('vectors_b'))->toBe(GenericBenchProbe::class)
+        ->and((new GenericBenchProbe('vectors_b'))->searchOptions(100, null))->toBe([])
+        ->and(fn () => (new GenericBenchProbe('vectors_b'))->searchOptions(null, 'off'))->toThrow(RuntimeException::class, 'no iterative scan')
+        ->and((new QdrantBenchProbe('vectors_a'))->searchOptions(100, null))->toBe(['hnsw_ef' => 100])
+        ->and((new PgvectorBenchProbe('pgvector'))->searchOptions(100, 'off'))->toBe(['hnsw.iterative_scan' => 'off', 'hnsw.ef_search' => 100])
+        ->and(fn () => (new PgvectorBenchProbe('pgvector'))->searchOptions(null, 'sideways'))->toThrow(RuntimeException::class, '--iterative-scan takes');
+});
+
+it('compares runs on several stores in one table with their top 10 agreement (H6)', function () {
+    $a = benchReport();
+    $a['store'] = ['name' => 'pg', 'driver' => 'pgvector', 'engine' => 'pgvector 0.8.3', 'index' => 'hnsw', 'exact' => true, 'capabilities' => ['keyword']];
+    $b = benchReport(['ndcg_at_10' => 0.6]);
+    $b['store'] = ['name' => 'qd', 'driver' => 'qdrant', 'engine' => null, 'index' => null, 'exact' => true, 'capabilities' => []];
+    $b['resources']['index_bytes'] = null;
+    $ranked = ['dense' => ['q1' => ['a', 'b'], 'q2' => ['c', 'd'], 'q3' => ['e']]];
+    $other = ['dense' => ['q1' => ['b', 'a'], 'q2' => ['c', 'x'], 'q3' => ['e']]];
+
+    $markdown = BenchReport::storeComparison([$a, $b], [$ranked, $other]);
+
+    expect(BenchReport::agreement($ranked['dense'], $other['dense']))->toBe(['queries' => 3, 'same' => 2, 'share' => 0.6667, 'differ' => [['query' => 'q2', 'only_reference' => ['d'], 'only_candidate' => ['x']]]])
+        ->and($markdown)->toContain('- pg (pgvector), engine pgvector 0.8.3, index `hnsw`, exact search, capabilities: keyword')
+        ->and($markdown)->toContain('- qd (qdrant), engine not available, index `not available`, exact search, capabilities: none')
+        ->and($markdown)->toContain('| qd | dense | 0.6000 | 0.6000 | 0.5000 | 0.5000 | 1.5 | 2 | 500 | 500 | 100 | not available |')
+        ->and($markdown)->toContain('| qd | dense | 2 of 3 | 0.6667 | q2: d / x |');
 });
