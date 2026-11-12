@@ -615,10 +615,6 @@ final class BenchRunner
             throw new RuntimeException('--match and --keyword-weight sweep the hybrid mode; add hybrid to --mode.');
         }
 
-        if (isset($options['exact']) && isset($options['collection'])) {
-            throw new RuntimeException('--exact may change the collection (a probe can drop its index), so it cannot reuse --collection.');
-        }
-
         if ($filtered && isset($options['collection'])) {
             throw new RuntimeException('--filtered derives document metadata at ingest, so it cannot reuse --collection.');
         }

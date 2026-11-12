@@ -1,7 +1,7 @@
 {
-    "note": "Recorded 2026-11-12 after the pgvector search latency fix (spec section 12): an unfiltered search now uses the HNSW index. The earlier numbers of this baseline (2026-10-17) were exact searches: the planner chose a sequential scan over the index on this collection size. Dense and hybrid only; the +rerank modes of the earlier baseline were not rerun (see git history).",
+    "note": "Recorded 2026-11-12 after rule L7 (spec section 12): the dense list of an unfiltered hybrid search now uses the HNSW index, where before it was an exact sequential scan. Hybrid: nDCG@10 0.4826 to 0.4830, store p50 at concurrency 1 49.095 ms to 28.42 ms. Dense was rerun and is unchanged in quality. Run on the kept collection (--collection). Dense and hybrid only; the +rerank modes of the 2026-10-17 baseline were not rerun (see git history).",
     "schema": 1,
-    "created_at": "2026-11-12T19:10:58+00:00",
+    "created_at": "2026-11-12T19:47:11+00:00",
     "dataset": {
         "name": "wixqa-simulated",
         "description": "WixQA Simulated (200 queries) over the Wix KB corpus",
@@ -95,27 +95,27 @@
             "concurrency": {
                 "1": {
                     "queries": 200,
-                    "wall_ms": 437,
-                    "qps": 457.5,
-                    "p50_ms": 2.116,
-                    "p95_ms": 2.674,
-                    "p99_ms": 3.11
+                    "wall_ms": 402,
+                    "qps": 497.9,
+                    "p50_ms": 1.964,
+                    "p95_ms": 2.48,
+                    "p99_ms": 2.853
                 },
                 "4": {
                     "queries": 200,
-                    "wall_ms": 175,
-                    "qps": 1146.1,
-                    "p50_ms": 3.246,
-                    "p95_ms": 5.044,
-                    "p99_ms": 5.322
+                    "wall_ms": 165,
+                    "qps": 1209.1,
+                    "p50_ms": 3.057,
+                    "p95_ms": 4.497,
+                    "p99_ms": 5.467
                 },
                 "8": {
                     "queries": 200,
-                    "wall_ms": 95,
-                    "qps": 2111.3,
-                    "p50_ms": 3.41,
-                    "p95_ms": 5.303,
-                    "p99_ms": 6.06
+                    "wall_ms": 93,
+                    "qps": 2158.4,
+                    "p50_ms": 3.447,
+                    "p95_ms": 5.061,
+                    "p99_ms": 5.432
                 }
             },
             "per_query": {
@@ -531,67 +531,67 @@
                 "keyword_weight": 0.25
             },
             "quality": {
-                "ndcg_at_10": 0.48257990175883414,
+                "ndcg_at_10": 0.48301042108596215,
                 "recall_at_1": 0.205,
-                "recall_at_5": 0.5858333333333333,
-                "recall_at_10": 0.7833333333333333,
+                "recall_at_5": 0.5933333333333334,
+                "recall_at_10": 0.7783333333333333,
                 "hit_at_1": 0.235,
-                "hit_at_5": 0.62,
-                "hit_at_10": 0.8,
-                "mrr_at_10": 0.3998690476190476
+                "hit_at_5": 0.625,
+                "hit_at_10": 0.795,
+                "mrr_at_10": 0.401625
             },
             "candidates": {
-                "recall_at_30": 0.9158333333333334,
-                "recall_at_50": 0.9508333333333334,
-                "recall_at_100": 0.9825
+                "recall_at_30": 0.9008333333333333,
+                "recall_at_50": 0.9458333333333333,
+                "recall_at_100": 0.9775
             },
             "below_take": 0,
             "concurrency": {
                 "1": {
                     "queries": 200,
-                    "wall_ms": 9949,
-                    "qps": 20.1,
-                    "p50_ms": 49.095,
-                    "p95_ms": 71.287,
-                    "p99_ms": 92.841
+                    "wall_ms": 5795,
+                    "qps": 34.5,
+                    "p50_ms": 28.42,
+                    "p95_ms": 53.581,
+                    "p99_ms": 73.249
                 },
                 "4": {
                     "queries": 200,
-                    "wall_ms": 2952,
-                    "qps": 67.7,
-                    "p50_ms": 50.97,
-                    "p95_ms": 75.084,
-                    "p99_ms": 98.765
+                    "wall_ms": 2016,
+                    "qps": 99.2,
+                    "p50_ms": 32.345,
+                    "p95_ms": 60.776,
+                    "p99_ms": 80.231
                 },
                 "8": {
                     "queries": 200,
-                    "wall_ms": 1640,
-                    "qps": 121.9,
-                    "p50_ms": 55.295,
-                    "p95_ms": 83.224,
-                    "p99_ms": 103.238
+                    "wall_ms": 1165,
+                    "qps": 171.6,
+                    "p50_ms": 36.246,
+                    "p95_ms": 71.188,
+                    "p99_ms": 90.262
                 }
             },
             "paired": {
                 "reference": "dense",
                 "ndcg_at_10": {
-                    "mean": -0.043941880458227826,
-                    "low": -0.08911681589771772,
-                    "high": 0.00113592580976497,
+                    "mean": -0.04351136113109979,
+                    "low": -0.0886516642331492,
+                    "high": 0.0017757892272003664,
                     "queries": 200,
                     "resamples": 10000
                 },
                 "recall_at_5": {
-                    "mean": -0.02916666666666666,
-                    "low": -0.08833333333333332,
-                    "high": 0.03083333333333333,
+                    "mean": -0.021666666666666664,
+                    "low": -0.08166666666666668,
+                    "high": 0.03833333333333333,
                     "queries": 200,
                     "resamples": 10000
                 },
                 "candidate_recall_at_30": {
-                    "mean": 0.025,
-                    "low": 0,
-                    "high": 0.055,
+                    "mean": 0.01,
+                    "low": -0.0125,
+                    "high": 0.035,
                     "queries": 200,
                     "resamples": 10000
                 }
@@ -599,7 +599,7 @@
             "per_query": {
                 "ndcg_at_10": {
                     "simulated-0000": 0,
-                    "simulated-0001": 0.3562071871080222,
+                    "simulated-0001": 0,
                     "simulated-0002": 0.5706417189553201,
                     "simulated-0003": 0.5,
                     "simulated-0004": 0.3562071871080222,
@@ -642,7 +642,7 @@
                     "simulated-0041": 0.5,
                     "simulated-0042": 0.5,
                     "simulated-0043": 0.6309297535714575,
-                    "simulated-0044": 0.8315546295836225,
+                    "simulated-0044": 0.8503449055347546,
                     "simulated-0045": 0.43067655807339306,
                     "simulated-0046": 0.4227898344066503,
                     "simulated-0047": 1,
@@ -671,7 +671,7 @@
                     "simulated-0070": 0.6309297535714575,
                     "simulated-0071": 1,
                     "simulated-0072": 1,
-                    "simulated-0073": 0.31546487678572877,
+                    "simulated-0073": 0.3333333333333333,
                     "simulated-0074": 0,
                     "simulated-0075": 0.5,
                     "simulated-0076": 0,
@@ -696,7 +696,7 @@
                     "simulated-0095": 0.3562071871080222,
                     "simulated-0096": 0.6309297535714575,
                     "simulated-0097": 1,
-                    "simulated-0098": 0.5,
+                    "simulated-0098": 0.6309297535714575,
                     "simulated-0099": 0.43067655807339306,
                     "simulated-0100": 0.3562071871080222,
                     "simulated-0101": 1,
@@ -785,7 +785,7 @@
                     "simulated-0184": 0,
                     "simulated-0185": 0,
                     "simulated-0186": 0.5,
-                    "simulated-0187": 0.3562071871080222,
+                    "simulated-0187": 0.6309297535714575,
                     "simulated-0188": 1,
                     "simulated-0189": 0.8065735963827293,
                     "simulated-0190": 0.38685280723454163,
@@ -844,7 +844,7 @@
                     "simulated-0041": 1,
                     "simulated-0042": 1,
                     "simulated-0043": 1,
-                    "simulated-0044": 0.5,
+                    "simulated-0044": 1,
                     "simulated-0045": 1,
                     "simulated-0046": 0,
                     "simulated-0047": 1,
@@ -987,7 +987,7 @@
                     "simulated-0184": 0,
                     "simulated-0185": 0,
                     "simulated-0186": 1,
-                    "simulated-0187": 0,
+                    "simulated-0187": 1,
                     "simulated-0188": 1,
                     "simulated-0189": 0.5,
                     "simulated-0190": 1,
@@ -1028,8 +1028,8 @@
         "index_bytes": 56066048,
         "total_bytes": 125001728,
         "container": "agvector-multistore-postgres-1",
-        "memory_mib_max": 164.5,
-        "memory_samples": 13,
+        "memory_mib_max": 165.6,
+        "memory_samples": 11,
         "memory_note": null
     },
     "cost": {
@@ -1042,5 +1042,5 @@
         "php": "8.4.23",
         "os": "Darwin 24.6.0"
     },
-    "runtime_ms": 89956
+    "runtime_ms": 59804
 }

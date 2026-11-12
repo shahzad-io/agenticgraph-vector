@@ -56,7 +56,7 @@ interface BenchStoreProbe
     public function searchOptions(?int $ef, ?string $iterativeScan): array;
 
     /**
-     * Make every later search of the collection exact (no approximate index) and return the options it needs.
+     * The search options of an exact search (no approximate index). The collection is not changed, so a reused --collection works.
      *
      * @return array<string, mixed>
      */

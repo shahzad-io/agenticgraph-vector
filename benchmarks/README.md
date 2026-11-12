@@ -37,7 +37,7 @@ PRISM_REQUEST_TIMEOUT=120 bin/vector-bench --dataset=scifact --model=openai:text
 |---|---|---|
 | `--dataset` | required | A name from `datasets.json` |
 | `--store` | `vector.default` | A `vector.stores` name. `hybrid` is refused on a store without the `keyword` capability |
-| `--exact` | off | Exact search (the store's `exact: true` search option on pgvector and Qdrant; the index is kept), for cross-store agreement. Not with `--collection` |
+| `--exact` | off | Exact search (the store's `exact: true` search option on pgvector and Qdrant; the index is kept), for cross-store agreement |
 | `--yes` | off | Start an embedding run above `--max-tokens` |
 | `--max-tokens` | `1000000` | Estimated embedding tokens (characters / 4) above which a run needs `--yes` |
 | `--model` | required | `provider:model` through Prism, or `deterministic` (plumbing checks only) |

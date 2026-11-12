@@ -1,8 +1,8 @@
 # vector-bench: wixqa-simulated, openai:text-embedding-3-small
 
-> Recorded 2026-11-12 after the pgvector search latency fix (spec section 12): an unfiltered search now uses the HNSW index. The earlier numbers of this baseline (2026-10-17) were exact searches: the planner chose a sequential scan over the index on this collection size. Dense and hybrid only; the +rerank modes of the earlier baseline were not rerun (see git history).
+> Recorded 2026-11-12 after rule L7 (spec section 12): the dense list of an unfiltered hybrid search now uses the HNSW index, where before it was an exact sequential scan. Hybrid: nDCG@10 0.4826 to 0.4830, store p50 at concurrency 1 49.095 ms to 28.42 ms. Dense was rerun and is unchanged in quality. Run on the kept collection (--collection). Dense and hybrid only; the +rerank modes of the 2026-10-17 baseline were not rerun (see git history).
 
-- Created: 2026-11-12T19:10:58+00:00
+- Created: 2026-11-12T19:47:11+00:00
 - Dataset: WixQA Simulated (200 queries) over the Wix KB corpus (revision `d662dc42479c14e202eccd832f8c4b66a035c4cc`, MIT)
 - Primary metric: ndcg_at_10
 - Model: `openai:text-embedding-3-small`, 1536 dimensions
@@ -14,14 +14,14 @@
 
 | Metric | dense | hybrid (delta vs dense) |
 |---|---|---|
-| ndcg_at_10 | 0.5265 | 0.4826 (-0.0439) |
+| ndcg_at_10 | 0.5265 | 0.4830 (-0.0435) |
 | recall_at_1 | 0.3075 | 0.2050 (-0.1025) |
-| recall_at_5 | 0.6150 | 0.5858 (-0.0292) |
-| recall_at_10 | 0.7367 | 0.7833 (+0.0467) |
+| recall_at_5 | 0.6150 | 0.5933 (-0.0217) |
+| recall_at_10 | 0.7367 | 0.7783 (+0.0417) |
 | hit_at_1 | 0.3250 | 0.2350 (-0.0900) |
-| hit_at_5 | 0.6400 | 0.6200 (-0.0200) |
-| hit_at_10 | 0.7600 | 0.8000 (+0.0400) |
-| mrr_at_10 | 0.4678 | 0.3999 (-0.0679) |
+| hit_at_5 | 0.6400 | 0.6250 (-0.0150) |
+| hit_at_10 | 0.7600 | 0.7950 (+0.0350) |
+| mrr_at_10 | 0.4678 | 0.4016 (-0.0661) |
 
 Queries with fewer than 10 hits: dense 0, hybrid 0.
 
@@ -32,13 +32,13 @@ Hybrid settings: hybrid match any, keyword weight 0.25.
 | Mode | recall_at_30 | recall_at_50 | recall_at_100 |
 |---|---|---|---|
 | dense | 0.8908 | 0.9458 | 0.9775 |
-| hybrid | 0.9158 (+0.0250) | 0.9508 (+0.0050) | 0.9825 (+0.0050) |
+| hybrid | 0.9008 (+0.0100) | 0.9458 (+0.0000) | 0.9775 (+0.0000) |
 
 ## Paired differences (per query, bootstrap 95% interval)
 
 | Mode | Reference | nDCG@10 | recall@5 | candidate recall@30 |
 |---|---|---|---|---|
-| hybrid | dense | -0.0439 [-0.0891, +0.0011] | -0.0292 [-0.0883, +0.0308] | +0.0250 [+0.0000, +0.0550] |
+| hybrid | dense | -0.0435 [-0.0887, +0.0018] | -0.0217 [-0.0817, +0.0383] | +0.0100 [-0.0125, +0.0350] |
 
 ## Raw union (dense top K plus keyword top K: up to 2K documents, not a same-budget comparison)
 
@@ -52,12 +52,12 @@ Hybrid settings: hybrid match any, keyword weight 0.25.
 
 | Mode | Concurrency | QPS | p50 ms | p95 ms | p99 ms |
 |---|---|---|---|---|---|
-| dense | 1 | 457.5 | 2.116 | 2.674 | 3.11 |
-| dense | 4 | 1146.1 | 3.246 | 5.044 | 5.322 |
-| dense | 8 | 2111.3 | 3.41 | 5.303 | 6.06 |
-| hybrid | 1 | 20.1 | 49.095 | 71.287 | 92.841 |
-| hybrid | 4 | 67.7 | 50.97 | 75.084 | 98.765 |
-| hybrid | 8 | 121.9 | 55.295 | 83.224 | 103.238 |
+| dense | 1 | 497.9 | 1.964 | 2.48 | 2.853 |
+| dense | 4 | 1209.1 | 3.057 | 4.497 | 5.467 |
+| dense | 8 | 2158.4 | 3.447 | 5.061 | 5.432 |
+| hybrid | 1 | 34.5 | 28.42 | 53.581 | 73.249 |
+| hybrid | 4 | 99.2 | 32.345 | 60.776 | 80.231 |
+| hybrid | 8 | 171.6 | 36.246 | 71.188 | 90.262 |
 
 Query embedding (one client, from cache): p50 492 ms, p95 536 ms, p99 822 ms; 200 calls, 2695 tokens.
 
@@ -70,11 +70,11 @@ Query embedding (one client, from cache): p50 492 ms, p95 536 ms, p99 822 ms; 20
 ## Resources
 
 - Storage: table 68935680 bytes, indexes 56066048 bytes, total 125001728 bytes
-- Container memory: max 164.5 MiB over 13 samples (agvector-multistore-postgres-1)
+- Container memory: max 165.6 MiB over 11 samples (agvector-multistore-postgres-1)
 - Infrastructure: PHP 8.4.23, Darwin 24.6.0
 
 ## Cost
 
 - No price given (`--price-per-1m-tokens`).
 
-Runtime: 90.0 s for the whole run.
+Runtime: 59.8 s for the whole run.
