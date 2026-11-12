@@ -5,22 +5,23 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Stores;
 
 use AgenticGraph\Vector\Concerns\InteractsWithBuilder;
-use AgenticGraph\Vector\Contracts\AliasStoreContract;
 use AgenticGraph\Vector\Contracts\IndexStoreContract;
+use AgenticGraph\Vector\Contracts\MigrationStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
-use AgenticGraph\Vector\Enums\PgVectorMetric;
+use AgenticGraph\Vector\Enums\FieldType;
+use AgenticGraph\Vector\Enums\Metric;
 use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
 use AgenticGraph\Vector\Exceptions\VectorConnectionException;
 use AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException;
 use AgenticGraph\Vector\Exceptions\VectorDuplicateDocumentException;
-use AgenticGraph\Vector\Exceptions\VectorException;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorCollectionRegistry;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorExtensionGuard;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorFilterTranslator;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorIndex;
+use AgenticGraph\Vector\Stores\PgVector\PgVectorMetricSql;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorSearchOptions;
 use AgenticGraph\Vector\Stores\PgVector\PgVectorVectorFormatter;
 use AgenticGraph\Vector\Support\MetadataValidator;
@@ -39,11 +40,22 @@ use AgenticGraph\Vector\ValueObjects\StoreCapabilities;
 use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
 use Illuminate\Database\Connection;
 use Illuminate\Database\DatabaseManager;
+use Illuminate\Database\LostConnectionException;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
-use Throwable;
+use PDOException;
 
-final class PgVectorStore implements AliasStoreContract, IndexStoreContract, VectorStoreContract
+/**
+ * The pgvector driver: one table per collection, a registry table for collections, aliases and migrations.
+ *
+ * Store-defined settings on pgvector:
+ * - CollectionDefinition::$index and $indexOptions: see PgVectorIndex (hnsw or ivfflat).
+ * - CollectionDefinition::$languages: metadata value => Postgres text search configuration, which must exist on the
+ *   search path; any other value uses `simple`.
+ * - SearchQuery::$options (Builder::options()): see PgVectorSearchOptions.
+ * - Ids are TEXT; listIds() and the migration cursor go in byte order of the id.
+ */
+final class PgVectorStore implements IndexStoreContract, MigrationStoreContract, VectorStoreContract
 {
     use InteractsWithBuilder;
 
@@ -70,6 +82,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
         ?PgVectorCollectionRegistry $registry = null,
         ?PgVectorFilterTranslator $filterTranslator = null,
         ?PgVectorExtensionGuard $extensionGuard = null,
+        private readonly string $name = 'pgvector',
     ) {
         $this->registry = $registry ?? new PgVectorCollectionRegistry(
             $this->connection(),
@@ -114,6 +127,11 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
             StoreCapability::Aliases,
             StoreCapability::QueuedIngest,
             StoreCapability::RebuildIndex,
+            StoreCapability::KeywordWebsearch,
+            StoreCapability::KeywordLanguages,
+            StoreCapability::AtomicBatches,
+            StoreCapability::Migrations,
+            StoreCapability::UndeclaredFilters,
         );
     }
 
@@ -121,12 +139,13 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
      * The candidates come from the index in distance order (relaxed with an iterative scan), then are sorted by
      * distance and id.
      *
-     * @param  array{metric: PgVectorMetric, storage_identifier: string}  $collection
+     * @param  array{metric: Metric, storage_identifier: string}  $collection
      */
     private function denseSearch(SearchQuery $query, array $collection): SearchResult
     {
         $metric = $collection['metric'];
-        $distance = "embedding {$metric->distanceOperator()} ?::vector";
+        $distance = 'embedding '.PgVectorMetricSql::distanceOperator($metric).' ?::vector';
+        $score = PgVectorMetricSql::scoreSqlExpression($metric, 'distance');
         $vector = PgVectorVectorFormatter::format($query->vector);
         $filter = $this->filterTranslator->translate($query->filter);
         $bindings = [$vector, ...$filter['bindings']];
@@ -144,13 +163,13 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
                 SELECT id, content, metadata, {$distance} AS distance FROM {$this->storage($collection)}
                 WHERE {$filter['sql']}{$minScore} ORDER BY {$distance} LIMIT ?
              )
-             SELECT id, content, metadata, {$metric->scoreSqlExpression('distance')} AS score FROM candidates ORDER BY distance, id COLLATE \"C\"",
+             SELECT id, content, metadata, {$score} AS score FROM candidates ORDER BY distance, id COLLATE \"C\"",
             $bindings,
         );
 
         $hits = array_map(
             fn (object $row): SearchHit => new SearchHit(
-                id: $row->id,
+                id: (string) $row->id,
                 score: (float) $row->score,
                 content: (string) $row->content,
                 metadata: $this->decodeMetadata($row->metadata),
@@ -165,7 +184,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
      * One statement: up to max(depth, topK) dense and keyword candidates under the same filter, with the
      * vector distance of every candidate. Fusion, minScore and topK follow in PHP.
      *
-     * @param  array{name: string, metric: PgVectorMetric, storage_identifier: string, keyword: array{languages: array<string, string>, language_field: string}|null}  $collection
+     * @param  array{name: string, metric: Metric, storage_identifier: string, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>}  $collection
      */
     private function hybridSearch(SearchQuery $query, array $collection): SearchResult
     {
@@ -177,7 +196,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
         $metric = $collection['metric'];
         $storage = $this->storage($collection);
-        $distance = "embedding {$metric->distanceOperator()} ?::vector";
+        $distance = 'embedding '.PgVectorMetricSql::distanceOperator($metric).' ?::vector';
         $vector = PgVectorVectorFormatter::format($query->vector);
         $filter = $this->filterTranslator->translate($query->filter);
         $limit = max($query->depth, $query->topK);
@@ -241,7 +260,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
             $score = $metric->distanceToSimilarity((float) $row->distance);
             $hits[] = new SearchHit(
-                id: $row->id,
+                id: (string) $row->id,
                 score: $score,
                 content: (string) $row->content,
                 metadata: $this->decodeMetadata($row->metadata),
@@ -276,7 +295,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
             $hits = array_map(
                 fn (object $row): SearchHit => new SearchHit(
-                    id: $row->id,
+                    id: (string) $row->id,
                     score: 1.0,
                     content: (string) $row->content,
                     metadata: $this->decodeMetadata($row->metadata),
@@ -393,10 +412,13 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
             $requested = array_map(strval(...), array_keys($metadataById));
             $updated = [];
+            $filterable = $this->registry->resolve($collection)['filterable'];
 
             $rows = [];
             foreach ($metadataById as $id => $metadata) {
-                $rows[] = [(string) $id, json_encode((object) $this->metadataValidator->normalize($metadata), JSON_THROW_ON_ERROR)];
+                $metadata = $this->metadataValidator->normalize($metadata);
+                CollectionDefinition::assertDeclaredTypes($filterable, $metadata, $id);
+                $rows[] = [(string) $id, json_encode((object) $metadata, JSON_THROW_ON_ERROR)];
             }
 
             // Rows written by older builds may hold empty metadata as a JSON array; || on an array would append.
@@ -429,15 +451,12 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
         });
     }
 
+    /**
+     * This store's `batch_size`, else `vector.batch.size`.
+     */
     public function batchSize(): int
     {
-        $storeOverride = config('vector.stores.pgvector.batch_size');
-
-        if ($storeOverride !== null) {
-            return (int) $storeOverride;
-        }
-
-        return (int) ($this->config['batch_size'] ?? config('vector.batch.size', 100));
+        return max(1, (int) ($this->config['batch_size'] ?? config('vector.batch.size', 100)));
     }
 
     public function createCollection(CollectionDefinition $definition): void
@@ -447,8 +466,9 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
             $index = PgVectorIndex::fromDefinition($definition, $this->indexType(), $this->configuredIvfflatLists());
             $dimensions = $definition->dimensions ?? $this->embeddings->using($definition->embeddings)->dimensions();
-            $metric = PgVectorMetric::fromString($this->resolveCollectionMetric($definition));
+            $metric = $this->resolveCollectionMetric($definition);
             $keyword = $definition->keywordSettings();
+            $filterable = $definition->filterableFields();
 
             if ($dimensions < 1) {
                 throw new VectorQueryException("Collection [{$definition->name}] dimensions must be at least 1.");
@@ -462,7 +482,8 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
                     && $existing['metric'] === $metric
                     && ($existingIndex === null || $existingIndex->equals($index))
                     && ($definition->embeddings === null || $definition->embeddings === ($existing['embedding']['provider'] ?? null))
-                    && ($definition->keyword === null || $keyword === $existing['keyword'])) {
+                    && ($definition->keyword === null || $keyword === $existing['keyword'])
+                    && ($definition->filterable === null || $filterable === $existing['filterable'])) {
                     return;
                 }
 
@@ -477,8 +498,8 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
             $embedding = $this->embeddings->record($definition->embeddings, $dimensions);
 
-            $this->connection()->transaction(function () use ($definition, $dimensions, $metric, $index, $embedding, $keyword): void {
-                $storageIdentifier = $this->registry->register($definition, $dimensions, $metric, $index->toArray(), $embedding, $keyword);
+            $this->connection()->transaction(function () use ($definition, $dimensions, $metric, $index, $embedding, $keyword, $filterable): void {
+                $storageIdentifier = $this->registry->register($definition, $dimensions, $metric, $index->toArray(), $embedding, $keyword, $filterable);
                 $this->createStorage($storageIdentifier, $dimensions, $metric, $index, $keyword);
             });
         });
@@ -536,6 +557,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
                 'index' => $this->existingIndex($this->registry->qualifiedStorageName($resolved['storage_identifier']), $resolved['index_options'])?->toArray(),
                 'embedding' => $resolved['embedding'],
                 'keyword' => $resolved['keyword'],
+                'filterable' => array_map(static fn (FieldType $type): string => $type->value, $resolved['filterable']),
             ];
         });
     }
@@ -773,7 +795,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
      * Embed source rows with the target's recorded provider and upsert them into the target.
      *
      * @param  array<int, object>  $rows  id, content, metadata
-     * @param  array{name: string, dimensions: int, storage_identifier: string, embedding: array{provider: string, model: string, dimensions: int}|null}  $target
+     * @param  array{name: string, dimensions: int, storage_identifier: string, embedding: array{provider: string, model: string, dimensions: int}|null, filterable: array<string, FieldType>}  $target
      */
     private function reembedRows(array $rows, array $target): void
     {
@@ -792,6 +814,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
             dimensions: $target['dimensions'],
             collection: $target['name'],
             globalMetadata: [],
+            filterable: $target['filterable'],
         );
     }
 
@@ -803,7 +826,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
      * collection switched it before the lock; only then is the new target resolved under the alias lock. The
      * alias lock is never requested while holding a table its final pass waits on (it locks alias, then table).
      *
-     * @return array{name: string, dimensions: int, metric: PgVectorMetric, storage_identifier: string, index_options: array{type?: string, options?: array<string, int>}|null, embedding: array{provider: string, model: string, dimensions: int}|null, keyword: array{languages: array<string, string>, language_field: string}|null}
+     * @return array{name: string, dimensions: int, metric: Metric, storage_identifier: string, index_options: array{type?: string, options?: array<string, int>}|null, embedding: array{provider: string, model: string, dimensions: int}|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>}
      */
     private function resolveForWrite(string $collection): array
     {
@@ -833,7 +856,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
     /**
      * @param  array{languages: array<string, string>, language_field: string}|null  $keyword
      */
-    private function createStorage(string $storageIdentifier, int $dimensions, PgVectorMetric $metric, PgVectorIndex $index, ?array $keyword = null): void
+    private function createStorage(string $storageIdentifier, int $dimensions, Metric $metric, PgVectorIndex $index, ?array $keyword = null): void
     {
         $storage = $this->registry->qualifiedStorageName($storageIdentifier);
         $keywords = '';
@@ -853,7 +876,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
             )",
         );
 
-        $this->connection()->statement($index->createSql($storage, $metric->indexOps()));
+        $this->connection()->statement($index->createSql($storage, PgVectorMetricSql::indexOps($metric)));
 
         if ($keyword !== null) {
             $this->connection()->statement("CREATE INDEX {$storage}_keyword_idx ON {$storage} USING gin (keywords)");
@@ -973,6 +996,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
                             dimensions: $resolved['dimensions'],
                             collection: $collection,
                             globalMetadata: $globalMetadata,
+                            filterable: $resolved['filterable'],
                         );
 
                         return;
@@ -983,6 +1007,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
                         documents: $embedded,
                         dimensions: $resolved['dimensions'],
                         collection: $collection,
+                        filterable: $resolved['filterable'],
                     );
                 });
 
@@ -1008,12 +1033,14 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
     /**
      * @param  list<Document>  $documents
+     * @param  array<string, FieldType>  $filterable
      */
     private function bulkInsertDocuments(
         string $storage,
         array $documents,
         int $dimensions,
         string $collection,
+        array $filterable,
     ): void {
         if ($documents === []) {
             return;
@@ -1024,6 +1051,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
         foreach ($documents as $document) {
             $metadata = $this->metadataValidator->normalize($document->metadata);
+            CollectionDefinition::assertDeclaredTypes($filterable, $metadata, $document->id);
             $vector = $this->requireVector($document, $dimensions, $collection);
 
             $placeholders[] = '(?, ?, ?::vector, ?::jsonb)';
@@ -1053,6 +1081,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
     /**
      * @param  list<Document>  $documents
      * @param  array<string, mixed>  $globalMetadata
+     * @param  array<string, FieldType>  $filterable
      */
     private function bulkUpsertDocuments(
         string $storage,
@@ -1060,6 +1089,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
         int $dimensions,
         string $collection,
         array $globalMetadata,
+        array $filterable,
     ): void {
         if ($documents === []) {
             return;
@@ -1070,6 +1100,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
 
         foreach ($documents as $document) {
             $metadata = $this->metadataValidator->normalize(array_merge($globalMetadata, $document->metadata));
+            CollectionDefinition::assertDeclaredTypes($filterable, $metadata, $document->id);
             $vector = $this->requireVector($document, $dimensions, $collection);
 
             $placeholders[] = '(?, ?, ?::vector, ?::jsonb)';
@@ -1229,13 +1260,16 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
         return $name;
     }
 
-    private function resolveCollectionMetric(CollectionDefinition $definition): string
+    /**
+     * pgvector serves every Metric; any other name is refused.
+     */
+    private function resolveCollectionMetric(CollectionDefinition $definition): Metric
     {
-        if ($definition->metric !== null) {
-            return $definition->metric;
-        }
+        $name = $definition->metric ?? (string) ($this->config['metric'] ?? 'cosine');
 
-        return (string) ($this->config['metric'] ?? 'cosine');
+        return Metric::tryFrom($name) ?? throw new VectorQueryException(
+            "Metric [{$name}] is not supported by vector store [{$this->name}] (pgvector). Use one of: cosine, l2, inner_product.",
+        );
     }
 
     private function indexType(): string
@@ -1250,7 +1284,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
      * session advisory lock per table makes a second rebuild refuse; a temporary index a killed rebuild left
      * behind is dropped first, and a failed build drops its own. CONCURRENTLY cannot run inside a transaction.
      *
-     * @param  array{name: string, storage_identifier: string, metric: PgVectorMetric, index_options: array{type?: string, options?: array<string, int>}|null}  $resolved
+     * @param  array{name: string, storage_identifier: string, metric: Metric, index_options: array{type?: string, options?: array<string, int>}|null}  $resolved
      */
     private function rebuildEmbeddingIndex(array $resolved): void
     {
@@ -1276,7 +1310,7 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
             $connection->statement("DROP INDEX CONCURRENTLY IF EXISTS {$temporary}");
 
             try {
-                $connection->statement($index->createSql($storage, $resolved['metric']->indexOps(), $rowCount, concurrently: true, name: $temporary));
+                $connection->statement($index->createSql($storage, PgVectorMetricSql::indexOps($resolved['metric']), $rowCount, concurrently: true, name: $temporary));
             } catch (QueryException $exception) {
                 // A failed CONCURRENTLY build leaves an invalid index behind that every write would still maintain.
                 $connection->statement("DROP INDEX CONCURRENTLY IF EXISTS {$temporary}");
@@ -1306,6 +1340,9 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
     }
 
     /**
+     * Database errors (connection and query) become VectorConnectionException naming this store. Anything else,
+     * a programming error included, passes through unchanged.
+     *
      * @template TReturn
      *
      * @param  callable(): TReturn  $callback
@@ -1315,11 +1352,9 @@ final class PgVectorStore implements AliasStoreContract, IndexStoreContract, Vec
     {
         try {
             return $callback();
-        } catch (VectorException $exception) {
-            throw $exception;
-        } catch (Throwable $exception) {
+        } catch (PDOException|LostConnectionException $exception) {
             throw new VectorConnectionException(
-                'Unable to reach the pgvector store: '.$exception->getMessage(),
+                "Vector store [{$this->name}] (pgvector) failed: ".$exception->getMessage(),
                 previous: $exception,
             );
         }

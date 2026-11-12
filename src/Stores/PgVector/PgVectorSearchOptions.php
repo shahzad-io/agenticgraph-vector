@@ -8,7 +8,8 @@ use AgenticGraph\Vector\Exceptions\VectorQueryException;
 use Illuminate\Database\Connection;
 
 /**
- * pgvector session tuning knobs passed via SearchQuery::$options, applied with SET LOCAL.
+ * pgvector session tuning knobs passed via SearchQuery::$options (Builder::options()), applied with SET LOCAL.
+ * An unknown key or a wrong value throws VectorQueryException.
  *
  * Supported keys:
  * - hnsw.ef_search (int): HNSW recall/latency tradeoff

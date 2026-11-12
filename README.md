@@ -16,7 +16,7 @@ Laravel-native **vector retrieval**: store documents, embed text, run similarity
 
 - PHP 8.3+
 - Laravel 12.61.1+ or 13.12+
-- PostgreSQL with the [pgvector](https://github.com/pgvector/pgvector) extension (typically a **separate** connection from your primary database)
+- A vector store. Drivers: `pgvector` (PostgreSQL with the [pgvector](https://github.com/pgvector/pgvector) extension, typically a **separate** connection from your primary database) and `memory` (in-process, for tests). Every store follows one contract, checked by the shipped `StoreConformanceTests`; a feature a store lacks is a capability it does not declare.
 
 ## Compatibility
 
@@ -34,7 +34,7 @@ The three packages are released together:
 composer require agenticgraph/vector
 ```
 
-Define a pgvector connection in `config/database.php`, then set:
+With the pgvector driver, define a pgvector connection in `config/database.php`, then set:
 
 ```env
 VECTOR_DB_CONNECTION=pgvector
@@ -88,6 +88,8 @@ $results = Vector::store('pgvector')
 $results->first()?->id;        // 'doc-1'
 $results->toContext();         // concatenated content for your LLM layer
 ```
+
+Scores follow the collection's metric in every store: `cosine` gives the cosine similarity (-1 to 1), `l2` gives `1 / (1 + distance)` (above 0, up to 1), `inner_product` gives the dot product. Declare the metadata fields you filter on with `filterable` (`FieldType`), and every store filters them alike.
 
 ## Optional AgenticGraph integration
 

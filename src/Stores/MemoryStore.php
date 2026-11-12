@@ -5,10 +5,11 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector\Stores;
 
 use AgenticGraph\Vector\Concerns\InteractsWithBuilder;
-use AgenticGraph\Vector\Contracts\AliasStoreContract;
+use AgenticGraph\Vector\Contracts\MigrationStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
-use AgenticGraph\Vector\Enums\PgVectorMetric;
+use AgenticGraph\Vector\Enums\FieldType;
+use AgenticGraph\Vector\Enums\Metric;
 use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
 use AgenticGraph\Vector\Exceptions\VectorDimensionMismatchException;
@@ -36,13 +37,13 @@ use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
  * for the life of the store instance (one process). For app tests without Postgres. Index options
  * in a CollectionDefinition are accepted and ignored. Aliases and migrations follow pgvector's rules;
  * there are no concurrent writers, so nothing locks. Keyword search uses `simple` semantics for every document
- * (MemoryKeywordMatcher); the language map is recorded, not applied.
+ * (MemoryKeywordMatcher); the language map is recorded, not applied, so it has no KeywordLanguages.
  */
-final class MemoryStore implements AliasStoreContract, VectorStoreContract
+final class MemoryStore implements MigrationStoreContract, VectorStoreContract
 {
     use InteractsWithBuilder;
 
-    /** @var array<string, array{dimensions: int, metric: PgVectorMetric, index: array{type: string, options: array<string, int>}|null, embedding: array{provider: string, model: string, dimensions: int}|null, keyword: array{languages: array<string, string>, language_field: string}|null, documents: array<string, array{content: string, metadata: array<string, mixed>, vector: list<float>}>}> */
+    /** @var array<string, array{dimensions: int, metric: Metric, index: array{type: string, options: array<string, scalar>}|null, embedding: array{provider: string, model: string, dimensions: int}|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>, documents: array<string, array{content: string, metadata: array<string, mixed>, vector: list<float>}>}> */
     private array $collections = [];
 
     /** @var array<string, string> alias => collection */
@@ -74,6 +75,10 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
             StoreCapability::FilterRange,
             StoreCapability::Keyword,
             StoreCapability::Aliases,
+            StoreCapability::KeywordWebsearch,
+            StoreCapability::AtomicBatches,
+            StoreCapability::Migrations,
+            StoreCapability::UndeclaredFilters,
         );
         $this->filterMatcher = new MemoryFilterMatcher;
     }
@@ -227,6 +232,7 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
 
         foreach ($metadataById as $id => $metadata) {
             $changes[(string) $id] = $this->storable($this->metadataValidator->normalize($metadata));
+            CollectionDefinition::assertDeclaredTypes($this->collections[$collection]['filterable'], $changes[(string) $id], $id);
         }
 
         $updated = [];
@@ -258,8 +264,12 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
     public function createCollection(CollectionDefinition $definition): void
     {
         $dimensions = $definition->dimensions ?? $this->embeddings->using($definition->embeddings)->dimensions();
-        $metric = PgVectorMetric::fromString($definition->metric ?? (string) ($this->config['metric'] ?? 'cosine'));
+        $metricName = $definition->metric ?? (string) ($this->config['metric'] ?? 'cosine');
+        $metric = Metric::tryFrom($metricName) ?? throw new VectorQueryException(
+            "Metric [{$metricName}] is not supported by the memory store. Use one of: cosine, l2, inner_product.",
+        );
         $keyword = $definition->keywordSettings();
+        $filterable = $definition->filterableFields();
 
         if ($dimensions < 1) {
             throw new VectorQueryException("Collection [{$definition->name}] dimensions must be at least 1.");
@@ -271,7 +281,8 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
             if ($existing['dimensions'] === $dimensions
                 && $existing['metric'] === $metric
                 && ($definition->embeddings === null || $definition->embeddings === ($existing['embedding']['provider'] ?? null))
-                && ($definition->keyword === null || $keyword === $existing['keyword'])) {
+                && ($definition->keyword === null || $keyword === $existing['keyword'])
+                && ($definition->filterable === null || $filterable === $existing['filterable'])) {
                 return;
             }
 
@@ -286,6 +297,7 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
             'index' => $definition->index !== null ? ['type' => $definition->index, 'options' => $definition->indexOptions] : null,
             'embedding' => $this->embeddings->record($definition->embeddings, $dimensions),
             'keyword' => $keyword,
+            'filterable' => $filterable,
             'documents' => [],
         ];
     }
@@ -336,6 +348,7 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
             'index' => $resolved['index'],
             'embedding' => $resolved['embedding'],
             'keyword' => $resolved['keyword'],
+            'filterable' => array_map(static fn (FieldType $type): string => $type->value, $resolved['filterable']),
         ];
     }
 
@@ -573,9 +586,12 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
                     throw VectorDuplicateDocumentException::forId($name, $id);
                 }
 
+                $metadata = $this->storable($metadata);
+                CollectionDefinition::assertDeclaredTypes($resolved['filterable'], $metadata, $document->id);
+
                 $rows[$id] = [
                     'content' => $document->content,
-                    'metadata' => $this->storable($metadata),
+                    'metadata' => $metadata,
                     'vector' => array_map(floatval(...), $vector),
                 ];
             }
@@ -627,7 +643,7 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
     }
 
     /**
-     * @param  array{dimensions: int, metric: PgVectorMetric, embedding: array{provider: string, model: string, dimensions: int}|null, documents: array<string, array{content: string, metadata: array<string, mixed>, vector: list<float>}>}  $collection
+     * @param  array{dimensions: int, metric: Metric, embedding: array{provider: string, model: string, dimensions: int}|null, documents: array<string, array{content: string, metadata: array<string, mixed>, vector: list<float>}>}  $collection
      * @param  array{vector: float, keyword: float|null, fused: float}|null  $scores
      */
     private function hit(array $collection, string $id, float $score, ?array $scores = null): SearchHit
@@ -643,7 +659,7 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
      * @param  list<float>  $a
      * @param  list<float>  $b
      */
-    private function distance(PgVectorMetric $metric, array $a, array $b): float
+    private function distance(Metric $metric, array $a, array $b): float
     {
         $dot = 0.0;
         $normA = 0.0;
@@ -658,14 +674,14 @@ final class MemoryStore implements AliasStoreContract, VectorStoreContract
         }
 
         return match ($metric) {
-            PgVectorMetric::Cosine => $normA > 0.0 && $normB > 0.0 ? 1.0 - $dot / (sqrt($normA) * sqrt($normB)) : 1.0,
-            PgVectorMetric::L2 => sqrt($squared),
-            PgVectorMetric::InnerProduct => -$dot,
+            Metric::Cosine => $normA > 0.0 && $normB > 0.0 ? 1.0 - $dot / (sqrt($normA) * sqrt($normB)) : 1.0,
+            Metric::L2 => sqrt($squared),
+            Metric::InnerProduct => -$dot,
         };
     }
 
     /**
-     * @return array{dimensions: int, metric: PgVectorMetric, index: array{type: string, options: array<string, int>}|null, embedding: array{provider: string, model: string, dimensions: int}|null, keyword: array{languages: array<string, string>, language_field: string}|null, documents: array<string, array{content: string, metadata: array<string, mixed>, vector: list<float>}>}
+     * @return array{dimensions: int, metric: Metric, index: array{type: string, options: array<string, scalar>}|null, embedding: array{provider: string, model: string, dimensions: int}|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>, documents: array<string, array{content: string, metadata: array<string, mixed>, vector: list<float>}>}
      */
     private function resolve(string $collection): array
     {

@@ -7,20 +7,27 @@ namespace AgenticGraph\Vector\ValueObjects;
 /**
  * Transport-neutral search intent compiled by the Builder and consumed by stores.
  *
+ * Score contract (the collection's Metric):
+ *
+ * | Metric        | Score               | Range            |
+ * |---------------|---------------------|------------------|
+ * | cosine        | cosine similarity   | -1 to 1          |
+ * | l2            | 1 / (1 + distance)  | above 0, up to 1 |
+ * | inner_product | the dot product     | unbounded        |
+ *
+ * `$minScore` keeps hits whose vector score is >= the value, in dense and in hybrid search. On l2 a value at or
+ * below 0 counts as 0.0001.
+ *
  * The `$options` array is reserved STRICTLY for store-specific implementation details
  * (tuning knobs only one store understands). First-class cross-store capabilities MUST
  * become explicit typed fields on this object, NOT `$options` keys.
  *
- * pgvector supported keys (see PgVectorSearchOptions):
- * - hnsw.ef_search (int): HNSW recall vs latency
- * - hnsw.iterative_scan (off, relaxed_order, strict_order): keep scanning HNSW until a filtered search has topK hits
- * - hnsw.max_scan_tuples (int): the most rows an iterative scan visits
- * - ivfflat.probes (int): IVFFlat recall vs latency
+ * The keys a store accepts, and how it validates them, are documented on each driver.
  *
  * A non-null `$keywords` makes it a hybrid search (capability Keyword): up to max(depth, topK) vector and
  * keyword candidates each, fused by reciprocal rank fusion with `$fusionK`. `$keywordMatch` is how the keywords
  * match: `any` (documents with any of the query's words, ranked by how many and how close) or `websearch`
- * (every word, "quoted phrases", -excluded words, or). `$keywordWeight` multiplies the keyword side's fusion term
+ * (capability KeywordWebsearch: every word, "quoted phrases", -excluded words, or). `$keywordWeight` multiplies the keyword side's fusion term
  * (dense weight 1); at 0 the hits are the dense results.
  */
 final readonly class SearchQuery

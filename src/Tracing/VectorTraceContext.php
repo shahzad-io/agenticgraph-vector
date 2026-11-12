@@ -9,6 +9,8 @@ use AgenticGraph\Vector\ValueObjects\SearchQuery;
 
 final readonly class VectorTraceContext
 {
+    public const UNNAMED_STORE = 'unnamed';
+
     public function __construct(
         public string $store,
         public string $collection,
@@ -53,9 +55,12 @@ final readonly class VectorTraceContext
         );
     }
 
+    /**
+     * A span with no named store (a store used without Vector::store()) says so instead of guessing `vector.default`.
+     */
     private static function defaultStore(): string
     {
-        return (string) config('vector.default', 'pgvector');
+        return self::UNNAMED_STORE;
     }
 
     private static function filterCount(?NormalizedFilter $filter): int

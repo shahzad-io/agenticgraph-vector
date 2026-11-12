@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector\Stores\PgVector;
 
-use AgenticGraph\Vector\Enums\PgVectorMetric;
+use AgenticGraph\Vector\Enums\FieldType;
+use AgenticGraph\Vector\Enums\Metric;
 use AgenticGraph\Vector\Exceptions\VectorCollectionNotFoundException;
 use AgenticGraph\Vector\Exceptions\VectorInvalidFilterException;
 use AgenticGraph\Vector\Exceptions\VectorQueryException;
@@ -26,7 +27,7 @@ final class PgVectorCollectionRegistry
 
     /**
      * Create the registry, alias and migration tables, or add the columns an older registry lacks
-     * (`index_options`, `embedding`, `keyword`).
+     * (`index_options`, `embedding`, `keyword`, `filterable`).
      */
     public function ensureRegistryTable(): void
     {
@@ -42,11 +43,12 @@ final class PgVectorCollectionRegistry
                     index_options JSONB NULL,
                     embedding JSONB NULL,
                     keyword JSONB NULL,
+                    filterable JSONB NULL,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )",
             );
         } else {
-            foreach (['index_options', 'embedding', 'keyword'] as $column) {
+            foreach (['index_options', 'embedding', 'keyword', 'filterable'] as $column) {
                 if (! $schema->hasColumn($this->registryTable, $column)) {
                     $this->connection->statement("ALTER TABLE {$this->registryTable} ADD COLUMN IF NOT EXISTS {$column} JSONB NULL");
                 }
@@ -92,7 +94,7 @@ final class PgVectorCollectionRegistry
     {
         $schema = Schema::connection($this->connection->getName());
 
-        return $schema->hasColumns($this->registryTable, ['index_options', 'embedding', 'keyword'])
+        return $schema->hasColumns($this->registryTable, ['index_options', 'embedding', 'keyword', 'filterable'])
             && $schema->hasTable($this->aliasTable())
             && $schema->hasTable($this->migrationTable());
     }
@@ -101,8 +103,9 @@ final class PgVectorCollectionRegistry
      * @param  array<string, mixed>  $indexOptions  the requested index (PgVectorIndex::toArray())
      * @param  array{provider: string, model: string, dimensions: int}|null  $embedding
      * @param  array{languages: array<string, string>, language_field: string}|null  $keyword
+     * @param  array<string, FieldType>  $filterable
      */
-    public function register(CollectionDefinition $definition, int $dimensions, PgVectorMetric $metric, array $indexOptions = [], ?array $embedding = null, ?array $keyword = null): string
+    public function register(CollectionDefinition $definition, int $dimensions, Metric $metric, array $indexOptions = [], ?array $embedding = null, ?array $keyword = null, array $filterable = []): string
     {
         $this->assertValidCollectionName($definition->name);
 
@@ -112,13 +115,15 @@ final class PgVectorCollectionRegistry
 
         $storageIdentifier = $this->storageIdentifier($definition->name);
 
-        // An adopted collection keeps the identifier of its old name, which may be this name.
-        if ($this->connection->scalar("SELECT COUNT(*) FROM {$this->registryTable} WHERE storage_identifier = ?", [$storageIdentifier])) {
+        // An adopted collection keeps the identifier of its old name, which may be this name; another registry on
+        // the same connection (a second pgvector store) may already hold a table of this name.
+        if ($this->connection->scalar("SELECT COUNT(*) FROM {$this->registryTable} WHERE storage_identifier = ?", [$storageIdentifier])
+            || $this->connection->scalar('SELECT to_regclass(?) IS NOT NULL', [$storageIdentifier])) {
             $storageIdentifier = 'vcol_'.bin2hex(random_bytes(16));
         }
 
         $this->connection->insert(
-            "INSERT INTO {$this->registryTable} (name, dimensions, metric, storage_identifier, index_options, embedding, keyword) VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?::jsonb)",
+            "INSERT INTO {$this->registryTable} (name, dimensions, metric, storage_identifier, index_options, embedding, keyword, filterable) VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb)",
             [
                 $definition->name,
                 $dimensions,
@@ -127,6 +132,7 @@ final class PgVectorCollectionRegistry
                 $indexOptions === [] ? null : json_encode($indexOptions, JSON_THROW_ON_ERROR),
                 $embedding === null ? null : json_encode($embedding, JSON_THROW_ON_ERROR),
                 $keyword === null ? null : json_encode($keyword, JSON_THROW_ON_ERROR),
+                $filterable === [] ? null : json_encode(array_map(static fn (FieldType $type): string => $type->value, $filterable), JSON_THROW_ON_ERROR),
             ],
         );
 
@@ -260,16 +266,16 @@ final class PgVectorCollectionRegistry
      * Resolve a collection or alias in one query. $forWrite locks the alias row (FOR SHARE) until the
      * caller's transaction ends, so a switch waits for the write and later writes see the new target.
      *
-     * @return array{name: string, dimensions: int, metric: PgVectorMetric, storage_identifier: string, index_options: array{type?: string, options?: array<string, int>}|null, embedding: array{provider: string, model: string, dimensions: int}|null, keyword: array{languages: array<string, string>, language_field: string}|null}
+     * @return array{name: string, dimensions: int, metric: Metric, storage_identifier: string, index_options: array{type?: string, options?: array<string, int>}|null, embedding: array{provider: string, model: string, dimensions: int}|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>}
      */
     public function resolve(string $collection, bool $forWrite = false): array
     {
         $this->assertValidCollectionName($collection);
         $lock = $forWrite ? ' FOR SHARE' : '';
 
-        /** @var object{name: string, dimensions: int|string, metric: string, storage_identifier: string, index_options: string|null, embedding: string|null, keyword: string|null}|null $row */
+        /** @var object{name: string, dimensions: int|string, metric: string, storage_identifier: string, index_options: string|null, embedding: string|null, keyword: string|null, filterable: string|null}|null $row */
         $row = $this->connection->selectOne(
-            "SELECT name, dimensions, metric, storage_identifier, index_options, embedding, keyword FROM {$this->registryTable}
+            "SELECT name, dimensions, metric, storage_identifier, index_options, embedding, keyword, filterable FROM {$this->registryTable}
              WHERE name = COALESCE((SELECT collection FROM {$this->aliasTable()} WHERE alias = ?{$lock}), ?)",
             [$collection, $collection],
         );
@@ -281,12 +287,28 @@ final class PgVectorCollectionRegistry
         return [
             'name' => $row->name,
             'dimensions' => (int) $row->dimensions,
-            'metric' => PgVectorMetric::fromString($row->metric),
+            'metric' => Metric::tryFrom($row->metric) ?? Metric::Cosine,
             'storage_identifier' => $row->storage_identifier,
             'index_options' => $row->index_options !== null ? json_decode($row->index_options, true, flags: JSON_THROW_ON_ERROR) : null,
             'embedding' => $this->decodeEmbedding($row->embedding),
             'keyword' => $this->decodeKeyword($row->keyword),
+            'filterable' => $this->decodeFilterable($row->filterable),
         ];
+    }
+
+    /**
+     * JSONB reorders keys; return the declared fields sorted by name. A type this build does not know is skipped.
+     *
+     * @return array<string, FieldType>
+     */
+    private function decodeFilterable(?string $json): array
+    {
+        /** @var array<string, string> $stored */
+        $stored = $json === null ? [] : json_decode($json, true, flags: JSON_THROW_ON_ERROR);
+        $fields = array_filter(array_map(FieldType::tryFrom(...), $stored));
+        ksort($fields, SORT_STRING);
+
+        return $fields;
     }
 
     /**

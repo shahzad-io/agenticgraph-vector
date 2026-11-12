@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector;
 
 use AgenticGraph\Vector\Concerns\KeepsExtensions;
-use AgenticGraph\Vector\Contracts\AliasStoreContract;
 use AgenticGraph\Vector\Contracts\IndexStoreContract;
+use AgenticGraph\Vector\Contracts\MigrationStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
@@ -136,7 +136,7 @@ class VectorManager extends Manager
 
         $store = match (true) {
             isset($this->customCreators[$driverName]) => $this->customCreators[$driverName]($this->container, $config, $name),
-            $driverName === 'pgvector' => $this->createPgvectorStore($config),
+            $driverName === 'pgvector' => $this->createPgvectorStore($config, $name),
             $driverName === 'memory' => $this->createMemoryStore($config),
             default => throw new InvalidArgumentException("Vector store driver [{$driverName}] for store [{$name}] is not supported."),
         };
@@ -148,8 +148,8 @@ class VectorManager extends Manager
     {
         $store = $this->store($name);
 
-        if (! $store instanceof AliasStoreContract || ! $store->capabilities()->supports(StoreCapability::Aliases)) {
-            throw new VectorUnsupportedOperationException("Aliases and migrations are not supported by store [{$name}].");
+        if (! $store instanceof MigrationStoreContract || ! $store->capabilities()->supports(StoreCapability::Migrations)) {
+            throw new VectorUnsupportedOperationException("Migrations are not supported by store [{$name}].");
         }
 
         return new CollectionMigrator($store, $name, $this->container->make(EmbeddingsManager::class));
@@ -158,13 +158,14 @@ class VectorManager extends Manager
     /**
      * @param  array<string, mixed>  $config
      */
-    private function createPgvectorStore(array $config): PgVectorStore
+    private function createPgvectorStore(array $config, string $name): PgVectorStore
     {
         return new PgVectorStore(
             config: $config,
             db: $this->container->make(DatabaseManager::class),
             embeddings: $this->container->make(EmbeddingsManager::class),
             metadataValidator: $this->container->make(MetadataValidator::class),
+            name: $name,
         );
     }
 

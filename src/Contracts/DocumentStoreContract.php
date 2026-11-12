@@ -14,6 +14,9 @@ use AgenticGraph\Vector\ValueObjects\UpdateMetadataResult;
  * Store-level document operations. The collection name is supplied by the fluent
  * Builder (Vector::store()->collection('articles')->insert(...)), not by callers
  * of the golden-path DSL.
+ *
+ * Ids: a store accepts a string or an integer and returns every id as a string. The integer 5 and the
+ * string "5" are the same document.
  */
 interface DocumentStoreContract
 {
@@ -43,7 +46,8 @@ interface DocumentStoreContract
     public function deleteByFilter(string $collection, NormalizedFilter $filter): void;
 
     /**
-     * Ids in a store-defined order, $limit at a time. Pass the returned cursor back for the next page.
+     * Ids in a store-defined order, $limit at a time. Pass the returned cursor back for the next page; the
+     * cursor is opaque. Every id is listed once across the pages.
      */
     public function listIds(string $collection, ?NormalizedFilter $filter = null, ?string $cursor = null, int $limit = 100): IdPage;
 

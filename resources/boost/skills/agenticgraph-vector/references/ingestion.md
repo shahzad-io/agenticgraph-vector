@@ -2,7 +2,7 @@
 
 Docs: `/docs/vector-installation`, `/docs/vector-configuration`, `/docs/vector-guide-batch-ingestion`, `/docs/vector-guide-queued-ingest`, `/docs/vector-limitations`
 
-## A dedicated connection
+## A dedicated connection (pgvector)
 
 ```php
 // config/database.php
@@ -26,7 +26,7 @@ The `VECTOR_PG_HOST` family of names is your app's own env, not package config. 
 
 ## Batch size
 
-Resolution order: `vector.stores.pgvector.batch_size` (published as 100), then `vector.batch.size` (100).
+Resolution order: the store's own `vector.stores.<name>.batch_size` (pgvector published as 100), then `vector.batch.size` (100). Each named store reads only its own entry, so two stores can chunk differently.
 
 ```php
 Vector::store('pgvector')->batchSize();   // effective chunk size
@@ -82,7 +82,7 @@ $results = Vector::store('pgvector')->collection('articles')->usingVector($vecto
 
 ## Runtime config
 
-The managers keep the first resolved store and provider for the rest of the request or queued job (each Octane request and job gets new ones). After changing config at runtime following a vector call in the same request (tests, multi-tenant), reset them:
+The managers cache each store and provider per name, once resolved, for the rest of the request or queued job (each Octane request and job gets new ones). A config change after that does not reach a cached store. After changing config at runtime following a vector call in the same request (tests, multi-tenant), forget the managers:
 
 ```php
 use AgenticGraph\Vector\EmbeddingsManager;

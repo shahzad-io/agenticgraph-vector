@@ -20,4 +20,14 @@ enum StoreCapability: string
     case Aliases = 'aliases';
     case QueuedIngest = 'queued_ingest';
     case RebuildIndex = 'rebuild_index';
+    /** The `websearch` keyword match: -excluded words, or, "quoted phrases". Keyword alone means the `any` match. */
+    case KeywordWebsearch = 'keyword_websearch';
+    /** CollectionDefinition::$languages is applied per document. */
+    case KeywordLanguages = 'keyword_languages';
+    /** A failed chunk of an insert or upsert writes nothing, for every kind of failure. */
+    case AtomicBatches = 'atomic_batches';
+    /** The MigrationStoreContract methods (Vector::migrate()). */
+    case Migrations = 'migrations';
+    /** Filters on metadata fields that CollectionDefinition::$filterable does not declare. */
+    case UndeclaredFilters = 'undeclared_filters';
 }

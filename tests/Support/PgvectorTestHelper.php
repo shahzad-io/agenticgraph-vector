@@ -78,6 +78,7 @@ final class PgvectorTestHelper
 
         $schema = self::schema();
         $pdo->exec('CREATE EXTENSION IF NOT EXISTS unaccent SCHEMA public');
+        $pdo->exec('CREATE EXTENSION IF NOT EXISTS vector SCHEMA public');
         $pdo->exec("DROP SCHEMA IF EXISTS {$schema} CASCADE");
         $pdo->exec("CREATE SCHEMA {$schema}");
         $created = true;

@@ -15,4 +15,11 @@ final class MemoryStoreConformanceTest extends TestCase
     {
         return Vector::store('memory');
     }
+
+    protected function makeSecondStore(): VectorStoreContract
+    {
+        config()->set('vector.stores.memory_b', ['driver' => 'memory', 'batch_size' => 7]);
+
+        return Vector::store('memory_b');
+    }
 }

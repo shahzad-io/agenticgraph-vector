@@ -1,6 +1,6 @@
 <?php
 
-use AgenticGraph\Vector\Contracts\AliasStoreContract;
+use AgenticGraph\Vector\Contracts\MigrationStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\StoreCapability;
@@ -58,6 +58,7 @@ it('records the named provider on the collection', function () {
         'index' => null,
         'embedding' => ['provider' => 'large', 'model' => 'large-model', 'dimensions' => 4],
         'keyword' => null,
+        'filterable' => [],
     ]);
 });
 
@@ -195,9 +196,9 @@ it('stops catch-up passes at vector.migration.catch_up_max_passes', function () 
     config()->set('vector.migration.catch_up_max_passes', 3);
     $planned = new MigrationState('a', 'a__v1', 'a__v2', 'copy', 'catching_up', ['dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'index_options' => [], 'embeddings' => null]);
 
-    $store = Mockery::mock(AliasStoreContract::class, VectorStoreContract::class);
+    $store = Mockery::mock(MigrationStoreContract::class, VectorStoreContract::class);
     $store->shouldReceive('batchSize')->andReturn(10);
-    $store->shouldReceive('describeCollection')->andReturn(['collection' => 'a__v1', 'dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'embedding' => null]);
+    $store->shouldReceive('describeCollection')->andReturn(['collection' => 'a__v1', 'dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'embedding' => null, 'filterable' => []]);
     $store->shouldReceive('migration')->andReturn($planned);
     $store->shouldReceive('catchUpMigration')->times(3)->andReturn(1000);
     $store->shouldReceive('finishMigration')->once()->andReturn($planned->withPhase('switched'));
@@ -209,9 +210,9 @@ it('runs another unlocked pass when the final pass finds rows to embed, and embe
     config()->set('vector.migration.catch_up_max_passes', 3);
     $planned = new MigrationState('a', 'a__v1', 'a__v2', 'reembed', 'catching_up', ['dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'index_options' => [], 'embeddings' => null]);
 
-    $store = Mockery::mock(AliasStoreContract::class, VectorStoreContract::class);
+    $store = Mockery::mock(MigrationStoreContract::class, VectorStoreContract::class);
     $store->shouldReceive('batchSize')->andReturn(10);
-    $store->shouldReceive('describeCollection')->andReturn(['collection' => 'a__v1', 'dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'embedding' => null]);
+    $store->shouldReceive('describeCollection')->andReturn(['collection' => 'a__v1', 'dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'embedding' => null, 'filterable' => []]);
     $store->shouldReceive('migration')->andReturn($planned);
     $store->shouldReceive('catchUpMigration')->times(3)->andReturn(1);
     $store->shouldReceive('finishMigration')->with($planned, 500, false)->twice()->andReturn($planned);

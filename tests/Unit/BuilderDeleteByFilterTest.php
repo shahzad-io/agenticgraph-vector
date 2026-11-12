@@ -33,7 +33,7 @@ it('throws a clear unsupported operation before delete by filter on incapable st
 });
 
 it('gates listIds, updateMetadata and each filter family on the store capabilities', function () {
-    $builder = limitedStore(StoreCapability::DeleteByFilter)->collection('articles')->usingVector([1.0, 0.0, 0.0]);
+    $builder = limitedStore(StoreCapability::DeleteByFilter, StoreCapability::UndeclaredFilters)->collection('articles')->usingVector([1.0, 0.0, 0.0]);
 
     expect(fn () => $builder->listIds())->toThrow(VectorUnsupportedOperationException::class, 'Listing ids is not supported')
         ->and(fn () => $builder->updateMetadata(['a' => ['n' => 2]]))->toThrow(VectorUnsupportedOperationException::class, 'Updating metadata is not supported')

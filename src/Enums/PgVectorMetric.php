@@ -4,6 +4,11 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector\Enums;
 
+use AgenticGraph\Vector\Stores\PgVector\PgVectorMetricSql;
+
+/**
+ * @deprecated 0.2.0 Use Metric. Kept as a thin enum (not an alias) so its SQL methods keep working; remove in 1.0.
+ */
 enum PgVectorMetric: string
 {
     case Cosine = 'cosine';
@@ -15,51 +20,33 @@ enum PgVectorMetric: string
         return self::tryFrom($metric) ?? self::Cosine;
     }
 
+    public function metric(): Metric
+    {
+        return Metric::from($this->value);
+    }
+
     public function distanceOperator(): string
     {
-        return match ($this) {
-            self::Cosine => '<=>',
-            self::L2 => '<->',
-            self::InnerProduct => '<#>',
-        };
+        return PgVectorMetricSql::distanceOperator($this->metric());
     }
 
     public function indexOps(): string
     {
-        return match ($this) {
-            self::Cosine => 'vector_cosine_ops',
-            self::L2 => 'vector_l2_ops',
-            self::InnerProduct => 'vector_ip_ops',
-        };
+        return PgVectorMetricSql::indexOps($this->metric());
     }
 
     public function distanceToSimilarity(float $distance): float
     {
-        return match ($this) {
-            self::Cosine => 1.0 - $distance,
-            self::L2 => 1.0 / (1.0 + $distance),
-            self::InnerProduct => -$distance,
-        };
+        return $this->metric()->distanceToSimilarity($distance);
     }
 
-    /**
-     * SQL expression that converts a pgvector distance sub-expression into a similarity score.
-     */
     public function scoreSqlExpression(string $distanceExpression): string
     {
-        return match ($this) {
-            self::Cosine => '(1 - ('.$distanceExpression.'))',
-            self::L2 => '(1 / (1 + ('.$distanceExpression.')))',
-            self::InnerProduct => '(-('.$distanceExpression.'))',
-        };
+        return PgVectorMetricSql::scoreSqlExpression($this->metric(), $distanceExpression);
     }
 
     public function maxDistanceForMinScore(float $minScore): float
     {
-        return match ($this) {
-            self::Cosine => 1.0 - $minScore,
-            self::L2 => (1.0 / max($minScore, 0.0001)) - 1.0,
-            self::InnerProduct => -$minScore,
-        };
+        return $this->metric()->maxDistanceForMinScore($minScore);
     }
 }

@@ -14,6 +14,7 @@ final readonly class MigrationState
 {
     /**
      * @param  array<string, mixed>  $definition  the requested definition without its name
+     * @param  string|null  $lastId  the store's opaque copy cursor: do not build or parse it
      */
     public function __construct(
         public string $alias,
@@ -51,13 +52,15 @@ final readonly class MigrationState
     }
 
     /**
-     * Keyword keys are present only with keyword search, so a migration recorded without them resumes unchanged.
+     * Keyword keys are present only with keyword search, and `filterable` only with declared fields, so a migration
+     * recorded without them resumes unchanged.
      *
      * @return array<string, mixed>
      */
     public static function definitionOf(CollectionDefinition $definition): array
     {
         $keyword = $definition->keywordSettings();
+        $filterable = array_map(static fn ($type): string => $type->value, $definition->filterableFields());
 
         return [
             'dimensions' => $definition->dimensions,
@@ -66,6 +69,7 @@ final readonly class MigrationState
             'index_options' => $definition->indexOptions,
             'embeddings' => $definition->embeddings,
             ...($keyword === null ? [] : ['keyword' => true, 'languages' => $keyword['languages'], 'language_field' => $keyword['language_field']]),
+            ...($filterable === [] ? [] : ['filterable' => $filterable]),
         ];
     }
 
@@ -75,6 +79,8 @@ final readonly class MigrationState
         $indexOptions = $this->definition['index_options'] ?? [];
         /** @var array<string, string>|null $languages */
         $languages = $this->definition['languages'] ?? null;
+        /** @var array<string, string> $filterable */
+        $filterable = $this->definition['filterable'] ?? [];
 
         return new CollectionDefinition(
             name: $this->target,
@@ -86,6 +92,7 @@ final readonly class MigrationState
             keyword: isset($this->definition['keyword']) ? (bool) $this->definition['keyword'] : null,
             languages: $languages,
             languageField: isset($this->definition['language_field']) ? (string) $this->definition['language_field'] : null,
+            filterable: $filterable,
         );
     }
 }

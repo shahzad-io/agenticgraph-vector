@@ -133,7 +133,7 @@ final class TraceSpan
         }
 
         $context ??= new VectorTraceContext(
-            store: (string) config('vector.default', 'pgvector'),
+            store: VectorTraceContext::UNNAMED_STORE,
             collection: 'unknown',
         );
 
