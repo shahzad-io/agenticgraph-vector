@@ -19,7 +19,7 @@ return [
     | Vector Stores
     |--------------------------------------------------------------------------
     |
-    | Named stores. Each entry names its driver: pgvector, memory, or a driver
+    | Named stores. Each entry names its driver: pgvector, qdrant, memory, or a driver
     | registered with Vector::extend(). Vector::store('name') resolves the entry
     | through its driver; several entries may use the same driver.
     |
@@ -58,6 +58,16 @@ return [
             'iterative_scan' => env('VECTOR_PGVECTOR_ITERATIVE_SCAN', 'relaxed_order'),
             // The most rows one iterative scan visits (pgvector's default).
             'max_scan_tuples' => (int) env('VECTOR_PGVECTOR_MAX_SCAN_TUPLES', 20000),
+        ],
+
+        // Qdrant v1.20+ over REST. Filters run on declared fields only; no keyword search, no migrations.
+        'qdrant' => [
+            'driver' => 'qdrant',
+            'url' => env('VECTOR_QDRANT_URL'),
+            'api_key' => env('VECTOR_QDRANT_API_KEY'),
+            'timeout' => (float) env('VECTOR_QDRANT_TIMEOUT', 10),
+            'connect_timeout' => (float) env('VECTOR_QDRANT_CONNECT_TIMEOUT', 3),
+            'batch_size' => (int) env('VECTOR_QDRANT_BATCH_SIZE', 100),
         ],
 
         // In-process reference store (exact search, no index). Data lives as long as the

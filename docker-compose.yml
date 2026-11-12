@@ -12,3 +12,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.20.0
+    ports:
+      - "${VECTOR_QDRANT_PORT:-16333}:6333"

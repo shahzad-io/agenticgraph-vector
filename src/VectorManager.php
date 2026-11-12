@@ -16,6 +16,7 @@ use AgenticGraph\Vector\Rerankers\InstrumentedReranker;
 use AgenticGraph\Vector\Stores\InstrumentedStore;
 use AgenticGraph\Vector\Stores\MemoryStore;
 use AgenticGraph\Vector\Stores\PgVectorStore;
+use AgenticGraph\Vector\Stores\QdrantStore;
 use AgenticGraph\Vector\Support\MetadataValidator;
 use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\Tracing\VectorTraceContext;
@@ -27,7 +28,7 @@ use Illuminate\Support\Manager;
 use InvalidArgumentException;
 
 /**
- * Resolves named stores from `vector.stores`. Each entry names its `driver` (pgvector, memory, or one
+ * Resolves named stores from `vector.stores`. Each entry names its `driver` (pgvector, qdrant, memory, or one
  * registered with extend()). Every VectorStoreContract is returned wrapped in an InstrumentedStore.
  */
 class VectorManager extends Manager
@@ -138,6 +139,12 @@ class VectorManager extends Manager
             isset($this->customCreators[$driverName]) => $this->customCreators[$driverName]($this->container, $config, $name),
             $driverName === 'pgvector' => $this->createPgvectorStore($config, $name),
             $driverName === 'memory' => $this->createMemoryStore($config),
+            $driverName === 'qdrant' => new QdrantStore(
+                config: $config,
+                embeddings: $this->container->make(EmbeddingsManager::class),
+                metadataValidator: $this->container->make(MetadataValidator::class),
+                name: $name,
+            ),
             default => throw new InvalidArgumentException("Vector store driver [{$driverName}] for store [{$name}] is not supported."),
         };
 
