@@ -140,8 +140,9 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
             PgVectorSearchOptions::apply($this->connection(), $options);
 
             // A small collection keeps its vectors in TOAST, which the planner does not cost, so it picks an exact
-            // scan over the index. An unfiltered search asks for the index; a filtered one is left to the planner.
-            if ($query->keywords === null && ! $filtered && $collection['has_index'] && ! PgVectorSearchOptions::exact($options)
+            // scan over the index. An unfiltered search asks for the index (in a hybrid search, for its dense list);
+            // a filtered one is left to the planner.
+            if (! $filtered && $collection['has_index'] && ! PgVectorSearchOptions::exact($options)
                 && (bool) ($this->config['prefer_index'] ?? true)) {
                 $this->connection()->statement('SET LOCAL enable_seqscan = off');
             }
