@@ -9,8 +9,8 @@ use AgenticGraph\Vector\ValueObjects\Document;
 use AgenticGraph\Vector\VectorManager;
 use Illuminate\Support\Facades\DB;
 
-// Spec section 12 (L1 to L5): the index is used on small collections, the vector is bound once, the registry
-// lookup of a search is cached.
+// Spec section 12 (L1 to L8): the index is used on small collections (in a hybrid search, by its dense list), the
+// vector is bound once, the registry lookup of a search is cached and serves reads only.
 
 beforeEach(function () {
     if (! PgvectorTestHelper::isAvailable()) {
@@ -58,9 +58,9 @@ function latencyVector(int $dimensions): array
  * which the planner does not cost, so it picks an exact scan over the HNSW index. Filled in SQL, then indexed
  * once, for speed.
  */
-function latencyLargeCollection($store, string $name): void
+function latencyLargeCollection($store, string $name, bool $keyword = false): void
 {
-    $store->createCollection(new CollectionDefinition($name, dimensions: 1536, metric: 'cosine'));
+    $store->createCollection(new CollectionDefinition($name, dimensions: 1536, metric: 'cosine', keyword: $keyword));
     $storage = 'vcol_'.substr(hash('sha256', $name), 0, 32);
     $connection = DB::connection('pgvector');
     $connection->select('SELECT setseed(0.12)');
@@ -129,6 +129,22 @@ it('uses the hnsw index for an unfiltered search, not for an exact one, and leav
 
     $filtered = latencyPlan(fn () => $store->collection($this->collection)->usingVector($query)->where('group', 1)->take(10)->get());
     expect($filtered['enable_seqscan'])->toBe('on');
+});
+
+it('uses the hnsw index for the dense list of an unfiltered hybrid search and leaves a filtered one to the planner', function () {
+    $store = latencyStore();
+    latencyLargeCollection($store, $this->collection, keyword: true);
+    $query = latencyVector(1536);
+    $index = 'vcol_'.substr(hash('sha256', $this->collection), 0, 32).'_embedding_idx';
+    $hybrid = fn () => $store->collection($this->collection)->usingVector($query)->keywords('abc')->hybrid(match: 'any')->take(10);
+
+    $unfiltered = latencyPlan(fn () => $hybrid()->get());
+    expect($unfiltered['plan'])->toContain("Index Scan using {$index}")
+        ->and($unfiltered['enable_seqscan'])->toBe('off');
+
+    $filtered = latencyPlan(fn () => $hybrid()->where('group', 1)->get());
+    expect($filtered['plan'])->not->toContain($index)
+        ->and($filtered['enable_seqscan'])->toBe('on');
 });
 
 it('keeps the planner choice with prefer_index off', function () {
@@ -204,3 +220,19 @@ it('searches again uncached when another store dropped the cached table', functi
 
     $search();
 })->throws(VectorCollectionNotFoundException::class);
+
+it('writes to the new target after another store switched the alias the cache resolved', function () {
+    $store = latencyStore();
+    $store->createCollection(new CollectionDefinition($this->collection, dimensions: 3, metric: 'cosine'));
+    $store->createCollection(new CollectionDefinition("{$this->collection}_b", dimensions: 3, metric: 'cosine'));
+    $alias = "{$this->collection}_alias";
+    $store->pointAlias($alias, $this->collection);
+    $store->collection($alias)->usingVector([1.0, 0.0, 0.0])->get();
+
+    // A second store instance: its alias switch does not clear the first one's search cache.
+    latencyStore()->pointAlias($alias, "{$this->collection}_b");
+    $store->upsert($alias, [new Document('new', 'new', [], [1.0, 0.0, 0.0])]);
+
+    expect($store->countDocuments($this->collection))->toBe(0)
+        ->and($store->countDocuments("{$this->collection}_b"))->toBe(1);
+});
