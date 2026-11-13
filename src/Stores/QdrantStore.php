@@ -529,8 +529,8 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
         $mustNot = [];
 
         foreach ($filter->conditions as $condition) {
-            $type = $declared[$condition->field] ?? throw new VectorUnsupportedOperationException(
-                "Field [{$condition->field}] is not declared filterable on collection [{$collection}], and store [{$this->name}] filters declared fields only. Declare it in CollectionDefinition::\$filterable.",
+            $type = $declared[$condition->field] ?? throw VectorUnsupportedOperationException::undeclaredField(
+                $condition->field, $collection, $this->name, $declared, false,
             );
 
             // must_not also keeps points without the field, which is the contract for ne and not_in.

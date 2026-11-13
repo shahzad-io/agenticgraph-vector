@@ -248,3 +248,23 @@ it('runs another unlocked pass for writes the final pass would embed, and embeds
         ->and($store->collection($this->collection)->fetch(['w1', 'w2'])->count())->toBe(2)
         ->and($calls)->toBe($passes === 1 ? [false, false, true] : [false, false, false]);
 })->with(['two passes' => 2, 'one pass (guard: the last pass embeds inside the lock)' => 1]);
+
+it('declares a field on an existing collection with vector:migrate --filterable, and creates its field index (G4)', function () {
+    $store = Vector::store('pgvector');
+    $store->createCollection(new CollectionDefinition($this->collection, dimensions: 3));
+    $store->upsert($this->collection, [
+        new Document(id: 'a', content: 'A', metadata: ['tenant' => 't1'], vector: [1.0, 0.0, 0.0]),
+        new Document(id: 'b', content: 'B', metadata: ['tenant' => 't2'], vector: [0.0, 1.0, 0.0]),
+    ]);
+
+    $this->artisan('vector:migrate', ['alias' => $this->collection, '--store' => 'pgvector', '--copy' => true, '--filterable' => ['tenant:keyword']])->assertSuccessful();
+
+    $target = $store->describeCollection($this->collection);
+    $storage = DB::connection('pgvector')->scalar("SELECT storage_identifier FROM {$this->registry} WHERE name = ?", [$target['collection']]);
+    $index = $storage.'_f'.substr(hash('sha256', 'tenant'), 0, 10);
+    $definition = DB::connection('pgvector')->scalar('SELECT indexdef FROM pg_indexes WHERE tablename = ? AND indexname = ?', [$storage, $index]);
+
+    expect($target['filterable'])->toBe(['tenant' => 'keyword'])
+        ->and($definition)->toContain("((metadata ->> 'tenant'::text))")
+        ->and(array_map(fn ($hit) => $hit->id, $store->collection($this->collection)->usingVector([1.0, 0.0, 0.0])->where('tenant', 't2')->get()->hits))->toBe(['b']);
+});

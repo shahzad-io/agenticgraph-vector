@@ -76,6 +76,7 @@ Docs: `/docs/vector-installation`
 | `queue.connection`, `queue.queue` | none | Queue for `queue()->upsert()`; unset uses the app's default. `VECTOR_QUEUE_CONNECTION`, `VECTOR_QUEUE` |
 | `queue.tries`, `queue.backoff`, `queue.timeout` | `3`, `[10, 30, 60]`, `60` | Per batch job. The timeout must be below the connection's `retry_after` and above the Prism provider's `timeout` + 5 s (defaults pass). Inside the job the provider's retries are off; tries and backoff retry the batch. `VECTOR_QUEUE_TRIES`, `VECTOR_QUEUE_TIMEOUT` |
 
+- A published `config/vector.php` keeps its values. The package adds what it lacks: a store of the defaults (such as `qdrant`) that the file does not list, keys added to a default store of the same driver, and keys and sections added to the other sections. A store missing from the file works once its env values are set (`VECTOR_QDRANT_URL`). Lists such as `queue.backoff` and the provider maps are used as published.
 - `stores.memory` (driver `memory`) is a reference store in plain PHP: exact search, pgvector's score math and capabilities, data for the life of its manager (one request or queued job on Octane and queue workers). For app tests: `VECTOR_STORE=memory` with `VECTOR_EMBEDDINGS_PROVIDER=deterministic`. Not for production.
 - The managers are scoped: each Octane request and queued job gets new ones. Inside one, each store and provider is cached per name once resolved, so a later config change does not reach it. Static config is fine. After `config([...])` following a vector call in the same request, forget the managers: [references/ingestion.md](references/ingestion.md#runtime-config).
 
@@ -120,12 +121,14 @@ Vector::dropOldCollection('articles');
 Vector::store('pgvector')->listAliases();
 ```
 
-- CLI: `php artisan vector:migrate articles --embeddings=prism_large` (also `--dry-run`, `--copy`, `--reembed`, `--batch`, `--dimensions`, `--metric`, `--index`, `--index-option=m=16`, `--store`, `--rollback`, `--drop-old`).
+- CLI: `php artisan vector:migrate articles --embeddings=prism_large` (also `--dry-run`, `--copy`, `--reembed`, `--batch`, `--dimensions`, `--metric`, `--index`, `--index-option=m=16`, `--filterable=tenant:keyword`, `--store`, `--rollback`, `--drop-old`).
+- Declare a field on an existing collection: `php artisan vector:migrate articles --filterable=lang:keyword --filterable=tenant:keyword`. `--filterable` (repeatable, `field:type`, types as in `FieldType`) replaces the source's declared fields, so name every field to keep. `createCollection()` with other declared fields than the existing collection's throws `VectorQueryException` that prints this command.
 - The first migration turns `articles` into an alias for `articles__v1`; the new collection is `articles__v2`. Code that uses `articles` keeps working: every store operation resolves aliases.
 - Same provider, model and width: vectors are copied inside the store. Otherwise documents are re-embedded with the new provider. A collection with no recorded model (created by an earlier build) needs `--copy` or `--reembed`.
 - Reads and writes stay on the old collection until the switch. Catch-up passes apply writes made during the copy; the final pass pauses writers (not searches) and switches in one transaction. Writers embed before taking any lock; a final pass that finds documents to embed releases the lock for another unlocked pass, and only the last allowed pass embeds inside it. `vector.migration.catch_up_threshold` (default 500), at most `vector.migration.catch_up_max_passes` unlocked passes (default 10).
 - Options left out of the migration definition come from the source collection (width, metric, index, index options, provider, declared fields). `--dry-run` prints the resulting definition. A copy does not re-validate existing values against newly declared fields.
-- A failed or killed run resumes when rerun with the same definition. The old collection stays until `dropOldCollection()` / `--drop-old`.
+- A failed or killed run resumes when rerun with the same definition.
+- The old collection stays after the switch, with its data, until `dropOldCollection()` / `--drop-old`: it still takes its disk space, and `--rollback` points the alias back at it. Drop it once the new one serves.
 - A migration copy checks every value against the target's declared fields; a value of the wrong type stops the batch with `VectorQueryException` naming the id and the field.
 - Needs the `Migrations` capability (pgvector, memory); aliases alone are the `Aliases` capability: `pointAlias($alias, $collection)` creates the alias or re-points it, and refuses a name that is a collection. `deleteCollection()` on an alias, or on the collection behind one, throws; use `deleteAlias()` first. `deleteAlias()` also removes the alias's migration rows and refuses while its migration is unfinished.
 
@@ -247,7 +250,16 @@ $results = Vector::store('pgvector')
 $results->first()?->scores;       // ['vector' => float, 'keyword' => ?float, 'fused' => float]
 ```
 
-- Needs the `Keyword` capability (pgvector, memory) and a collection with `keyword: true`. `match: 'websearch'` also needs `KeywordWebsearch` (pgvector, memory). An existing collection gets it with `php artisan vector:migrate {name} --keyword` (a copy, no embedding calls). Hybrid on a collection without it throws `VectorQueryException`.
+- Needs the `Keyword` capability (pgvector, memory) and a collection with `keyword: true`. An app that may run on another store (Qdrant has no `Keyword`, and refuses `keyword: true` at create) asks first:
+
+```php
+use AgenticGraph\Vector\Enums\StoreCapability;
+
+$store = Vector::store();
+$store->createCollection(new CollectionDefinition('help_center', keyword: $store->capabilities()->supports(StoreCapability::Keyword)));
+```
+
+- Call `hybrid()` only on a collection created with `keyword`; otherwise run the dense search. `match: 'websearch'` also needs `KeywordWebsearch` (pgvector, memory). An existing collection gets it with `php artisan vector:migrate {name} --keyword` (a copy, no embedding calls). Hybrid on a collection without it throws `VectorQueryException`.
 - Vector and keyword candidates (up to `max(depth, take)` each, same filter; pgvector uses Postgres full text) are fused by weighted reciprocal rank fusion: `1 / (k + dense rank) + keywordWeight / (k + keyword rank)`. `keywordWeight` defaults to `vector.hybrid.keyword_weight` (0.25); 0 gives exactly the dense results.
 - Measured: hybrid did not beat dense on top-10 quality, and reranked hybrid matched reranked dense within noise on help-center benchmarks. Recommend dense plus a reranker. Never switch an app to hybrid without its own golden set showing a gain.
 - Hits come in fused order, not by `score`. Never threshold `scores['fused']` (at most about 0.033) or `scores['keyword']` (rule 3): the keyword score is store-defined and comparable only inside one query.
@@ -312,6 +324,8 @@ Docs: `/docs/vector-guide-score-ergonomics`
 - Filters: a declared field gets its own index (btree; GIN for `keyword_list`) and a plain predicate. A filtered search on declared fields counts its matches up to T + 1 (T: the larger of `filter_exact_max_rows`, 2,500, and `filter_exact_min_share`, 0.01, x the table's rows): at most T is exact through the field index, above uses the vector index (iterative scan, `hnsw.ef_search` 160 unless set). `filter_plan`: `auto` (default), `exact`, `index`, `planner`. Undeclared fields and filtered hybrid searches are left to the planner. On a large table, a filter that keeps about 1% of the rows has no fast path in pgvector: exact scoring grows with the matches (about 37 ms for 10,000 rows of 1,536 dimensions) and the vector index drops about 99 of every 100 rows it visits.
 - Language map values are Postgres text search configurations on the search path (by default `en`/`english` -> `english`, `es`/`spanish` -> `spanish`); keyword scores are `ts_rank_cd`.
 - Ids are `TEXT`; `listIds()` goes in byte order of the id.
+- The registry table is created on first use, and a registry from an older release gets its missing columns (`index_options`, `embedding`, `keyword`, `filterable`) at runtime with `ALTER TABLE ... ADD COLUMN`. The database user needs the right to create tables in its schema and to alter the registry table (its owner). A user without it gets the Postgres error on the first call after an upgrade; run that first call once as the owner, or grant it.
+- A search sends its planner settings (`SET LOCAL`) in one round trip, before its statement.
 - Two pgvector stores on one connection are kept apart by `table_prefix`. With the same connection, prefix and registry they share their collections. A store that finds a collection's table owned by another store (same prefix, another registry) throws `VectorQueryException` naming `table_prefix`; it never reuses the table. Set the prefix before the first collection: existing tables keep their names.
 
 Docs: `/docs/vector-configuration`

@@ -531,3 +531,24 @@ it('sends the api key header and needs a url', function () {
     Http::assertSent(fn (Request $request) => $request->header('api-key') === ['secret']);
     expect(fn () => qdrantStore(['url' => null])->countDocuments('docs'))->toThrow(VectorConnectionException::class, 'VECTOR_QDRANT_URL');
 });
+
+it('names the field, collection and store of an undeclared filter, with the line that declares it (G2)', function () {
+    fakeQdrant();
+
+    $message = '';
+
+    try {
+        qdrantStore()->search(new SearchQuery('docs', [1, 0], NormalizedFilter::fromAssociative(['lang' => 'en'])));
+    } catch (VectorUnsupportedOperationException $exception) {
+        $message = $exception->getMessage();
+    }
+
+    $fields = QDRANT_FIELDS;
+    ksort($fields);
+    $declared = implode(', ', array_map(fn ($field, $type) => "'{$field}' => FieldType::".FieldType::from($type)->name, array_keys($fields), $fields));
+
+    expect($message)->toContain('Field [lang] is not declared filterable on collection [docs], and store [qdrant]')
+        ->toContain("filterable: [{$declared}, 'lang' => FieldType::Keyword]")
+        ->toContain('store [qdrant] has no migrations')
+        ->not->toContain('vector:migrate');
+});

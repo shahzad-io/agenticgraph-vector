@@ -95,6 +95,18 @@ Scores follow the collection's metric in every store: `cosine` gives the cosine 
 
 A declared field (`filterable`) gets its own index and a plain filter predicate. A filtered search on declared fields counts its matches up to a threshold (store settings `filter_exact_max_rows`, default 2,500, and `filter_exact_min_share`, default 0.01 of the table): below it the search is exact through the field index, above it the search walks the vector index. `filter_plan` (`auto`, `exact`, `index`, `planner`) fixes the choice for a caller that knows its data. A filter on an undeclared field and a filtered hybrid search are left to the Postgres planner.
 
+The registry table is created on first use, and a registry from an older release gets its new columns at runtime (`ALTER TABLE ... ADD COLUMN`): the database user needs the right to create tables and to alter the registry table.
+
+After `vector:migrate`, the old collection stays with its data (and `--rollback` works) until `php artisan vector:migrate {name} --drop-old`. To declare a filterable field on an existing collection: `php artisan vector:migrate {name} --filterable=tenant:keyword` (repeat the option; it replaces the declared fields, so name every field to keep).
+
+Keyword and hybrid search need the `Keyword` capability, which Qdrant does not have. An app that may run on either store asks before it sets `keyword`:
+
+```php
+$store = Vector::store();
+$keyword = $store->capabilities()->supports(\AgenticGraph\Vector\Enums\StoreCapability::Keyword);
+$store->createCollection(new CollectionDefinition('articles', keyword: $keyword));
+```
+
 On a large table, a filter that keeps about 1% of the rows has no fast path in pgvector: exact scoring grows with the matches (about 37 ms for 10,000 rows of 1,536 dimensions) and the vector index drops about 99 of every 100 rows it visits.
 
 ## Qdrant

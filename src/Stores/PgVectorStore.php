@@ -138,18 +138,21 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
             $filtered = $query->filter !== null && $query->filter->conditions !== [];
             $options = PgVectorSearchOptions::forSearch($this->config, $query->options, $filtered);
             $plan = $filtered && $query->keywords === null ? $this->filterPlan($query, $collection, $options) : 'planner';
-            PgVectorSearchOptions::apply($this->connection(), $options);
-            PgVectorSearchOptions::applyFilterPlan($this->connection(), $plan, $options);
+            $settings = [...PgVectorSearchOptions::settings($options), ...PgVectorSearchOptions::filterPlanSettings($plan, $options)];
 
             // A small collection keeps its vectors in TOAST, which the planner does not cost, so it picks an exact
             // scan over the index. An unfiltered search asks for the index (in a hybrid search, for its dense list);
             // a filtered one is left to the planner.
             if (! $filtered && $collection['has_index'] && ! PgVectorSearchOptions::exact($options)
                 && (bool) ($this->config['prefer_index'] ?? true)) {
-                $this->connection()->statement('SET LOCAL enable_seqscan = off');
+                $settings['enable_seqscan'] = 'off';
             }
 
-            PgVectorSearchOptions::raiseEfSearch($this->connection(), $query->options, $query->keywords === null ? $query->topK : max($query->topK, $query->depth));
+            if ($query->keywords !== null) {
+                $settings['client_min_messages'] = 'warning';
+            }
+
+            PgVectorSearchOptions::send($this->connection(), $settings, $query->options, $query->keywords === null ? $query->topK : max($query->topK, $query->depth));
 
             return $query->keywords === null
                 ? $this->denseSearch($query, $collection)
@@ -311,8 +314,6 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
         $keyword = $collection['keyword'] ?? throw new VectorQueryException(
             "Collection [{$query->collection}] has no keyword index, so it cannot run a hybrid search. Migrate it with keyword search: Vector::migrate('{$query->collection}', new CollectionDefinition('{$query->collection}', keyword: true)) or php artisan vector:migrate {$query->collection} --keyword.",
         );
-
-        $this->connection()->statement('SET LOCAL client_min_messages = warning');
 
         $metric = $collection['metric'];
         $storage = $this->storage($collection);
@@ -611,9 +612,7 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
                     return;
                 }
 
-                throw new VectorQueryException(
-                    "Collection [{$definition->name}] already exists with a different definition. Change it with Vector::migrate() (php artisan vector:migrate).",
-                );
+                throw $definition->differentDefinition($existing['filterable']);
             }
 
             if ($keyword !== null) {

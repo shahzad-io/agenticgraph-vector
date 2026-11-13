@@ -58,37 +58,46 @@ final class PgVectorSearchOptions
     }
 
     /**
-     * An HNSW scan returns at most `hnsw.ef_search` rows (pgvector's default 40), so a search that needs more (a
-     * large take(), a reranker's candidates, a hybrid list depth) raises it to $rows for this transaction. Never
-     * lowers a higher setting, and leaves a caller's own `hnsw.ef_search` option alone.
+     * Sends a search's settings in one round trip: one simple-query batch of SET LOCAL statements, then the
+     * hnsw.ef_search raise. A prepared statement costs three round trips (prepare, execute, deallocate), so each
+     * setting sent on its own cost three. The values are validated or cast here, never taken from the caller as text.
      *
-     * @param  array<string, mixed>  $options
+     * An HNSW scan returns at most `hnsw.ef_search` rows (pgvector's default 40), so a search that needs more (a
+     * large take(), a reranker's candidates, a hybrid list depth) raises it to $rows for this transaction. The raise
+     * never lowers a higher setting (the batch's own included), and leaves a caller's own `hnsw.ef_search` option alone.
+     *
+     * @param  array<string, string|int>  $settings  name => value, from settings() and filterPlanSettings()
+     * @param  array<string, mixed>  $options  the caller's search options
      */
-    public static function raiseEfSearch(Connection $connection, array $options, int $rows): void
+    public static function send(Connection $connection, array $settings, array $options, int $rows): void
     {
-        if ($rows <= 40 || array_key_exists(self::HNSW_EF_SEARCH, $options)) {
-            return;
+        $sql = array_map(static fn (string $name, string|int $value): string => "SET LOCAL {$name} = {$value}", array_keys($settings), $settings);
+
+        if ($rows > 40 && ! array_key_exists(self::HNSW_EF_SEARCH, $options)) {
+            $sql[] = "SELECT set_config('hnsw.ef_search', GREATEST(COALESCE(current_setting('hnsw.ef_search', true), '40')::int, ".min($rows, 1000).')::text, true)';
         }
 
-        $connection->select(
-            "SELECT set_config('hnsw.ef_search', GREATEST(COALESCE(current_setting('hnsw.ef_search', true), '40')::int, ?)::text, true)",
-            [min($rows, 1000)],
-        );
+        if ($sql !== []) {
+            $connection->unprepared(implode('; ', $sql));
+        }
     }
 
     /**
+     * The settings of the caller's search options.
+     *
      * @param  array<string, mixed>  $options
+     * @return array<string, string|int>
      */
-    public static function apply(Connection $connection, array $options): void
+    public static function settings(array $options): array
     {
+        $settings = [];
+
         if (self::exact($options)) {
-            $connection->statement('SET LOCAL enable_indexscan = off');
+            $settings['enable_indexscan'] = 'off';
         }
 
         if (array_key_exists(self::HNSW_EF_SEARCH, $options)) {
-            $connection->statement(
-                'SET LOCAL hnsw.ef_search = '.self::positiveInt($options[self::HNSW_EF_SEARCH]),
-            );
+            $settings['hnsw.ef_search'] = self::positiveInt($options[self::HNSW_EF_SEARCH]);
         }
 
         // off is pgvector's default, so it is not set (pgvector before 0.8 has no such setting).
@@ -99,18 +108,18 @@ final class PgVectorSearchOptions
         }
 
         if ($iterative !== 'off') {
-            $connection->statement("SET LOCAL hnsw.iterative_scan = {$iterative}");
+            $settings['hnsw.iterative_scan'] = $iterative;
 
             if (array_key_exists(self::HNSW_MAX_SCAN_TUPLES, $options)) {
-                $connection->statement('SET LOCAL hnsw.max_scan_tuples = '.self::positiveInt($options[self::HNSW_MAX_SCAN_TUPLES]));
+                $settings['hnsw.max_scan_tuples'] = self::positiveInt($options[self::HNSW_MAX_SCAN_TUPLES]);
             }
         }
 
         if (array_key_exists(self::IVFFLAT_PROBES, $options)) {
-            $connection->statement(
-                'SET LOCAL ivfflat.probes = '.self::positiveInt($options[self::IVFFLAT_PROBES]),
-            );
+            $settings['ivfflat.probes'] = self::positiveInt($options[self::IVFFLAT_PROBES]);
         }
+
+        return $settings;
     }
 
     /**
@@ -120,24 +129,22 @@ final class PgVectorSearchOptions
      *
      * @param  'exact'|'index'|'planner'  $plan
      * @param  array<string, mixed>  $options
+     * @return array<string, string|int>
      */
-    public static function applyFilterPlan(Connection $connection, string $plan, array $options): void
+    public static function filterPlanSettings(string $plan, array $options): array
     {
-        if ($plan === 'exact') {
-            $connection->statement('SET LOCAL enable_indexscan = off');
-        }
-
-        if ($plan === 'index') {
-            $connection->statement('SET LOCAL enable_seqscan = off');
-            $connection->statement('SET LOCAL enable_bitmapscan = off');
-            $connection->statement('SET LOCAL enable_sort = off');
-            $connection->statement('SET LOCAL jit = off');
-            $connection->statement('SET LOCAL hnsw.iterative_scan = relaxed_order');
-
-            if (! array_key_exists(self::HNSW_EF_SEARCH, $options)) {
-                $connection->statement('SET LOCAL hnsw.ef_search = '.self::FILTER_INDEX_EF_SEARCH);
-            }
-        }
+        return match ($plan) {
+            'exact' => ['enable_indexscan' => 'off'],
+            'index' => [
+                'enable_seqscan' => 'off',
+                'enable_bitmapscan' => 'off',
+                'enable_sort' => 'off',
+                'jit' => 'off',
+                'hnsw.iterative_scan' => 'relaxed_order',
+                ...(array_key_exists(self::HNSW_EF_SEARCH, $options) ? [] : ['hnsw.ef_search' => self::FILTER_INDEX_EF_SEARCH]),
+            ],
+            'planner' => [],
+        };
     }
 
     /**

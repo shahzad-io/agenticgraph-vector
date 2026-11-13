@@ -285,9 +285,7 @@ final class MemoryStore implements MigrationStoreContract, VectorStoreContract
                 return;
             }
 
-            throw new VectorQueryException(
-                "Collection [{$definition->name}] already exists with a different definition. Change it with Vector::migrate() (php artisan vector:migrate).",
-            );
+            throw $definition->differentDefinition($existing['filterable']);
         }
 
         $this->collections[$definition->name] = [
