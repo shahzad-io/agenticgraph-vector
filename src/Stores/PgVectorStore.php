@@ -137,7 +137,9 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
             $this->assertVectorDimensions($query->vector, $collection['dimensions'], $query->collection);
             $filtered = $query->filter !== null && $query->filter->conditions !== [];
             $options = PgVectorSearchOptions::forSearch($this->config, $query->options, $filtered);
+            $plan = $filtered && $query->keywords === null ? $this->filterPlan($query, $collection, $options) : 'planner';
             PgVectorSearchOptions::apply($this->connection(), $options);
+            PgVectorSearchOptions::applyFilterPlan($this->connection(), $plan, $options);
 
             // A small collection keeps its vectors in TOAST, which the planner does not cost, so it picks an exact
             // scan over the index. An unfiltered search asks for the index (in a hybrid search, for its dense list);
@@ -156,23 +158,79 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
     }
 
     /**
-     * @return array{name: string, dimensions: int, metric: Metric, storage_identifier: string, index_options: array<string, mixed>|null, embedding: array<string, mixed>|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>, has_index: bool}
+     * @return array{name: string, dimensions: int, metric: Metric, storage_identifier: string, index_options: array<string, mixed>|null, embedding: array<string, mixed>|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>, has_index: bool, row_estimate: int}
      */
     private function searchTarget(string $collection): array
     {
         if (! isset($this->searchTargets[$collection])) {
             $resolved = $this->registry->resolve($collection);
             $resolved['has_index'] = $this->existingIndex($this->storage($resolved), $resolved['index_options']) !== null;
+            // The planner's row count (reltuples, -1 before the first VACUUM or ANALYZE), for the filter plan.
+            $resolved['row_estimate'] = max(0, (int) $this->connection()->scalar('SELECT reltuples FROM pg_class WHERE oid = to_regclass(?)', [$this->storage($resolved)]));
             $this->searchTargets[$collection] = $resolved;
         }
 
-        /** @var array{name: string, dimensions: int, metric: Metric, storage_identifier: string, index_options: array<string, mixed>|null, embedding: array<string, mixed>|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>, has_index: bool} */
+        /** @var array{name: string, dimensions: int, metric: Metric, storage_identifier: string, index_options: array<string, mixed>|null, embedding: array<string, mixed>|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>, has_index: bool, row_estimate: int} */
         return $this->searchTargets[$collection];
     }
 
     private function forgetSearchTargets(): void
     {
         $this->searchTargets = [];
+    }
+
+    /**
+     * How a filtered dense search runs (store setting filter_plan): exact scores the matches through their field
+     * indexes, index walks the vector index, planner leaves it to Postgres. auto, when every filtered field is
+     * declared, counts the matches up to T + 1 (T: the larger of filter_exact_max_rows and filter_exact_min_share
+     * x the table's row count): exact at most T, index above. A filter on an undeclared field gets planner.
+     *
+     * @param  array{storage_identifier: string, filterable: array<string, FieldType>, has_index: bool, row_estimate: int}  $collection
+     * @param  array<string, mixed>  $options
+     * @return 'exact'|'index'|'planner'
+     */
+    private function filterPlan(SearchQuery $query, array $collection, array $options): string
+    {
+        $setting = $this->config['filter_plan'] ?? 'auto';
+
+        if (! in_array($setting, PgVectorSearchOptions::FILTER_PLANS, true)) {
+            throw new VectorQueryException('pgvector filter_plan must be one of '.implode(', ', PgVectorSearchOptions::FILTER_PLANS).'.');
+        }
+
+        // The caller's exact option wins; without a vector index there is nothing to choose.
+        if (PgVectorSearchOptions::exact($options) || ! $collection['has_index']) {
+            return 'planner';
+        }
+
+        if ($setting !== 'auto') {
+            return $setting;
+        }
+
+        if (! PgVectorFilterTranslator::allDeclared($query->filter, $collection['filterable'])) {
+            return 'planner';
+        }
+
+        $threshold = max(
+            (int) ($this->config['filter_exact_max_rows'] ?? 2500),
+            (int) ceil((float) ($this->config['filter_exact_min_share'] ?? 0.01) * $collection['row_estimate']),
+        );
+
+        return $this->countMatches($collection, $query->filter, $threshold + 1) <= $threshold ? 'exact' : 'index';
+    }
+
+    /**
+     * The matches of a filter, counted up to $limit.
+     *
+     * @param  array{storage_identifier: string, filterable: array<string, FieldType>}  $collection
+     */
+    private function countMatches(array $collection, ?NormalizedFilter $filter, int $limit): int
+    {
+        $translated = $this->filterTranslator->translate($filter, $collection['filterable']);
+
+        return (int) $this->connection()->scalar(
+            "SELECT count(*) FROM (SELECT 1 FROM {$this->storage($collection)} WHERE {$translated['sql']} LIMIT ?) matches",
+            [...$translated['bindings'], $limit],
+        );
     }
 
     public function capabilities(): StoreCapabilities
@@ -200,7 +258,7 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
      * The candidates come from the index in distance order (relaxed with an iterative scan), then are sorted by
      * distance and id.
      *
-     * @param  array{metric: Metric, storage_identifier: string}  $collection
+     * @param  array{metric: Metric, storage_identifier: string, filterable: array<string, FieldType>}  $collection
      */
     private function denseSearch(SearchQuery $query, array $collection): SearchResult
     {
@@ -208,7 +266,7 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
         $distance = 'embedding '.PgVectorMetricSql::distanceOperator($metric).' ?::vector';
         $score = PgVectorMetricSql::scoreSqlExpression($metric, 'distance');
         $vector = PgVectorVectorFormatter::format($query->vector);
-        $filter = $this->filterTranslator->translate($query->filter);
+        $filter = $this->filterTranslator->translate($query->filter, $collection['filterable']);
         $bindings = [$vector, ...$filter['bindings']];
         $minScore = '';
 
@@ -260,7 +318,7 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
         $storage = $this->storage($collection);
         $distance = 'embedding '.PgVectorMetricSql::distanceOperator($metric).' ?::vector';
         $vector = PgVectorVectorFormatter::format($query->vector);
-        $filter = $this->filterTranslator->translate($query->filter);
+        $filter = $this->filterTranslator->translate($query->filter, $collection['filterable']);
         $limit = max($query->depth, $query->topK);
         $configurations = array_values(array_unique([...array_values($keyword['languages']), 'simple']));
         $parse = match ($query->keywordMatch) {
@@ -433,10 +491,10 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
         $this->run(function () use ($collection, $filter): void {
             $this->preparePgVector();
 
-            $translated = $this->filterTranslator->translate($filter);
-
-            $this->connection()->transaction(function () use ($collection, $translated): void {
-                $storage = $this->storage($this->resolveForWrite($collection));
+            $this->connection()->transaction(function () use ($collection, $filter): void {
+                $resolved = $this->resolveForWrite($collection);
+                $storage = $this->storage($resolved);
+                $translated = $this->filterTranslator->translate($filter, $resolved['filterable']);
 
                 $this->connection()->delete(
                     "DELETE FROM {$storage} WHERE {$translated['sql']}",
@@ -453,7 +511,7 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
             $resolved = $this->registry->resolve($collection);
             $storage = $this->registry->qualifiedStorageName($resolved['storage_identifier']);
-            $translated = $this->filterTranslator->translate($filter);
+            $translated = $this->filterTranslator->translate($filter, $resolved['filterable']);
 
             $sql = "SELECT id FROM {$storage} WHERE {$translated['sql']}";
             $bindings = $translated['bindings'];
@@ -566,7 +624,7 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
             $this->connection()->transaction(function () use ($definition, $dimensions, $metric, $index, $embedding, $keyword, $filterable): void {
                 $storageIdentifier = $this->registry->register($definition, $dimensions, $metric, $index->toArray(), $embedding, $keyword, $filterable);
-                $this->createStorage($storageIdentifier, $dimensions, $metric, $index, $keyword);
+                $this->createStorage($storageIdentifier, $dimensions, $metric, $index, $keyword, $filterable);
             });
         });
     }
@@ -960,8 +1018,9 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
     /**
      * @param  array{languages: array<string, string>, language_field: string}|null  $keyword
+     * @param  array<string, FieldType>  $filterable  one field index each
      */
-    private function createStorage(string $storageIdentifier, int $dimensions, Metric $metric, PgVectorIndex $index, ?array $keyword = null): void
+    private function createStorage(string $storageIdentifier, int $dimensions, Metric $metric, PgVectorIndex $index, ?array $keyword = null, array $filterable = []): void
     {
         $storage = $this->registry->qualifiedStorageName($storageIdentifier);
         $keywords = '';
@@ -985,6 +1044,10 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
 
         if ($keyword !== null) {
             $this->connection()->statement("CREATE INDEX {$storage}_keyword_idx ON {$storage} USING gin (keywords)");
+        }
+
+        foreach ($filterable as $field => $type) {
+            $this->connection()->statement(PgVectorFilterTranslator::indexSql($storage, $field, $type));
         }
     }
 

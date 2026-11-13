@@ -34,6 +34,12 @@ final class PgVectorSearchOptions
 
     public const ITERATIVE_SCAN_MODES = ['off', 'relaxed_order', 'strict_order'];
 
+    /** The store setting filter_plan. */
+    public const FILTER_PLANS = ['auto', 'exact', 'index', 'planner'];
+
+    /** hnsw.ef_search on the index path of a filtered search, unless the caller sets it. */
+    public const FILTER_INDEX_EF_SEARCH = 160;
+
     /**
      * The options of one search: the store config's iterative scan for a filtered search, then the query's own.
      *
@@ -104,6 +110,33 @@ final class PgVectorSearchOptions
             $connection->statement(
                 'SET LOCAL ivfflat.probes = '.self::positiveInt($options[self::IVFFLAT_PROBES]),
             );
+        }
+    }
+
+    /**
+     * The settings of a filtered dense search's plan (PgVectorStore::filterPlan). exact: index scans off, as the exact
+     * option, so the field indexes (bitmap scans) find the rows. index: only the vector index can serve the scan,
+     * with an iterative scan in relaxed order (the statement sorts its hits by distance).
+     *
+     * @param  'exact'|'index'|'planner'  $plan
+     * @param  array<string, mixed>  $options
+     */
+    public static function applyFilterPlan(Connection $connection, string $plan, array $options): void
+    {
+        if ($plan === 'exact') {
+            $connection->statement('SET LOCAL enable_indexscan = off');
+        }
+
+        if ($plan === 'index') {
+            $connection->statement('SET LOCAL enable_seqscan = off');
+            $connection->statement('SET LOCAL enable_bitmapscan = off');
+            $connection->statement('SET LOCAL enable_sort = off');
+            $connection->statement('SET LOCAL jit = off');
+            $connection->statement('SET LOCAL hnsw.iterative_scan = relaxed_order');
+
+            if (! array_key_exists(self::HNSW_EF_SEARCH, $options)) {
+                $connection->statement('SET LOCAL hnsw.ef_search = '.self::FILTER_INDEX_EF_SEARCH);
+            }
         }
     }
 
