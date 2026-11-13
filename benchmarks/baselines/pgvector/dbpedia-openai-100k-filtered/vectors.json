@@ -1,7 +1,7 @@
 {
     "schema": 1,
     "kind": "vectors",
-    "created_at": "2026-11-13T08:57:15+00:00",
+    "created_at": "2026-11-13T10:08:13+00:00",
     "dataset": {
         "name": "dbpedia-openai-100k-filtered",
         "description": "H7 filtered set on dbpedia-openai-100k: declared fields tenant (keyword) and rank (integer); tenants t50, t10, t1 and t01 hold 50%, 10%, 1% and 0.1% of the rows",
@@ -80,19 +80,19 @@
             "index_options": [],
             "documents": 100000,
             "ingest_workers": 8,
-            "ingest_ms": 85269,
-            "docs_per_second": 1172.8,
+            "ingest_ms": 85017,
+            "docs_per_second": 1176.2,
             "ready_wait_ms": 0,
-            "rebuild_ms": 21086,
-            "build_ms": 21086,
-            "index": "CREATE INDEX vcol_cbc5926058e54a7a32ecbd2e86fe6583_embedding_idx ON public.vcol_cbc5926058e54a7a32ecbd2e86fe6583 USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')",
+            "rebuild_ms": 21152,
+            "build_ms": 21152,
+            "index": "CREATE INDEX vcol_a277add919b51d9339a9ba5c4aa69f48_embedding_idx ON public.vcol_a277add919b51d9339a9ba5c4aa69f48 USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')",
             "sizes": {
-                "table_bytes": 838696960,
-                "index_bytes": 822665216,
-                "total_bytes": 1661362176
+                "table_bytes": 838680576,
+                "index_bytes": 826441728,
+                "total_bytes": 1665122304
             },
             "searches": [],
-            "memory": "2.429GiB / 31.36GiB"
+            "memory": "2.439GiB / 31.36GiB"
         }
     ],
     "filtered": [
@@ -102,67 +102,15 @@
             "rows": 50000,
             "variants": [
                 {
-                    "name": "planner default",
+                    "name": "driver, filter_plan auto",
                     "options": [],
                     "force_index": false,
-                    "recall_at_10": 1,
+                    "recall_at_10": 0.9831999999999979,
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 170.084,
-                    "p95_ms": 177.435
-                },
-                {
-                    "name": "index, iterative scan off",
-                    "options": {
-                        "hnsw.iterative_scan": "off"
-                    },
-                    "force_index": true,
-                    "recall_at_10": 0.9342999999999957,
-                    "hits_mean": 10,
-                    "hits_min": 10,
-                    "below_take": 0,
-                    "p50_ms": 4.348,
-                    "p95_ms": 6.009
-                },
-                {
-                    "name": "index, iterative scan relaxed_order",
-                    "options": {
-                        "hnsw.iterative_scan": "relaxed_order"
-                    },
-                    "force_index": true,
-                    "recall_at_10": 0.9342999999999957,
-                    "hits_mean": 10,
-                    "hits_min": 10,
-                    "below_take": 0,
-                    "p50_ms": 3.692,
-                    "p95_ms": 4.605
-                },
-                {
-                    "name": "index, iterative scan strict_order",
-                    "options": {
-                        "hnsw.iterative_scan": "strict_order"
-                    },
-                    "force_index": true,
-                    "recall_at_10": 0.9342999999999957,
-                    "hits_mean": 10,
-                    "hits_min": 10,
-                    "below_take": 0,
-                    "p50_ms": 3.78,
-                    "p95_ms": 5.364
-                },
-                {
-                    "name": "exact",
-                    "options": {
-                        "exact": true
-                    },
-                    "force_index": false,
-                    "recall_at_10": 1,
-                    "hits_mean": 10,
-                    "hits_min": 10,
-                    "below_take": 0,
-                    "p50_ms": 169.98,
-                    "p95_ms": 177.653
+                    "p50_ms": 8.457,
+                    "p95_ms": 10.378
                 }
             ]
         },
@@ -172,67 +120,15 @@
             "rows": 10000,
             "variants": [
                 {
-                    "name": "planner default",
+                    "name": "driver, filter_plan auto",
                     "options": [],
                     "force_index": false,
-                    "recall_at_10": 1,
+                    "recall_at_10": 0.9603999999999958,
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 54.116,
-                    "p95_ms": 57.405
-                },
-                {
-                    "name": "index, iterative scan off",
-                    "options": {
-                        "hnsw.iterative_scan": "off"
-                    },
-                    "force_index": true,
-                    "recall_at_10": 0.4009000000000007,
-                    "hits_mean": 4.02,
-                    "hits_min": 0,
-                    "below_take": 995,
-                    "p50_ms": 3.842,
-                    "p95_ms": 5.7
-                },
-                {
-                    "name": "index, iterative scan relaxed_order",
-                    "options": {
-                        "hnsw.iterative_scan": "relaxed_order"
-                    },
-                    "force_index": true,
-                    "recall_at_10": 0.9416999999999947,
-                    "hits_mean": 10,
-                    "hits_min": 10,
-                    "below_take": 0,
-                    "p50_ms": 5.438,
-                    "p95_ms": 7.314
-                },
-                {
-                    "name": "index, iterative scan strict_order",
-                    "options": {
-                        "hnsw.iterative_scan": "strict_order"
-                    },
-                    "force_index": true,
-                    "recall_at_10": 0.8898999999999958,
-                    "hits_mean": 10,
-                    "hits_min": 10,
-                    "below_take": 0,
-                    "p50_ms": 5.451,
-                    "p95_ms": 7.683
-                },
-                {
-                    "name": "exact",
-                    "options": {
-                        "exact": true
-                    },
-                    "force_index": false,
-                    "recall_at_10": 1,
-                    "hits_mean": 10,
-                    "hits_min": 10,
-                    "below_take": 0,
-                    "p50_ms": 54.271,
-                    "p95_ms": 57.382
+                    "p50_ms": 8.658,
+                    "p95_ms": 10.975
                 }
             ]
         },
@@ -242,67 +138,15 @@
             "rows": 1000,
             "variants": [
                 {
-                    "name": "planner default",
+                    "name": "driver, filter_plan auto",
                     "options": [],
                     "force_index": false,
                     "recall_at_10": 1,
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 23.226,
-                    "p95_ms": 25.501
-                },
-                {
-                    "name": "index, iterative scan off",
-                    "options": {
-                        "hnsw.iterative_scan": "off"
-                    },
-                    "force_index": true,
-                    "recall_at_10": 0.038200000000000185,
-                    "hits_mean": 0.38,
-                    "hits_min": 0,
-                    "below_take": 1000,
-                    "p50_ms": 3.777,
-                    "p95_ms": 5.785
-                },
-                {
-                    "name": "index, iterative scan relaxed_order",
-                    "options": {
-                        "hnsw.iterative_scan": "relaxed_order"
-                    },
-                    "force_index": true,
-                    "recall_at_10": 0.9643999999999952,
-                    "hits_mean": 10,
-                    "hits_min": 10,
-                    "below_take": 0,
-                    "p50_ms": 20,
-                    "p95_ms": 29.457
-                },
-                {
-                    "name": "index, iterative scan strict_order",
-                    "options": {
-                        "hnsw.iterative_scan": "strict_order"
-                    },
-                    "force_index": true,
-                    "recall_at_10": 0.8998999999999938,
-                    "hits_mean": 10,
-                    "hits_min": 10,
-                    "below_take": 0,
-                    "p50_ms": 20.628,
-                    "p95_ms": 29.333
-                },
-                {
-                    "name": "exact",
-                    "options": {
-                        "exact": true
-                    },
-                    "force_index": false,
-                    "recall_at_10": 1,
-                    "hits_mean": 10,
-                    "hits_min": 10,
-                    "below_take": 0,
-                    "p50_ms": 23.494,
-                    "p95_ms": 26.031
+                    "p50_ms": 6.425,
+                    "p95_ms": 7.797
                 }
             ]
         },
@@ -312,67 +156,15 @@
             "rows": 100,
             "variants": [
                 {
-                    "name": "planner default",
+                    "name": "driver, filter_plan auto",
                     "options": [],
                     "force_index": false,
                     "recall_at_10": 1,
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 20.571,
-                    "p95_ms": 21.96
-                },
-                {
-                    "name": "index, iterative scan off",
-                    "options": {
-                        "hnsw.iterative_scan": "off"
-                    },
-                    "force_index": true,
-                    "recall_at_10": 0.0034000000000000015,
-                    "hits_mean": 0.03,
-                    "hits_min": 0,
-                    "below_take": 1000,
-                    "p50_ms": 4.077,
-                    "p95_ms": 5.729
-                },
-                {
-                    "name": "index, iterative scan relaxed_order",
-                    "options": {
-                        "hnsw.iterative_scan": "relaxed_order"
-                    },
-                    "force_index": true,
-                    "recall_at_10": 0.7889999999999977,
-                    "hits_mean": 10,
-                    "hits_min": 8,
-                    "below_take": 4,
-                    "p50_ms": 37.459,
-                    "p95_ms": 43.004
-                },
-                {
-                    "name": "index, iterative scan strict_order",
-                    "options": {
-                        "hnsw.iterative_scan": "strict_order"
-                    },
-                    "force_index": true,
-                    "recall_at_10": 0.7789999999999979,
-                    "hits_mean": 10,
-                    "hits_min": 8,
-                    "below_take": 4,
-                    "p50_ms": 37.075,
-                    "p95_ms": 42.348
-                },
-                {
-                    "name": "exact",
-                    "options": {
-                        "exact": true
-                    },
-                    "force_index": false,
-                    "recall_at_10": 1,
-                    "hits_mean": 10,
-                    "hits_min": 10,
-                    "below_take": 0,
-                    "p50_ms": 20.934,
-                    "p95_ms": 22.512
+                    "p50_ms": 2.459,
+                    "p95_ms": 3.104
                 }
             ]
         }
@@ -389,5 +181,5 @@
         },
         "container": "agvector-multistore-postgres-1"
     },
-    "runtime_ms": 844301
+    "runtime_ms": 147488
 }

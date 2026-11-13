@@ -1,7 +1,7 @@
 {
     "schema": 1,
     "kind": "vectors",
-    "created_at": "2026-11-13T08:58:34+00:00",
+    "created_at": "2026-11-13T10:10:17+00:00",
     "dataset": {
         "name": "dbpedia-openai-100k-filtered",
         "description": "H7 filtered set on dbpedia-openai-100k: declared fields tenant (keyword) and rank (integer); tenants t50, t10, t1 and t01 hold 50%, 10%, 1% and 0.1% of the rows",
@@ -72,19 +72,19 @@
             "index_options": [],
             "documents": 100000,
             "ingest_workers": 8,
-            "ingest_ms": 17099,
-            "docs_per_second": 5848.3,
-            "ready_wait_ms": 6087,
+            "ingest_ms": 17475,
+            "docs_per_second": 5722.5,
+            "ready_wait_ms": 5066,
             "rebuild_ms": null,
-            "build_ms": 6087,
-            "index": "hnsw m=16 ef_construct=100 full_scan_threshold=10000, 99000 of 100000 points indexed",
+            "build_ms": 5066,
+            "index": "hnsw m=16 ef_construct=100 full_scan_threshold=10000, 99700 of 100000 points indexed",
             "sizes": {
                 "table_bytes": null,
-                "index_bytes": 11767808,
-                "total_bytes": 2908155904
+                "index_bytes": 10555392,
+                "total_bytes": 2887995392
             },
             "searches": [],
-            "memory": "281.4MiB / 31.36GiB"
+            "memory": "317.9MiB / 31.36GiB"
         }
     ],
     "filtered": [
@@ -97,12 +97,12 @@
                     "name": "default, declared fields",
                     "options": [],
                     "force_index": false,
-                    "recall_at_10": 0.9913999999999987,
+                    "recall_at_10": 0.9879999999999987,
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 5.226,
-                    "p95_ms": 8.171
+                    "p50_ms": 4.291,
+                    "p95_ms": 7.643
                 },
                 {
                     "name": "exact",
@@ -114,8 +114,8 @@
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 8.753,
-                    "p95_ms": 10.164
+                    "p50_ms": 8.816,
+                    "p95_ms": 9.8
                 }
             ]
         },
@@ -128,12 +128,12 @@
                     "name": "default, declared fields",
                     "options": [],
                     "force_index": false,
-                    "recall_at_10": 1,
+                    "recall_at_10": 0.9999,
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 4.857,
-                    "p95_ms": 8.051
+                    "p50_ms": 4.349,
+                    "p95_ms": 7.763
                 },
                 {
                     "name": "exact",
@@ -145,8 +145,8 @@
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 5.067,
-                    "p95_ms": 8.393
+                    "p50_ms": 5.214,
+                    "p95_ms": 8.151
                 }
             ]
         },
@@ -163,8 +163,8 @@
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 4.18,
-                    "p95_ms": 7.022
+                    "p50_ms": 3.303,
+                    "p95_ms": 6.384
                 },
                 {
                     "name": "exact",
@@ -176,8 +176,8 @@
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 3.376,
-                    "p95_ms": 6.669
+                    "p50_ms": 3.151,
+                    "p95_ms": 6.529
                 }
             ]
         },
@@ -194,8 +194,8 @@
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 3.252,
-                    "p95_ms": 6.284
+                    "p50_ms": 3.021,
+                    "p95_ms": 5.662
                 },
                 {
                     "name": "exact",
@@ -207,8 +207,8 @@
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 2.725,
-                    "p95_ms": 6.136
+                    "p50_ms": 4.571,
+                    "p95_ms": 5.776
                 }
             ]
         }
@@ -225,5 +225,5 @@
         },
         "container": "agvector-multistore-qdrant-1"
     },
-    "runtime_ms": 78832
+    "runtime_ms": 77041
 }
