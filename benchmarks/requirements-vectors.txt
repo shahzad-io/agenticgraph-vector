@@ -1,0 +1,4 @@
+# Optional: only for the `vectors` sets of benchmarks/export-datasets.py (SIFT1M, the DBpedia embedding set).
+# The text sets need the Python standard library only.
+numpy==2.4.6
+pyarrow==26.0.1

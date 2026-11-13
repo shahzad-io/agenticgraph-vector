@@ -10,6 +10,8 @@ namespace AgenticGraph\Vector\Tests\Support;
  */
 final class BenchReport
 {
+    public const NA = 'not available';
+
     public const QUALITY_KEYS = ['ndcg_at_10', 'recall_at_1', 'recall_at_5', 'recall_at_10', 'hit_at_1', 'hit_at_5', 'hit_at_10', 'mrr_at_10'];
 
     /** Run settings that must match for two reports to be compared. */
@@ -18,12 +20,13 @@ final class BenchReport
     /**
      * @param  array<string, list<string>>  $qrels
      * @param  array<string, list<string>>  $ranked
+     * @param  array<string, array<string, int>>  $grades  query id => document id => grade (nDCG only; default 1)
      * @return array<string, float>
      */
-    public static function quality(array $qrels, array $ranked): array
+    public static function quality(array $qrels, array $ranked, array $grades = []): array
     {
         return [
-            'ndcg_at_10' => RetrievalMetrics::ndcgAtK($qrels, $ranked, 10),
+            'ndcg_at_10' => RetrievalMetrics::ndcgAtK($qrels, $ranked, 10, $grades),
             'recall_at_1' => RetrievalMetrics::recallAtK($qrels, $ranked, 1),
             'recall_at_5' => RetrievalMetrics::recallAtK($qrels, $ranked, 5),
             'recall_at_10' => RetrievalMetrics::recallAtK($qrels, $ranked, 10),
@@ -151,6 +154,114 @@ final class BenchReport
     }
 
     /**
+     * Share of queries whose top $k ids are the same set in both rankings, and up to $show queries that differ (with
+     * the ids only in each side).
+     *
+     * @param  array<string, list<string>>  $reference
+     * @param  array<string, list<string>>  $candidate
+     * @return array{queries: int, same: int, share: float, differ: list<array{query: string, only_reference: list<string>, only_candidate: list<string>}>}
+     */
+    public static function agreement(array $reference, array $candidate, int $k = 10, int $show = 3): array
+    {
+        $same = 0;
+        $differ = [];
+
+        foreach ($reference as $query => $ids) {
+            $a = array_slice($ids, 0, $k);
+            $b = array_slice($candidate[$query] ?? [], 0, $k);
+
+            if (array_diff($a, $b) === [] && array_diff($b, $a) === []) {
+                $same++;
+            } elseif (count($differ) < $show) {
+                $differ[] = ['query' => (string) $query, 'only_reference' => array_values(array_diff($a, $b)), 'only_candidate' => array_values(array_diff($b, $a))];
+            }
+        }
+
+        return ['queries' => count($reference), 'same' => $same, 'share' => $reference === [] ? 0.0 : round($same / count($reference), 4), 'differ' => $differ];
+    }
+
+    /**
+     * One table for runs of one dataset on several stores: quality, latency, ingest and size per store and mode, then
+     * the top 10 agreement of each run with the first (from the `.ranked.json` files written beside the reports).
+     *
+     * @param  list<array<string, mixed>>  $reports
+     * @param  list<array<string, array<string, list<string>>>|null>  $rankings  per report: mode => query => ids, or null
+     */
+    public static function storeComparison(array $reports, array $rankings): string
+    {
+        $first = $reports[0];
+        $primary = (string) data_get($first, 'dataset.primary_metric', 'ndcg_at_10');
+        $lines = ["# vector-bench: {$first['dataset']['name']} on ".count($reports).' stores, '.$first['model']['name'], ''];
+
+        foreach ($reports as $report) {
+            foreach (self::COMPARABLE_KEYS as $key) {
+                if (data_get($report, $key) !== data_get($first, $key)) {
+                    $lines[] = sprintf('- Warning: %s is %s in the run on %s, %s in the first run.', $key, json_encode(data_get($report, $key)), $report['store']['name'], json_encode(data_get($first, $key)));
+                }
+            }
+
+            $lines[] = '- '.self::storeLine($report['store']);
+        }
+
+        $cell = static fn (mixed $value, string $format = '%s'): string => $value === null ? self::NA : sprintf($format, $value);
+        $lines = [...$lines, '', "Primary metric: {$primary}.", '', "| Store | Mode | {$primary} | nDCG@10 | recall@10 | MRR@10 | p50 ms (1) | p95 ms (1) | QPS (1) | QPS (max) | Ingest docs/s | Index bytes |", '|---|---|---|---|---|---|---|---|---|---|---|---|'];
+
+        foreach ($reports as $report) {
+            foreach ($report['modes'] as $mode => $data) {
+                $levels = (array) ($data['concurrency'] ?? []);
+                $lines[] = sprintf('| %s | %s | %s | %.4f | %.4f | %.4f | %s | %s | %s | %s | %s | %s |', $report['store']['name'], $mode,
+                    $cell(data_get($data, "quality.{$primary}"), '%.4f'), $data['quality']['ndcg_at_10'], $data['quality']['recall_at_10'], $data['quality']['mrr_at_10'],
+                    $cell(data_get($levels, '1.p50_ms')), $cell(data_get($levels, '1.p95_ms')), $cell(data_get($levels, '1.qps')),
+                    $cell($levels === [] ? null : max(array_column($levels, 'qps'))), $cell(data_get($report, 'ingest.docs_per_second')), $cell(data_get($report, 'resources.index_bytes')));
+            }
+        }
+
+        if ($rankings[0] !== null) {
+            $lines = [...$lines, '', '## Top 10 agreement with the first run (same set of ids)', '', '| Store | Mode | Same | Share | Queries that differ (ids only in the first run / only in this run) |', '|---|---|---|---|---|'];
+
+            foreach (array_slice($reports, 1, preserve_keys: true) as $i => $report) {
+                foreach ($rankings[0] as $mode => $reference) {
+                    if (! isset($rankings[$i][$mode])) {
+                        continue;
+                    }
+
+                    $a = self::agreement($reference, $rankings[$i][$mode]);
+                    $lines[] = sprintf('| %s | %s | %d of %d | %.4f | %s |', $report['store']['name'], $mode, $a['same'], $a['queries'], $a['share'],
+                        implode('; ', array_map(static fn (array $d): string => "{$d['query']}: ".implode(',', $d['only_reference']).' / '.implode(',', $d['only_candidate']), $a['differ'])) ?: 'none');
+                }
+            }
+        }
+
+        return implode("\n", [...$lines, '']);
+    }
+
+    /**
+     * The store line: name and driver, engine version, index setting and capability flags; a report from before the
+     * store axis has only a name and an index.
+     *
+     * @param  array<string, mixed>  $store
+     */
+    public static function storeLine(array $store): string
+    {
+        $driver = isset($store['driver']) && $store['driver'] !== $store['name'] ? " ({$store['driver']})" : '';
+        $capabilities = isset($store['capabilities']) ? implode(', ', (array) $store['capabilities']) : null;
+
+        return "{$store['name']}{$driver}, engine ".($store['engine'] ?? self::NA)
+            .', index `'.($store['index'] ?? self::NA).'`'.(($store['exact'] ?? false) ? ', exact search' : '')
+            .', capabilities: '.($capabilities === null ? self::NA : ($capabilities === '' ? 'none' : $capabilities));
+    }
+
+    /**
+     * @param  array{cpu: string|null, cores: int|null, memory_bytes: int|null, store_in_docker: bool, docker: string|null}  $machine
+     */
+    public static function machineLine(array $machine): string
+    {
+        return sprintf('%s, %s cores, %s memory; store %s', $machine['cpu'] ?? self::NA, $machine['cores'] ?? self::NA,
+            $machine['memory_bytes'] === null ? self::NA : round($machine['memory_bytes'] / 1024 ** 3).' GiB',
+            $machine['store_in_docker'] ? 'in Docker ('.($machine['docker'] ?? self::NA).')' : 'not in Docker');
+    }
+
+    /**
      * @param  array<string, mixed>  $report
      */
     public static function markdown(array $report): string
@@ -160,11 +271,12 @@ final class BenchReport
             '',
             "- Created: {$report['created_at']}",
             "- Dataset: {$report['dataset']['description']} (revision `{$report['dataset']['revision']}`, {$report['dataset']['license']})",
+            '- Primary metric: '.($report['dataset']['primary_metric'] ?? 'ndcg_at_10').(($report['dataset']['graded'] ?? false) ? ' (graded judgments: nDCG uses the grades)' : ''),
             "- Model: `{$report['model']['name']}`, {$report['model']['dimensions']} dimensions",
             '- Truncation: '.($report['truncate'] > 0 ? "{$report['truncate']} characters" : 'none'),
             ...(isset($report['chunk']) ? ["- Chunks: {$report['chunk']['size']} characters, overlap {$report['chunk']['overlap']}, {$report['chunk']['chunks']} chunks; hits collapsed by `{$report['chunk']['collapse']}` before scoring (over-fetch {$report['chunk']['overfetch']}x, rerank before collapse)"] : []),
             "- Sizes: {$report['sizes']['documents']} documents, {$report['sizes']['queries']} queries, top {$report['sizes']['top_k']}, warmup {$report['sizes']['warmup']}".($report['sizes']['subset'] ? ' (subset)' : ''),
-            "- Store: {$report['store']['name']}, `{$report['store']['index']}`",
+            '- Store: '.self::storeLine($report['store']),
             ...(isset($report['filter']) ? ["- Filtered set: field `{$report['filter']['field']}`, {$report['filter']['queries']} of {$report['filter']['unfiltered_queries']} queries (relevant documents share one value)"] : []),
             '',
             '## Quality',
@@ -262,15 +374,16 @@ final class BenchReport
             '',
             sprintf('- %d documents in %d ms (%.1f documents per second)', $ingest['documents'], $ingest['wall_ms'], $ingest['docs_per_second']),
             sprintf('- Embedding: %d ms, %d calls, %s tokens%s', $ingest['embedding_ms'], $ingest['embedding_calls'], $ingest['embedding_tokens'] ?? 'n/a', ($ingest['cached'] ?? false) ? ' (vectors from the document cache)' : ''),
-            sprintf('- Index rebuild (REINDEX): %d ms', $ingest['index_rebuild_ms']),
+            '- Index rebuild: '.(isset($ingest['index_rebuild_ms']) ? "{$ingest['index_rebuild_ms']} ms" : self::NA),
             '',
             '## Resources',
             '',
-            sprintf('- Storage: table %s bytes, indexes %s bytes, total %s bytes', $resources['table_bytes'], $resources['index_bytes'], $resources['total_bytes']),
+            sprintf('- Storage: table %s, indexes %s, total %s', ...array_map(static fn (?int $bytes): string => $bytes === null ? self::NA : "{$bytes} bytes", [$resources['table_bytes'], $resources['index_bytes'], $resources['total_bytes']])),
             '- Container memory: '.($resources['memory_mib_max'] !== null
                 ? sprintf('max %.1f MiB over %d samples (%s)', $resources['memory_mib_max'], $resources['memory_samples'], $resources['container'])
                 : 'not sampled ('.$resources['memory_note'].')'),
-            "- Infrastructure: {$report['infrastructure']['postgres']}, pgvector {$report['infrastructure']['pgvector']}, PHP {$report['infrastructure']['php']}",
+            '- Infrastructure: PHP '.$report['infrastructure']['php'].(isset($report['infrastructure']['os']) ? ", {$report['infrastructure']['os']}" : ''),
+            ...(isset($report['infrastructure']['machine']) ? ['- Machine: '.self::machineLine($report['infrastructure']['machine'])] : []),
             '',
             '## Cost',
             '',

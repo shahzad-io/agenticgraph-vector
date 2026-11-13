@@ -238,6 +238,14 @@ it('sends upsert without update_mode', function () {
     expect(qdrantSent()[0][2])->not->toHaveKey('update_mode');
 });
 
+it('validates collection_prefix in the constructor, like the pgvector table_prefix (H11)', function (string $prefix) {
+    expect(fn () => qdrantStore(['collection_prefix' => $prefix]))->toThrow(VectorQueryException::class, 'Invalid Qdrant collection_prefix');
+})->with(['has/slash', 'semi;colon', 'sp ace', 'qu?ery', str_repeat('a', QdrantStore::MAX_COLLECTION_PREFIX + 1)]);
+
+it('accepts a prefix of the longest length', function () {
+    expect(qdrantStore(['collection_prefix' => str_repeat('a', QdrantStore::MAX_COLLECTION_PREFIX)]))->toBeInstanceOf(QdrantStore::class);
+});
+
 it('prefixes every collection and alias name with collection_prefix and lists only its own names (Q4)', function () {
     fakeQdrant(routes: [
         'GET /collections' => ['result' => ['collections' => [['name' => 'p_docs'], ['name' => 'docs'], ['name' => 'p_old']]]],

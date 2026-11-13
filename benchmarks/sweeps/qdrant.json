@@ -1,0 +1,17 @@
+{
+    "build": [
+        {"name": "m8-ef64", "index_options": {"m": 8, "ef_construct": 64}},
+        {"name": "m16-ef64", "index_options": {"m": 16, "ef_construct": 64}},
+        {"name": "m16-ef128", "index_options": {"m": 16, "ef_construct": 128}}
+    ],
+    "search": [
+        {"name": "hnsw_ef 40", "ef": 40},
+        {"name": "hnsw_ef 80", "ef": 80},
+        {"name": "hnsw_ef 160", "ef": 160},
+        {"name": "hnsw_ef 320", "ef": 320}
+    ],
+    "filtered": [
+        {"name": "default, declared fields"},
+        {"name": "exact", "exact": true}
+    ]
+}

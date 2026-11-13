@@ -1,0 +1,48 @@
+{
+    "build": [
+        {
+            "name": "m8-ef64",
+            "index_options": {
+                "m": 8,
+                "ef_construction": 64
+            }
+        },
+        {
+            "name": "m16-ef64",
+            "index_options": {
+                "m": 16,
+                "ef_construction": 64
+            }
+        },
+        {
+            "name": "m16-ef128",
+            "index_options": {
+                "m": 16,
+                "ef_construction": 128
+            }
+        }
+    ],
+    "search": [
+        {
+            "name": "ef_search 40",
+            "ef": 40
+        },
+        {
+            "name": "ef_search 80",
+            "ef": 80
+        },
+        {
+            "name": "ef_search 160",
+            "ef": 160
+        },
+        {
+            "name": "ef_search 320",
+            "ef": 320
+        }
+    ],
+    "filtered": [
+        {
+            "name": "driver, filter_plan auto"
+        }
+    ]
+}

@@ -1,0 +1,437 @@
+{
+    "schema": 1,
+    "kind": "vectors",
+    "created_at": "2026-11-13T08:38:40+00:00",
+    "dataset": {
+        "name": "dbpedia-openai-100k",
+        "description": "DBpedia entities embedded with OpenAI text-embedding-3-large at 1,536 dimensions: the first 100,000 rows; 1,000 held-out rows of the same set as queries; cosine",
+        "license": "MIT",
+        "license_note": "MIT (the Hugging Face dataset card); the texts are DBpedia abstracts (CC BY-SA 3.0) and the vectors come from OpenAI's API; check before publishing numbers",
+        "citation": "Qdrant, dbpedia-entities-openai3-text-embedding-3-large-1536-1M (Hugging Face), from BEIR DBpedia-Entity (Hasibi et al., SIGIR 2017)",
+        "built_from": null,
+        "source": {
+            "url": "https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-1M",
+            "revision": "4a9731217921bc476a0f03544f11f22ae4903fa5",
+            "column": "text-embedding-3-large-1536-embedding",
+            "files": [
+                {
+                    "path": "data/train-00000-of-00026.parquet",
+                    "sha256": "27519d7104c8ac6d0f51ac18e8ac23b29d67cbab8465bc3302b458ca3dcbbb78"
+                },
+                {
+                    "path": "data/train-00001-of-00026.parquet",
+                    "sha256": "26c2339d6318674a8e12cb95efc09bc7447fe87513f52dcd40155af74f6389a3"
+                },
+                {
+                    "path": "data/train-00002-of-00026.parquet",
+                    "sha256": "16ff6f597d91ee684054b49397c3ada56e71b2acc9a37b8868531c9c500a76b6"
+                }
+            ]
+        },
+        "files": {
+            "base_vectors": "14838d8ea5448e9aa3b5fd14dc49b1ee7899930e309b1e566c91cf572d1a4336",
+            "base_index": "c20449ba2941022fd8bbb4de25867a4d281c2e255fb90cff014153e15ada7707",
+            "queries_vectors": "57dc0040dadffea95d5acf1a142f2256a4875987880166a96ee0b8cf63279d3a",
+            "queries_index": "eccf14c63407bb5c95678e9d07d7835c8dd42a13558720f5f0324b691b022748",
+            "ground_truth": "8cf56e9677c77c71c2474bee66c1b3e4690c0cd441c4307ec71a950852c9555e"
+        },
+        "ground_truth": "computed offline: exact cosine top 100 (numpy, float32)",
+        "primary_metric": "recall_at_10"
+    },
+    "sizes": {
+        "rows": 100000,
+        "queries": 1000,
+        "dimensions": 1536,
+        "metric": "cosine",
+        "top_k": 10,
+        "warmup": 20
+    },
+    "store": {
+        "name": "pgvector",
+        "driver": "pgvector",
+        "engine": "pgvector 0.8.3, Postgres 16.14 (Debian 16.14-1.pgdg12+1) (shared_buffers 4GB, maintenance_work_mem 4GB, max_parallel_maintenance_workers 7)",
+        "capabilities": [
+            "list_ids",
+            "update_metadata",
+            "delete_by_filter",
+            "filter_not",
+            "filter_contains",
+            "filter_range",
+            "keyword",
+            "aliases",
+            "queued_ingest",
+            "rebuild_index",
+            "keyword_websearch",
+            "keyword_languages",
+            "atomic_batches",
+            "migrations",
+            "undeclared_filters"
+        ]
+    },
+    "embedding_calls": 0,
+    "self_check": {
+        "queries": 100,
+        "mismatches": []
+    },
+    "builds": [
+        {
+            "name": "m8-ef64",
+            "index_options": {
+                "m": 8,
+                "ef_construction": 64
+            },
+            "documents": 100000,
+            "ingest_workers": 8,
+            "ingest_ms": 37780,
+            "docs_per_second": 2646.9,
+            "ready_wait_ms": 0,
+            "rebuild_ms": 67267,
+            "build_ms": 67267,
+            "index": "CREATE INDEX vcol_173521ae17b7224051fa2de6e7e8c2fc_embedding_idx ON public.vcol_173521ae17b7224051fa2de6e7e8c2fc USING hnsw (embedding vector_cosine_ops) WITH (m='8', ef_construction='64')",
+            "sizes": {
+                "table_bytes": 834600960,
+                "index_bytes": 822665216,
+                "total_bytes": 1657266176
+            },
+            "searches": [
+                {
+                    "name": "ef_search 40",
+                    "options": {
+                        "hnsw.ef_search": 40
+                    },
+                    "recall_at_10": 0.8923999999999952,
+                    "recall_at_100": 0.8589600000000008,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 285.5,
+                            "p50_ms": 3.247,
+                            "p95_ms": 4.77,
+                            "p99_ms": 5.485
+                        },
+                        "8": {
+                            "qps": 1707.1,
+                            "p50_ms": 4.355,
+                            "p95_ms": 6.556,
+                            "p99_ms": 7.553
+                        }
+                    }
+                },
+                {
+                    "name": "ef_search 80",
+                    "options": {
+                        "hnsw.ef_search": 80
+                    },
+                    "recall_at_10": 0.9382999999999965,
+                    "recall_at_100": 0.8589600000000008,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 254.6,
+                            "p50_ms": 3.745,
+                            "p95_ms": 5.12,
+                            "p99_ms": 6.318
+                        },
+                        "8": {
+                            "qps": 1481.3,
+                            "p50_ms": 4.983,
+                            "p95_ms": 7.695,
+                            "p99_ms": 8.946
+                        }
+                    }
+                },
+                {
+                    "name": "ef_search 160",
+                    "options": {
+                        "hnsw.ef_search": 160
+                    },
+                    "recall_at_10": 0.9668999999999974,
+                    "recall_at_100": 0.9099600000000033,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 213.3,
+                            "p50_ms": 4.595,
+                            "p95_ms": 5.543,
+                            "p99_ms": 7.99
+                        },
+                        "8": {
+                            "qps": 1163.8,
+                            "p50_ms": 6.421,
+                            "p95_ms": 9.623,
+                            "p99_ms": 10.939
+                        }
+                    }
+                },
+                {
+                    "name": "ef_search 320",
+                    "options": {
+                        "hnsw.ef_search": 320
+                    },
+                    "recall_at_10": 0.9806999999999979,
+                    "recall_at_100": 0.954960000000006,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 154.3,
+                            "p50_ms": 6.445,
+                            "p95_ms": 7.702,
+                            "p99_ms": 9.093
+                        },
+                        "8": {
+                            "qps": 881.4,
+                            "p50_ms": 8.658,
+                            "p95_ms": 12.006,
+                            "p99_ms": 14.292
+                        }
+                    }
+                }
+            ],
+            "memory": "2.422GiB / 31.36GiB"
+        },
+        {
+            "name": "m16-ef64",
+            "index_options": {
+                "m": 16,
+                "ef_construction": 64
+            },
+            "documents": 100000,
+            "ingest_workers": 8,
+            "ingest_ms": 84744,
+            "docs_per_second": 1180,
+            "ready_wait_ms": 0,
+            "rebuild_ms": 117475,
+            "build_ms": 117475,
+            "index": "CREATE INDEX vcol_0667337b5133bad4dafd96dfd2783638_embedding_idx ON public.vcol_0667337b5133bad4dafd96dfd2783638 USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')",
+            "sizes": {
+                "table_bytes": 834592768,
+                "index_bytes": 822648832,
+                "total_bytes": 1657241600
+            },
+            "searches": [
+                {
+                    "name": "ef_search 40",
+                    "options": {
+                        "hnsw.ef_search": 40
+                    },
+                    "recall_at_10": 0.9504999999999967,
+                    "recall_at_100": 0.9321200000000053,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 260.5,
+                            "p50_ms": 3.691,
+                            "p95_ms": 4.691,
+                            "p99_ms": 6.415
+                        },
+                        "8": {
+                            "qps": 1537.6,
+                            "p50_ms": 4.885,
+                            "p95_ms": 7.333,
+                            "p99_ms": 8.353
+                        }
+                    }
+                },
+                {
+                    "name": "ef_search 80",
+                    "options": {
+                        "hnsw.ef_search": 80
+                    },
+                    "recall_at_10": 0.9768999999999973,
+                    "recall_at_100": 0.9321200000000053,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 216.2,
+                            "p50_ms": 4.554,
+                            "p95_ms": 5.525,
+                            "p99_ms": 7.91
+                        },
+                        "8": {
+                            "qps": 1206.2,
+                            "p50_ms": 6.299,
+                            "p95_ms": 9.326,
+                            "p99_ms": 10.864
+                        }
+                    }
+                },
+                {
+                    "name": "ef_search 160",
+                    "options": {
+                        "hnsw.ef_search": 160
+                    },
+                    "recall_at_10": 0.9877999999999982,
+                    "recall_at_100": 0.9615400000000067,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 161.6,
+                            "p50_ms": 6.168,
+                            "p95_ms": 7.421,
+                            "p99_ms": 8.23
+                        },
+                        "8": {
+                            "qps": 867.4,
+                            "p50_ms": 8.589,
+                            "p95_ms": 12.728,
+                            "p99_ms": 15.134
+                        }
+                    }
+                },
+                {
+                    "name": "ef_search 320",
+                    "options": {
+                        "hnsw.ef_search": 320
+                    },
+                    "recall_at_10": 0.993699999999999,
+                    "recall_at_100": 0.984050000000007,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 109.8,
+                            "p50_ms": 9.083,
+                            "p95_ms": 11.241,
+                            "p99_ms": 13.113
+                        },
+                        "8": {
+                            "qps": 654.6,
+                            "p50_ms": 11.76,
+                            "p95_ms": 16.029,
+                            "p99_ms": 17.765
+                        }
+                    }
+                }
+            ],
+            "memory": "2.423GiB / 31.36GiB"
+        },
+        {
+            "name": "m16-ef128",
+            "index_options": {
+                "m": 16,
+                "ef_construction": 128
+            },
+            "documents": 100000,
+            "ingest_workers": 8,
+            "ingest_ms": 115523,
+            "docs_per_second": 865.6,
+            "ready_wait_ms": 0,
+            "rebuild_ms": 203718,
+            "build_ms": 203718,
+            "index": "CREATE INDEX vcol_0e58f86418412fe3af0440ddda3912d5_embedding_idx ON public.vcol_0e58f86418412fe3af0440ddda3912d5 USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='128')",
+            "sizes": {
+                "table_bytes": 834576384,
+                "index_bytes": 822673408,
+                "total_bytes": 1657249792
+            },
+            "searches": [
+                {
+                    "name": "ef_search 40",
+                    "options": {
+                        "hnsw.ef_search": 40
+                    },
+                    "recall_at_10": 0.9630999999999974,
+                    "recall_at_100": 0.9444100000000051,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 274.2,
+                            "p50_ms": 3.495,
+                            "p95_ms": 4.59,
+                            "p99_ms": 6.745
+                        },
+                        "8": {
+                            "qps": 1395.2,
+                            "p50_ms": 5.332,
+                            "p95_ms": 7.805,
+                            "p99_ms": 9.188
+                        }
+                    }
+                },
+                {
+                    "name": "ef_search 80",
+                    "options": {
+                        "hnsw.ef_search": 80
+                    },
+                    "recall_at_10": 0.9866999999999981,
+                    "recall_at_100": 0.9444100000000051,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 218.4,
+                            "p50_ms": 4.508,
+                            "p95_ms": 5.39,
+                            "p99_ms": 6.214
+                        },
+                        "8": {
+                            "qps": 1175.8,
+                            "p50_ms": 6.445,
+                            "p95_ms": 9.238,
+                            "p99_ms": 10.907
+                        }
+                    }
+                },
+                {
+                    "name": "ef_search 160",
+                    "options": {
+                        "hnsw.ef_search": 160
+                    },
+                    "recall_at_10": 0.9944999999999992,
+                    "recall_at_100": 0.9730800000000074,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 154.9,
+                            "p50_ms": 6.38,
+                            "p95_ms": 7.724,
+                            "p99_ms": 9.706
+                        },
+                        "8": {
+                            "qps": 879.2,
+                            "p50_ms": 8.751,
+                            "p95_ms": 12.226,
+                            "p99_ms": 14.026
+                        }
+                    }
+                },
+                {
+                    "name": "ef_search 320",
+                    "options": {
+                        "hnsw.ef_search": 320
+                    },
+                    "recall_at_10": 0.9974999999999995,
+                    "recall_at_100": 0.9919700000000048,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 103,
+                            "p50_ms": 9.783,
+                            "p95_ms": 11.719,
+                            "p99_ms": 12.696
+                        },
+                        "8": {
+                            "qps": 609.5,
+                            "p50_ms": 12.82,
+                            "p95_ms": 16.58,
+                            "p99_ms": 20.335
+                        }
+                    }
+                }
+            ],
+            "memory": "2.424GiB / 31.36GiB"
+        }
+    ],
+    "filtered": null,
+    "infrastructure": {
+        "php": "8.4.23",
+        "os": "Darwin 24.6.0",
+        "machine": {
+            "cpu": "Apple M3 Max",
+            "cores": 16,
+            "memory_bytes": 68719476736,
+            "store_in_docker": true,
+            "docker": "OrbStack, 16 CPUs, 33670656000 bytes"
+        },
+        "container": "agvector-multistore-postgres-1"
+    },
+    "runtime_ms": 836204
+}

@@ -16,13 +16,23 @@ final class BenchDataset
 
     public const EXPORT_DIR = __DIR__.'/../../build/benchmark/datasets';
 
+    /** Keys every datasets.json entry has besides `source` and `files` (the checksums), with their allowed values. */
+    public const REGISTRY_KEYS = [
+        'tier' => ['small', 'medium', 'large'],
+        'kind' => ['text', 'vectors'],
+        'primary_metric' => null,
+        'license' => null,
+        'license_note' => null,
+    ];
+
     /**
      * @return array{
      *     name: string,
      *     meta: array<string, mixed>,
      *     corpus: list<array{id: string, text: string}>,
      *     queries: list<array{id: string, text: string}>,
-     *     qrels: array<string, list<string>>
+     *     qrels: array<string, list<string>>,
+     *     grades: array<string, array<string, int>>
      * }
      */
     public static function load(string $name, string $manifest = self::MANIFEST, string $exportDir = self::EXPORT_DIR): array
@@ -32,6 +42,12 @@ final class BenchDataset
         $meta = $datasets['datasets'][$name] ?? throw new RuntimeException(
             "Unknown dataset [{$name}]. Known: ".implode(', ', array_keys($datasets['datasets'])).'.',
         );
+
+        foreach (self::REGISTRY_KEYS as $key => $allowed) {
+            if (! isset($meta[$key]) || ($allowed !== null && ! in_array($meta[$key], $allowed, true))) {
+                throw new RuntimeException("Dataset [{$name}] needs `{$key}` in datasets.json".($allowed === null ? '' : ' ('.implode(', ', $allowed).')').'.');
+            }
+        }
 
         $data = [];
 
@@ -59,17 +75,32 @@ final class BenchDataset
         $corpus = $data['corpus'];
         /** @var list<array{id: string, text: string}> $queries */
         $queries = $data['queries'];
-        /** @var array<string, list<string>> $qrels */
-        $qrels = $data['qrels'];
+        // A query's judgments are a list of relevant ids (binary) or a map of id => grade; grade 0 is not relevant.
+        $qrels = [];
+        $grades = [];
 
-        return ['name' => $name, 'meta' => $meta, 'corpus' => $corpus, 'queries' => $queries, 'qrels' => $qrels];
+        /** @var array<string, list<string>|array<string, int>> $judged */
+        $judged = $data['qrels'];
+
+        foreach ($judged as $queryId => $judgments) {
+            if (array_is_list($judgments)) {
+                $qrels[(string) $queryId] = array_map(strval(...), $judgments);
+
+                continue;
+            }
+
+            $grades[(string) $queryId] = array_filter(array_map(intval(...), $judgments), static fn (int $grade): bool => $grade > 0);
+            $qrels[(string) $queryId] = array_map(strval(...), array_keys($grades[(string) $queryId]));
+        }
+
+        return ['name' => $name, 'meta' => $meta, 'corpus' => $corpus, 'queries' => $queries, 'qrels' => $qrels, 'grades' => $grades];
     }
 
     /**
      * A fixed-size run: the first $queries queries, and a corpus of $documents that holds their
      * relevant documents first. Queries whose relevant documents do not all fit are dropped.
      *
-     * @template T of array{corpus: list<array{id: string, text: string}>, queries: list<array{id: string, text: string}>, qrels: array<string, list<string>>}
+     * @template T of array{corpus: list<array{id: string, text: string}>, queries: list<array{id: string, text: string}>, qrels: array<string, list<string>>, grades?: array<string, array<string, int>>}
      *
      * @param  T  $dataset
      * @return T
@@ -107,6 +138,10 @@ final class BenchDataset
         }
 
         $dataset['qrels'] = array_intersect_key($dataset['qrels'], array_flip(array_column($dataset['queries'], 'id')));
+
+        if (isset($dataset['grades'])) {
+            $dataset['grades'] = array_intersect_key($dataset['grades'], $dataset['qrels']);
+        }
 
         return $dataset;
     }

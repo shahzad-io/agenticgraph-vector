@@ -2,7 +2,7 @@
 <?php
 
 /**
- * Retrieval benchmark for agenticgraph-vector on pgvector (dev only). The logic lives in
+ * Retrieval benchmark for agenticgraph-vector on any configured store (dev only). The logic lives in
  * tests/Support/BenchRunner.php; see benchmarks/README.md. Exit codes: 0 done, 1 quality drop
  * against the baseline, 2 setup error.
  */
