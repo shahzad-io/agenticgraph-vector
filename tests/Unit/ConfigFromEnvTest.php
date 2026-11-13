@@ -4,15 +4,25 @@ use Illuminate\Support\Arr;
 
 /**
  * Loads config/vector.php with one env value set (or unset) and returns the value at $path.
+ * env() reads $_SERVER and $_ENV before getenv(), so all three are set, then restored as they were.
  */
 function vectorConfigValue(string $path, string $env, ?string $value): mixed
 {
-    $value === null ? putenv($env) : putenv("{$env}={$value}");
+    $previous = [getenv($env), $_ENV, $_SERVER];
+
+    if ($value === null) {
+        putenv($env);
+        unset($_ENV[$env], $_SERVER[$env]);
+    } else {
+        putenv("{$env}={$value}");
+        $_ENV[$env] = $_SERVER[$env] = $value;
+    }
 
     try {
         $config = require __DIR__.'/../../config/vector.php';
     } finally {
-        putenv($env);
+        [$getenv, $_ENV, $_SERVER] = $previous;
+        $getenv === false ? putenv($env) : putenv("{$env}={$getenv}");
     }
 
     return Arr::get($config, $path);
