@@ -61,6 +61,12 @@ return [
             'prefer_index' => (bool) env('VECTOR_PGVECTOR_PREFER_INDEX', true),
             // The most rows one iterative scan visits (pgvector's default).
             'max_scan_tuples' => (int) env('VECTOR_PGVECTOR_MAX_SCAN_TUPLES', 20000),
+            // A filtered dense search on declared fields counts its matches up to T + 1, T being the larger of
+            // filter_exact_max_rows and filter_exact_min_share x the table's row count: at most T scores them
+            // exactly, more uses the vector index. filter_plan: auto, exact, index or planner.
+            'filter_exact_max_rows' => (int) env('VECTOR_PGVECTOR_FILTER_EXACT_MAX_ROWS', 2500),
+            'filter_exact_min_share' => (float) env('VECTOR_PGVECTOR_FILTER_EXACT_MIN_SHARE', 0.01),
+            'filter_plan' => env('VECTOR_PGVECTOR_FILTER_PLAN', 'auto'),
         ],
 
         // Qdrant v1.20+ over REST. Filters run on declared fields only; no keyword search, no migrations.

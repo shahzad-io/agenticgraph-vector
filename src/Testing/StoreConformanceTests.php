@@ -86,6 +86,7 @@ trait StoreConformanceTests
     {
         $store = $this->conformanceStore;
         $aliases = $store instanceof AliasStoreContract && $store->capabilities()->supports(StoreCapability::Aliases);
+        $failures = [];
 
         // Two passes: every alias first, since a collection behind an alias cannot be deleted.
         foreach ([true, false] as $aliasPass) {
@@ -93,6 +94,14 @@ trait StoreConformanceTests
                 try {
                     if ($aliasPass) {
                         if ($aliases && array_key_exists($name, $store->listAliases())) {
+                            // A test may end mid-migration (a copy that failed on purpose); its alias is then kept.
+                            $migration = $store instanceof MigrationStoreContract && $store->capabilities()->supports(StoreCapability::Migrations)
+                                ? $store->migration($name) : null;
+
+                            if ($migration?->unfinished()) {
+                                $store->saveMigration($migration->withPhase('failed'));
+                            }
+
                             $store->deleteAlias($name);
                         }
 
@@ -110,14 +119,19 @@ trait StoreConformanceTests
                     if ($store?->collectionExists($name)) {
                         $store->deleteCollection($name);
                     }
-                } catch (Throwable) {
-                    // Best-effort cleanup.
+                } catch (Throwable $thrown) {
+                    $failures[] = "[{$name}]: ".$thrown::class.': '.$thrown->getMessage();
                 }
             }
         }
 
         $this->conformanceCollections = [];
         $this->conformanceStore = null;
+
+        // A collection left behind would leak into the next test, so the run fails and says which one.
+        if ($failures !== []) {
+            throw new \RuntimeException("Conformance cleanup could not drop:\n".implode("\n", $failures));
+        }
     }
 
     // Collections
