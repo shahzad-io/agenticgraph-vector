@@ -1,7 +1,7 @@
 {
     "schema": 1,
     "kind": "vectors",
-    "created_at": "2026-11-13T10:08:13+00:00",
+    "created_at": "2026-11-13T13:04:43+00:00",
     "dataset": {
         "name": "dbpedia-openai-100k-filtered",
         "description": "H7 filtered set on dbpedia-openai-100k: declared fields tenant (keyword) and rank (integer); tenants t50, t10, t1 and t01 hold 50%, 10%, 1% and 0.1% of the rows",
@@ -80,19 +80,19 @@
             "index_options": [],
             "documents": 100000,
             "ingest_workers": 8,
-            "ingest_ms": 85017,
-            "docs_per_second": 1176.2,
+            "ingest_ms": 84353,
+            "docs_per_second": 1185.5,
             "ready_wait_ms": 0,
-            "rebuild_ms": 21152,
-            "build_ms": 21152,
-            "index": "CREATE INDEX vcol_a277add919b51d9339a9ba5c4aa69f48_embedding_idx ON public.vcol_a277add919b51d9339a9ba5c4aa69f48 USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')",
+            "rebuild_ms": 20708,
+            "build_ms": 20708,
+            "index": "CREATE INDEX vcol_2784251c802bc0d46097c386a56a72eb_embedding_idx ON public.vcol_2784251c802bc0d46097c386a56a72eb USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')",
             "sizes": {
-                "table_bytes": 838680576,
-                "index_bytes": 826441728,
-                "total_bytes": 1665122304
+                "table_bytes": 838696960,
+                "index_bytes": 826515456,
+                "total_bytes": 1665212416
             },
             "searches": [],
-            "memory": "2.439GiB / 31.36GiB"
+            "memory": "2.44GiB / 31.36GiB"
         }
     ],
     "filtered": [
@@ -105,12 +105,12 @@
                     "name": "driver, filter_plan auto",
                     "options": [],
                     "force_index": false,
-                    "recall_at_10": 0.9831999999999979,
+                    "recall_at_10": 0.9843999999999983,
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 8.457,
-                    "p95_ms": 10.378
+                    "p50_ms": 6.674,
+                    "p95_ms": 7.925
                 }
             ]
         },
@@ -123,12 +123,12 @@
                     "name": "driver, filter_plan auto",
                     "options": [],
                     "force_index": false,
-                    "recall_at_10": 0.9603999999999958,
+                    "recall_at_10": 0.9630999999999957,
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 8.658,
-                    "p95_ms": 10.975
+                    "p50_ms": 6.784,
+                    "p95_ms": 8.573
                 }
             ]
         },
@@ -145,8 +145,8 @@
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 6.425,
-                    "p95_ms": 7.797
+                    "p50_ms": 5.589,
+                    "p95_ms": 6.806
                 }
             ]
         },
@@ -163,8 +163,8 @@
                     "hits_mean": 10,
                     "hits_min": 10,
                     "below_take": 0,
-                    "p50_ms": 2.459,
-                    "p95_ms": 3.104
+                    "p50_ms": 2.124,
+                    "p95_ms": 3.219
                 }
             ]
         }
@@ -181,5 +181,5 @@
         },
         "container": "agvector-multistore-postgres-1"
     },
-    "runtime_ms": 147488
+    "runtime_ms": 140182
 }
