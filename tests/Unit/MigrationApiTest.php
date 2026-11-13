@@ -300,3 +300,31 @@ it('adds and removes keyword search with vector:migrate --keyword, --language, -
 
     expect(Vector::store('memory')->describeCollection('kw')['keyword'])->toBeNull();
 });
+
+it('declares filterable fields with vector:migrate --filterable, and the different-definition refusal names it (G4)', function () {
+    memoryWithDocuments('ff', 3);
+    $store = Vector::store('memory');
+
+    expect(fn () => $store->createCollection(new CollectionDefinition('ff', dimensions: 3, filterable: ['tenant' => 'keyword', 'rank' => 'integer'])))
+        ->toThrow(VectorQueryException::class, 'The declared fields differ: php artisan vector:migrate ff --filterable=rank:integer --filterable=tenant:keyword');
+
+    $this->artisan('vector:migrate', ['alias' => 'ff', '--filterable' => ['tenant']])->expectsOutputToContain('must be field:type')->assertFailed();
+    $this->artisan('vector:migrate', ['alias' => 'ff', '--filterable' => ['tenant:bogus']])->expectsOutputToContain('unknown type [bogus]')->assertFailed();
+    $this->artisan('vector:migrate', ['alias' => 'ff', '--filterable' => ['tenant:keyword', 'rank:integer']])->assertSuccessful();
+
+    expect($store->describeCollection('ff')['filterable'])->toBe(['rank' => 'integer', 'tenant' => 'keyword']);
+
+    // A plain definition change keeps the plain refusal.
+    expect(fn () => $store->createCollection(new CollectionDefinition('ff', dimensions: 4)))
+        ->toThrow(VectorQueryException::class, 'different definition')
+        ->and(fn () => $store->createCollection(new CollectionDefinition('ff', dimensions: 4)))->not->toThrow(VectorQueryException::class, '--filterable');
+});
+
+it('names vector:migrate with every field for an undeclared filter on a store with migrations (G2)', function () {
+    $exception = VectorUnsupportedOperationException::undeclaredField('tenant', 'docs', 'custom', ['rank' => 'integer'], true);
+
+    expect($exception->getMessage())
+        ->toContain('Field [tenant] is not declared filterable on collection [docs], and store [custom]')
+        ->toContain("filterable: ['rank' => FieldType::Integer, 'tenant' => FieldType::Keyword]")
+        ->toContain('php artisan vector:migrate docs --store=custom --filterable=rank:integer --filterable=tenant:keyword');
+});

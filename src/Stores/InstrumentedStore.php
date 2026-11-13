@@ -328,8 +328,8 @@ final class InstrumentedStore implements IndexStoreContract, MigrationStoreContr
         foreach ($filter->conditions as $condition) {
             if (! isset($declared[$condition->field])) {
                 if (! $undeclared) {
-                    throw new VectorUnsupportedOperationException(
-                        "Field [{$condition->field}] is not declared filterable on collection [{$collection}], and store [{$this->name}] filters declared fields only. Declare it in CollectionDefinition::\$filterable.",
+                    throw VectorUnsupportedOperationException::undeclaredField(
+                        $condition->field, $collection, $this->name, $declared, $this->store->capabilities()->supports(StoreCapability::Migrations),
                     );
                 }
 

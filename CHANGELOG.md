@@ -19,6 +19,7 @@ Several stores behind one contract, and a Qdrant driver.
 - **Declared filterable fields:** `CollectionDefinition::$filterable` maps a field to a `FieldType` (`Keyword`, `Integer`, `Float`, `Bool`, `Datetime`, `KeywordList`). A declared field is validated on write, and its operators give the same result on every store.
 - **New capability flags:** `KeywordWebsearch`, `KeywordLanguages`, `AtomicBatches`, `Migrations` (split from `Aliases`, with its own `MigrationStoreContract`), `UndeclaredFilters`.
 - **`table_prefix`** on a pgvector store, so two pgvector stores can share one connection.
+- **`vector:migrate --filterable=field:type`**, repeatable, declares the fields of the new collection (it replaces the source's, so name every field to keep). When `createCollection()` finds other declared fields than the existing collection's, the refusal prints this command.
 
 ### Changed
 
@@ -29,6 +30,10 @@ Several stores behind one contract, and a Qdrant driver.
 - A search after the first one in a request makes one store call: collection descriptions are cached per scoped manager.
 - **pgvector search latency.** A dense search binds the query vector once (nine significant digits), caches its registry lookup per store instance, and asks for the index (`SET LOCAL enable_seqscan = off`) when it has no filter. New store setting `prefer_index` (`VECTOR_PGVECTOR_PREFER_INDEX`, default `true`) and search option `exact` (index scans off, index kept). Small collections, whose vectors the planner costs too low, now get index results, which are approximate, where before they got exact ones; pass `exact: true` for the old results. One SciFact search (5,183 documents) goes from about 20 ms to about 2 ms. The dense list of an unfiltered hybrid search asks for the index too (one SciFact hybrid search: about 22 ms to about 13 ms).
 - **pgvector filtered search.** A declared field gets a plain filter predicate and its own index, made by `createCollection` and a migration target (a btree, GIN for `keyword_list`); undeclared fields keep the type-guarded form. A filtered dense search on declared fields counts its matches up to T + 1 (T: the larger of `filter_exact_max_rows`, default 2,500, and `filter_exact_min_share`, default 0.01, x the table's row count). At most T it scores them exactly through the field index; above, it walks the vector index (iterative scan, `ef_search` 160 unless set). New store setting `filter_plan` (`auto`, `exact`, `index`, `planner`). A filter on an undeclared field and a filtered hybrid search are left to the planner. On a large table, a filter that keeps about 1% of the rows has no fast path in pgvector: exact scoring grows with the matches (about 37 ms for 10,000 rows of 1,536 dimensions) and the vector index drops about 99 of every 100 rows it visits.
+
+- **Published config merge.** The package merges its defaults under a published `config/vector.php`; the published values win. A default store the file does not list (such as `qdrant`) is added and works once its env values are set; new keys of a default store and of each section get their defaults. Lists (`queue.backoff`) and provider maps are used as published.
+- **Undeclared filter error.** A filter on an undeclared field, on a store that filters declared fields only, names the field, the collection and the store, shows the `filterable:` line that declares it, and says how to add it to the existing collection (`vector:migrate --filterable` on a store with migrations).
+- **pgvector search settings** (`SET LOCAL`) go in one round trip. One filtered dense search: from 17 to 9 round trips on the exact path, 32 to 9 on the index path.
 
 ### Deprecated
 
@@ -45,6 +50,8 @@ An app on pgvector or memory runs with no code change. Check these points:
 - **Floats keep their type.** Code that compared a returned `3.0` with `3` using `===` sees a float now.
 - **`pointAlias()` creates the alias.** Code that called it only to re-point keeps working. A call that used to fail on a missing alias now creates it.
 - **`table_prefix` and `registry_table`.** With an empty prefix nothing changes. If your published config still sets `registry_table`, it is used as written. Set a prefix only for a second pgvector store on the same connection; existing collections keep their tables.
+- **Published `config/vector.php`.** A file published from 0.1.0 has no `qdrant` store and lacks the new pgvector keys; you do not need to republish it. Its values stay, the missing keys get their defaults, and `Vector::store('qdrant')` works once `VECTOR_QDRANT_URL` is set.
+- **Declaring a field later.** On pgvector and memory, `php artisan vector:migrate {name} --filterable=tenant:keyword` (repeat the option for every field to keep) declares it and builds its index. The error for a filter on an undeclared field prints the line and the command.
 - **Qdrant.** Set `VECTOR_QDRANT_URL` and declare every field you filter on. Read the limits above before you move a pgvector collection that uses keyword search or migrations.
 
 ## 0.1.0 - 2026-11-06

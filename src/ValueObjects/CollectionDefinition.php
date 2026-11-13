@@ -43,6 +43,25 @@ final readonly class CollectionDefinition
     ) {}
 
     /**
+     * The refusal when this definition differs from the existing collection's. When the declared fields differ it
+     * gives the vector:migrate command that declares them (--filterable replaces the source's fields).
+     *
+     * @param  array<string, FieldType>  $existing  the existing collection's declared fields
+     */
+    public function differentDefinition(array $existing): VectorQueryException
+    {
+        $message = "Collection [{$this->name}] already exists with a different definition. Change it with Vector::migrate() (php artisan vector:migrate).";
+        $fields = $this->filterableFields();
+
+        if ($this->filterable !== null && $fields !== $existing) {
+            $options = array_map(static fn (string $field, FieldType $type): string => "--filterable={$field}:{$type->value}", array_keys($fields), $fields);
+            $message .= " The declared fields differ: php artisan vector:migrate {$this->name} ".implode(' ', $options).' (every field the collection keeps).';
+        }
+
+        return new VectorQueryException($message);
+    }
+
+    /**
      * The declared fields, validated and sorted by name; [] when none are declared.
      *
      * @return array<string, FieldType>
