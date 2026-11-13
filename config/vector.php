@@ -59,6 +59,8 @@ return [
             // An unfiltered, non-exact search on a collection with an index uses the index (SET LOCAL enable_seqscan = off).
             // Without it the planner picks an exact scan on small collections, whose vectors it costs too low.
             'prefer_index' => (bool) env('VECTOR_PGVECTOR_PREFER_INDEX', true),
+            // hnsw.ef_search of an unfiltered search on an HNSW index, unless the caller sets it (pgvector's default is 40).
+            'ef_search' => (int) env('VECTOR_PGVECTOR_EF_SEARCH', 80),
             // The most rows one iterative scan visits (pgvector's default).
             'max_scan_tuples' => (int) env('VECTOR_PGVECTOR_MAX_SCAN_TUPLES', 20000),
             // A filtered dense search on declared fields counts its matches up to T + 1, T being the larger of

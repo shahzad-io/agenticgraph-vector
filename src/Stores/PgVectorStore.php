@@ -148,11 +148,15 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
                 $settings['enable_seqscan'] = 'off';
             }
 
+            // pgvector's default width (40) loses recall on an unfiltered HNSW search: send() raises it to the store's
+            // ef_search unless the caller set one, never lowering a higher setting, as for a large take().
+            $width = ! $filtered && $collection['hnsw'] ? max(1, (int) ($this->config['ef_search'] ?? 80)) : 40;
+
             if ($query->keywords !== null) {
                 $settings['client_min_messages'] = 'warning';
             }
 
-            PgVectorSearchOptions::send($this->connection(), $settings, $query->options, $query->keywords === null ? $query->topK : max($query->topK, $query->depth));
+            PgVectorSearchOptions::send($this->connection(), $settings, $query->options, $query->keywords === null ? $query->topK : max($query->topK, $query->depth), $width);
 
             return $query->keywords === null
                 ? $this->denseSearch($query, $collection)
@@ -161,19 +165,21 @@ final class PgVectorStore implements IndexStoreContract, MigrationStoreContract,
     }
 
     /**
-     * @return array{name: string, dimensions: int, metric: Metric, storage_identifier: string, index_options: array<string, mixed>|null, embedding: array<string, mixed>|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>, has_index: bool, row_estimate: int}
+     * @return array{name: string, dimensions: int, metric: Metric, storage_identifier: string, index_options: array<string, mixed>|null, embedding: array<string, mixed>|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>, has_index: bool, hnsw: bool, row_estimate: int}
      */
     private function searchTarget(string $collection): array
     {
         if (! isset($this->searchTargets[$collection])) {
             $resolved = $this->registry->resolve($collection);
-            $resolved['has_index'] = $this->existingIndex($this->storage($resolved), $resolved['index_options']) !== null;
+            $index = $this->existingIndex($this->storage($resolved), $resolved['index_options']);
+            $resolved['has_index'] = $index !== null;
+            $resolved['hnsw'] = $index?->type === 'hnsw';
             // The planner's row count (reltuples, -1 before the first VACUUM or ANALYZE), for the filter plan.
             $resolved['row_estimate'] = max(0, (int) $this->connection()->scalar('SELECT reltuples FROM pg_class WHERE oid = to_regclass(?)', [$this->storage($resolved)]));
             $this->searchTargets[$collection] = $resolved;
         }
 
-        /** @var array{name: string, dimensions: int, metric: Metric, storage_identifier: string, index_options: array<string, mixed>|null, embedding: array<string, mixed>|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>, has_index: bool, row_estimate: int} */
+        /** @var array{name: string, dimensions: int, metric: Metric, storage_identifier: string, index_options: array<string, mixed>|null, embedding: array<string, mixed>|null, keyword: array{languages: array<string, string>, language_field: string}|null, filterable: array<string, FieldType>, has_index: bool, hnsw: bool, row_estimate: int} */
         return $this->searchTargets[$collection];
     }
 

@@ -89,7 +89,7 @@ final class BenchRunner
       --concurrency=1,4,8        client processes per throughput run
       --warmup=20                untimed queries before the timed runs
       --queries=N --docs=N       fixed smaller run (default: the whole dataset)
-      --truncate=N               cut documents to N characters (0: none)
+      --truncate=N               cut documents to N characters (0: none; default: the dataset's truncate, else 0)
                                  (document vectors are cached per dataset, model, dimensions and text sha256)
       --chunk=SIZE,OVERLAP       split documents at ingest (TextSplitter, characters) and collapse hits to their
                                  parent before scoring (rerank: the chunks are reranked, then collapsed)
@@ -600,7 +600,6 @@ final class BenchRunner
         $weights = isset($options['keyword-weight']) ? array_values(array_unique(explode(',', (string) $options['keyword-weight']))) : [null];
         $levels = array_map('intval', explode(',', (string) ($options['concurrency'] ?? '1,4,8')));
         $warmup = (int) ($options['warmup'] ?? 20);
-        $truncate = (int) ($options['truncate'] ?? 0);
         $splitter = isset($options['chunk']) ? new TextSplitter(...array_map('intval', explode(',', (string) $options['chunk'], 2))) : null;
         $price = isset($options['price-per-1m-tokens']) ? (float) $options['price-per-1m-tokens'] : null;
         $rerank = isset($options['rerank']) ? (string) $options['rerank'] : null;
@@ -668,6 +667,8 @@ final class BenchRunner
         }
 
         $dataset = BenchDataset::load((string) $options['dataset']);
+        // A dataset's own truncate (datasets.json) applies when --truncate is not given.
+        $truncate = (int) ($options['truncate'] ?? $dataset['meta']['truncate'] ?? 0);
         $full = [count($dataset['corpus']), count($dataset['queries'])];
         $dataset = BenchDataset::subset(
             $dataset,
@@ -727,6 +728,8 @@ final class BenchRunner
 
         if ($rerank !== null) {
             config(['vector.rerank.fail_open' => false]);
+            // Harness only: a slow vendor response gets 30 seconds (retry included) and one retry, not the package's 5 and 2.
+            config(["vector.rerank.providers.{$rerank}.timeout" => 30, "vector.rerank.providers.{$rerank}.retries" => 1]);
 
             try {
                 Vector::reranker($rerank)->rerank('vector-bench preflight', [new SearchHit('preflight', 1.0, 'vector-bench preflight')], 1);
@@ -735,6 +738,7 @@ final class BenchRunner
             }
 
             $rerankModel = (string) config("vector.rerank.providers.{$rerank}.model", $rerank);
+            self::rerankCostGuard(count($dataset['queries']), $rerankCandidates, count(self::variants($modes, $matches, $weights, $sweep)) * count($iterative), $rerankSearchPrice);
         }
 
         // Embed a preflight probe only when this run embeds something: an ingest, or queries missing from the cache.
@@ -914,7 +918,8 @@ final class BenchRunner
 
                     unlink($jobFile);
 
-                    // Same-budget candidate recall: the top K of this mode, with ef_search raised so HNSW can return K.
+                    // Same-budget candidate recall: the top K of this mode at the store's default search width (an app's
+                    // search; the store raises it to K when K is larger), so the reranker gets what an app would send it.
                     self::say("{$key}: candidate recall at ".implode(', ', self::CANDIDATE_KS));
                     $candidates = [];
                     $rerankHits = [];
@@ -922,7 +927,7 @@ final class BenchRunner
                     $perQuery[$key] = ['ndcg_at_10' => RetrievalMetrics::ndcgPerQuery($dataset['qrels'], $ranked, self::TOP_K, $dataset['grades']), 'recall_at_5' => RetrievalMetrics::recallPerQuery($dataset['qrels'], $ranked, 5)];
 
                     foreach (self::CANDIDATE_KS as $k) {
-                        $kJob = ['top_k' => $k, 'options' => $this->searchOptions(max(40, $k * $overfetch), $scan)] + $job;
+                        $kJob = ['top_k' => $k, 'options' => $this->searchOptions(null, $scan)] + $job;
                         $kRanked = [];
 
                         foreach ($queries as $query) {
@@ -1152,6 +1157,21 @@ final class BenchRunner
         if ($tokens > $maxTokens && ! $confirmed) {
             throw new RuntimeException("About {$tokens} tokens to embed is above --max-tokens={$maxTokens}. Pass --yes to start the run.");
         }
+    }
+
+    /**
+     * Before a run reranks: print the requests (queries x reranked modes) and documents (x candidates) it may send, and
+     * the cost at the given price per 1,000 searches (one request of up to 100 documents is one search). Cached
+     * requests are not sent, so this is the most the run costs.
+     */
+    public static function rerankCostGuard(int $queries, int $candidates, int $modes, ?float $perThousandSearches): ?float
+    {
+        $requests = $queries * $modes;
+        $cost = $perThousandSearches === null ? null : $requests * (int) ceil($candidates / 100) * $perThousandSearches / 1000;
+        self::say(sprintf('To rerank: at most %d requests (%d queries x %d modes) of %d candidates, %d documents%s.', $requests, $queries, $modes, $candidates, $requests * $candidates,
+            $cost === null ? ' (no --rerank-price-per-1k-searches, no cost estimate)' : sprintf(', at most %.4f at %s per 1K searches', $cost, $perThousandSearches)));
+
+        return $cost;
     }
 
     /**
