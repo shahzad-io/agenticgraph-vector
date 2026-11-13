@@ -29,7 +29,10 @@ final class PgvectorBenchProbe implements BenchStoreProbe
 
     public function engineVersion(): ?string
     {
-        return 'pgvector '.$this->db()->scalar("SELECT extversion FROM pg_extension WHERE extname = 'vector'").', Postgres '.$this->db()->scalar('SHOW server_version');
+        // The memory settings move build and search times, so a report names them.
+        $settings = implode(', ', array_map(fn (string $name): string => "{$name} ".$this->db()->scalar("SHOW {$name}"), ['shared_buffers', 'maintenance_work_mem', 'max_parallel_maintenance_workers']));
+
+        return 'pgvector '.$this->db()->scalar("SELECT extversion FROM pg_extension WHERE extname = 'vector'").', Postgres '.$this->db()->scalar('SHOW server_version')." ({$settings})";
     }
 
     public function sizes(string $collection): ?array
@@ -75,6 +78,12 @@ final class PgvectorBenchProbe implements BenchStoreProbe
     {
         // The store's exact option: index scans off for each search, the index kept.
         return [PgVectorSearchOptions::EXACT => true];
+    }
+
+    public function forceIndex(bool $on): void
+    {
+        // Session level, on the connection the store searches on: rule L2 sets this per search only without a filter.
+        $this->db()->statement('SET enable_seqscan = '.($on ? 'off' : 'on'));
     }
 
     private function db(): Connection

@@ -61,4 +61,10 @@ interface BenchStoreProbe
      * @return array<string, mixed>
      */
     public function exactSearch(string $collection): array;
+
+    /**
+     * Make this process's searches use the vector index even where the planner would scan (a filtered search), or
+     * stop doing so. Throws a RuntimeException on a store without such a switch.
+     */
+    public function forceIndex(bool $on): void;
 }

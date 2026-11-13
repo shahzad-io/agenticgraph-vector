@@ -252,6 +252,16 @@ final class BenchReport
     }
 
     /**
+     * @param  array{cpu: string|null, cores: int|null, memory_bytes: int|null, store_in_docker: bool, docker: string|null}  $machine
+     */
+    public static function machineLine(array $machine): string
+    {
+        return sprintf('%s, %s cores, %s memory; store %s', $machine['cpu'] ?? self::NA, $machine['cores'] ?? self::NA,
+            $machine['memory_bytes'] === null ? self::NA : round($machine['memory_bytes'] / 1024 ** 3).' GiB',
+            $machine['store_in_docker'] ? 'in Docker ('.($machine['docker'] ?? self::NA).')' : 'not in Docker');
+    }
+
+    /**
      * @param  array<string, mixed>  $report
      */
     public static function markdown(array $report): string
@@ -373,6 +383,7 @@ final class BenchReport
                 ? sprintf('max %.1f MiB over %d samples (%s)', $resources['memory_mib_max'], $resources['memory_samples'], $resources['container'])
                 : 'not sampled ('.$resources['memory_note'].')'),
             '- Infrastructure: PHP '.$report['infrastructure']['php'].(isset($report['infrastructure']['os']) ? ", {$report['infrastructure']['os']}" : ''),
+            ...(isset($report['infrastructure']['machine']) ? ['- Machine: '.self::machineLine($report['infrastructure']['machine'])] : []),
             '',
             '## Cost',
             '',

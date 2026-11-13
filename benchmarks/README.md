@@ -22,6 +22,38 @@ python3 benchmarks/export-datasets.py
 
 The script fails when an exported file does not match its manifest sha256. `--update-manifest` records new checksums after a deliberate source change.
 
+### Vector sets (no embedding model)
+
+| Name | Rows | Queries | Dimensions | Ground truth | License |
+|---|---|---|---|---|---|
+| `sift1m` | 1,000,000 SIFT descriptors (TEXMEX, IRISA FTP) | 10,000 | 128, L2 | the source's top 100 | CC0 1.0 |
+| `dbpedia-openai-100k` | 100,000 DBpedia entities, OpenAI text-embedding-3-large at 1,536 (Qdrant on Hugging Face, three parquet shards) | 1,000 held-out rows | 1,536, cosine | computed offline, top 100 | MIT (texts: DBpedia, CC BY-SA 3.0) |
+| `dbpedia-openai-100k-filtered` | the set above with declared fields `tenant` (keyword) and `rank` (integer), seeded | 1,000, at each of 4 selectivities | 1,536, cosine | computed offline per selectivity | as above |
+
+`tenant` values `t50`, `t10`, `t1` and `t01` hold exactly 50%, 10%, 1% and 0.1% of the rows; the rest go to tenants of 100 rows. The export pins every source file by sha256 (the SIFT archive, each parquet shard) and every exported file. It needs numpy and pyarrow, so a `vectors` set exports only when named:
+
+```bash
+python3 -m venv build/benchmark/venv && build/benchmark/venv/bin/pip install -r benchmarks/requirements-vectors.txt
+build/benchmark/venv/bin/python -I benchmarks/export-datasets.py sift1m dbpedia-openai-100k dbpedia-openai-100k-filtered
+```
+
+Each set is written in the vector cache format (below): `base` and `queries` as `.f32` and `.index.jsonl` (the sha256 of a row is that of its float32 bytes), and `ground_truth.json`. About 1.3 GB on disk for the three sets, plus 1.3 GB of sources in `build/benchmark/sources/`.
+
+A run on a `vectors` set has no `--model`, makes no embedding call and needs no API key (it fails if anything embeds):
+
+```bash
+bin/vector-bench --dataset=sift1m --store=pgvector --queries=1000 --ingest-workers=8
+bin/vector-bench --dataset=dbpedia-openai-100k-filtered --store=qdrant --ingest-workers=8
+```
+
+- Index sweep: `benchmarks/sweeps/<driver>.json` lists three build settings (a collection each, ingested in full) and four search settings. Per build: ingest time and rate, build time (pgvector: `REINDEX` of the full table at the server's settings; Qdrant: the wait after the last write until the collection is green on two reads a second apart), the index and its indexed point count, sizes, and the store container's memory after the searches. Per search setting: recall@10 (the timed run's top 10), recall@100 (a separate pass at `take(100)` with the candidate depth raised to at least 100), latency p50/p95/p99 at concurrency 1 and QPS at each `--concurrency` (default `1,8`).
+- Self-check (H3): before the sweep, the store's exact search on the first 100 queries must give the ground truth top 10 (ties allowed: an id outside it must be as near as its 10th). A mismatch stops the run with exit 2 (stop rule S3).
+- Filtered set (H7): one collection at the store's default index with both fields declared; every `filtered` variant of the sweep file at each selectivity: recall@10, hits returned (mean, and queries under 10), latency p50/p95 at concurrency 1. On pgvector a variant may force the index (`SET enable_seqscan = off` for the session, through the probe); rule L2 does not apply to filtered searches. The self-check runs on 25 queries per selectivity.
+- `--ingest-workers=N` ingests with N processes, each upserting every N-th chunk through the store contract (the store batches as usual). One Postgres backend inserting into HNSW is CPU bound: SIFT1M takes about 45 minutes with one worker, 10 with eight.
+- `--builds=a,b` runs only the named build settings; `--sweep=file` takes another sweep file; `--queries=N` the first N queries.
+
+Reports (`<out>/<dataset>.<store>.<timestamp>.json` and `.md`) record the dataset, the store and its engine version, and the machine: CPU model, core count, memory, and whether the store runs in Docker (a container publishes its port) with the Docker host's CPUs and memory. Text runs record the machine too.
+
 ## Running
 
 `bin/vector-bench` runs on any store in `config/vector.php`, chosen with `--store` (default: `vector.default`). It talks to the store through the store contract; what differs by store (engine version, sizes, the wait for the index, the index rebuild, the container to read memory from, the search options of an index setting) sits behind a `BenchStoreProbe`: `PgvectorBenchProbe` (the `docker-compose.yml` database on 5433, or the `VECTOR_PG_*` env keys), `QdrantBenchProbe` (`VECTOR_QDRANT_URL`, else the `docker-compose.yml` Qdrant on 16333), and `GenericBenchProbe` for any other driver, whose values the report prints as "not available". A probe is found by the driver name (`<Driver>BenchProbe`). A run that embeds needs the embedding provider's key (`OPENAI_API_KEY` for `openai:`); a run whose vectors are all cached needs none.

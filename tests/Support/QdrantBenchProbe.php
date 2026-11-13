@@ -13,12 +13,12 @@ use RuntimeException;
 /**
  * The Qdrant side of the benchmark: the url (VECTOR_QDRANT_URL, else the docker-compose port 16333), the wait for
  * the optimizer to finish indexing, the HNSW config, and `hnsw_ef` and `exact` as search options. Qdrant's REST API
- * gives no bytes per collection, so sizes are not available.
+ * gives no bytes per collection, so sizes come from its storage folder in the docker container (else not available).
  */
 final class QdrantBenchProbe implements BenchStoreProbe
 {
     /** How long waitUntilReady() waits for a collection to turn green. */
-    private const READY_SECONDS = 600;
+    private const READY_SECONDS = 3600;
 
     public function __construct(private readonly string $store) {}
 
@@ -36,19 +36,35 @@ final class QdrantBenchProbe implements BenchStoreProbe
 
     public function sizes(string $collection): ?array
     {
-        return null;
+        // The REST API gives no bytes: the disk the collection's folder takes in the container (WAL included; allocated
+        // blocks, not the apparent size of preallocated files), and the HNSW graphs of its segments as the index.
+        $container = $this->container();
+
+        if ($container === null) {
+            return null;
+        }
+
+        $dir = '/qdrant/storage/collections/'.config("vector.stores.{$this->store}.collection_prefix", '').Vector::store($this->store)->describeCollection($collection)['collection'];
+        $du = (string) shell_exec('docker exec '.escapeshellarg($container).' sh -c '.escapeshellarg("du -sk {$dir}; du -sck {$dir}/*/segments/*/vector_index 2>/dev/null | tail -1").' 2>/dev/null');
+
+        if (! preg_match('/^(\d+)\s.*\n(\d+)\s+total/s', $du, $match)) {
+            return null;
+        }
+
+        return ['table_bytes' => null, 'index_bytes' => (int) $match[2] * 1024, 'total_bytes' => (int) $match[1] * 1024];
     }
 
     public function waitUntilReady(string $collection): void
     {
         $deadline = microtime(true) + self::READY_SECONDS;
 
-        while ($this->info($collection)['status'] !== 'green') {
+        // Green on two reads a second apart: right after the last write the optimizer may not have started yet.
+        for ($green = 0; $green < 2; $green = $this->info($collection)['status'] === 'green' ? $green + 1 : 0) {
             if (microtime(true) > $deadline) {
                 throw new RuntimeException("Qdrant collection [{$collection}] was not green after ".self::READY_SECONDS.' seconds.');
             }
 
-            usleep(250_000);
+            usleep(1_000_000);
         }
     }
 
@@ -85,6 +101,11 @@ final class QdrantBenchProbe implements BenchStoreProbe
     public function exactSearch(string $collection): array
     {
         return ['exact' => true];
+    }
+
+    public function forceIndex(bool $on): void
+    {
+        throw new RuntimeException("Store [{$this->store}] (Qdrant) has no switch to force the index; its planner picks the filter strategy.");
     }
 
     /**

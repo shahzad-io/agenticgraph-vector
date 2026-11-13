@@ -1,0 +1,393 @@
+{
+    "schema": 1,
+    "kind": "vectors",
+    "created_at": "2026-11-13T08:57:15+00:00",
+    "dataset": {
+        "name": "dbpedia-openai-100k-filtered",
+        "description": "H7 filtered set on dbpedia-openai-100k: declared fields tenant (keyword) and rank (integer); tenants t50, t10, t1 and t01 hold 50%, 10%, 1% and 0.1% of the rows",
+        "license": "MIT",
+        "license_note": "As dbpedia-openai-100k; the fields are generated (seeded)",
+        "citation": "As dbpedia-openai-100k",
+        "built_from": "dbpedia-openai-100k",
+        "source": {
+            "url": "https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-1M",
+            "revision": "4a9731217921bc476a0f03544f11f22ae4903fa5",
+            "column": "text-embedding-3-large-1536-embedding",
+            "files": [
+                {
+                    "path": "data/train-00000-of-00026.parquet",
+                    "sha256": "27519d7104c8ac6d0f51ac18e8ac23b29d67cbab8465bc3302b458ca3dcbbb78"
+                },
+                {
+                    "path": "data/train-00001-of-00026.parquet",
+                    "sha256": "26c2339d6318674a8e12cb95efc09bc7447fe87513f52dcd40155af74f6389a3"
+                },
+                {
+                    "path": "data/train-00002-of-00026.parquet",
+                    "sha256": "16ff6f597d91ee684054b49397c3ada56e71b2acc9a37b8868531c9c500a76b6"
+                }
+            ]
+        },
+        "files": {
+            "base_vectors": "14838d8ea5448e9aa3b5fd14dc49b1ee7899930e309b1e566c91cf572d1a4336",
+            "base_index": "c20449ba2941022fd8bbb4de25867a4d281c2e255fb90cff014153e15ada7707",
+            "queries_vectors": "57dc0040dadffea95d5acf1a142f2256a4875987880166a96ee0b8cf63279d3a",
+            "queries_index": "eccf14c63407bb5c95678e9d07d7835c8dd42a13558720f5f0324b691b022748",
+            "ground_truth": "dceedd9ea1ad945fb9b6fcebb6a6bc76aa87ceaadc14213c4bdf4c20a0cf3712",
+            "fields": "e28dbb92cc147e69dcfe1dcb079788a12d640c2c1aa6387fe52832b1a0ef271c"
+        },
+        "ground_truth": "computed offline: exact cosine top 100 among each tenant's rows",
+        "primary_metric": "recall_at_10"
+    },
+    "sizes": {
+        "rows": 100000,
+        "queries": 1000,
+        "dimensions": 1536,
+        "metric": "cosine",
+        "top_k": 10,
+        "warmup": 20
+    },
+    "store": {
+        "name": "pgvector",
+        "driver": "pgvector",
+        "engine": "pgvector 0.8.3, Postgres 16.14 (Debian 16.14-1.pgdg12+1) (shared_buffers 4GB, maintenance_work_mem 4GB, max_parallel_maintenance_workers 7)",
+        "capabilities": [
+            "list_ids",
+            "update_metadata",
+            "delete_by_filter",
+            "filter_not",
+            "filter_contains",
+            "filter_range",
+            "keyword",
+            "aliases",
+            "queued_ingest",
+            "rebuild_index",
+            "keyword_websearch",
+            "keyword_languages",
+            "atomic_batches",
+            "migrations",
+            "undeclared_filters"
+        ]
+    },
+    "embedding_calls": 0,
+    "self_check": {
+        "queries": 100,
+        "mismatches": []
+    },
+    "builds": [
+        {
+            "name": "store default",
+            "index_options": [],
+            "documents": 100000,
+            "ingest_workers": 8,
+            "ingest_ms": 85269,
+            "docs_per_second": 1172.8,
+            "ready_wait_ms": 0,
+            "rebuild_ms": 21086,
+            "build_ms": 21086,
+            "index": "CREATE INDEX vcol_cbc5926058e54a7a32ecbd2e86fe6583_embedding_idx ON public.vcol_cbc5926058e54a7a32ecbd2e86fe6583 USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')",
+            "sizes": {
+                "table_bytes": 838696960,
+                "index_bytes": 822665216,
+                "total_bytes": 1661362176
+            },
+            "searches": [],
+            "memory": "2.429GiB / 31.36GiB"
+        }
+    ],
+    "filtered": [
+        {
+            "value": "t50",
+            "share": 0.5,
+            "rows": 50000,
+            "variants": [
+                {
+                    "name": "planner default",
+                    "options": [],
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 170.084,
+                    "p95_ms": 177.435
+                },
+                {
+                    "name": "index, iterative scan off",
+                    "options": {
+                        "hnsw.iterative_scan": "off"
+                    },
+                    "force_index": true,
+                    "recall_at_10": 0.9342999999999957,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 4.348,
+                    "p95_ms": 6.009
+                },
+                {
+                    "name": "index, iterative scan relaxed_order",
+                    "options": {
+                        "hnsw.iterative_scan": "relaxed_order"
+                    },
+                    "force_index": true,
+                    "recall_at_10": 0.9342999999999957,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 3.692,
+                    "p95_ms": 4.605
+                },
+                {
+                    "name": "index, iterative scan strict_order",
+                    "options": {
+                        "hnsw.iterative_scan": "strict_order"
+                    },
+                    "force_index": true,
+                    "recall_at_10": 0.9342999999999957,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 3.78,
+                    "p95_ms": 5.364
+                },
+                {
+                    "name": "exact",
+                    "options": {
+                        "exact": true
+                    },
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 169.98,
+                    "p95_ms": 177.653
+                }
+            ]
+        },
+        {
+            "value": "t10",
+            "share": 0.1,
+            "rows": 10000,
+            "variants": [
+                {
+                    "name": "planner default",
+                    "options": [],
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 54.116,
+                    "p95_ms": 57.405
+                },
+                {
+                    "name": "index, iterative scan off",
+                    "options": {
+                        "hnsw.iterative_scan": "off"
+                    },
+                    "force_index": true,
+                    "recall_at_10": 0.4009000000000007,
+                    "hits_mean": 4.02,
+                    "hits_min": 0,
+                    "below_take": 995,
+                    "p50_ms": 3.842,
+                    "p95_ms": 5.7
+                },
+                {
+                    "name": "index, iterative scan relaxed_order",
+                    "options": {
+                        "hnsw.iterative_scan": "relaxed_order"
+                    },
+                    "force_index": true,
+                    "recall_at_10": 0.9416999999999947,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 5.438,
+                    "p95_ms": 7.314
+                },
+                {
+                    "name": "index, iterative scan strict_order",
+                    "options": {
+                        "hnsw.iterative_scan": "strict_order"
+                    },
+                    "force_index": true,
+                    "recall_at_10": 0.8898999999999958,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 5.451,
+                    "p95_ms": 7.683
+                },
+                {
+                    "name": "exact",
+                    "options": {
+                        "exact": true
+                    },
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 54.271,
+                    "p95_ms": 57.382
+                }
+            ]
+        },
+        {
+            "value": "t1",
+            "share": 0.01,
+            "rows": 1000,
+            "variants": [
+                {
+                    "name": "planner default",
+                    "options": [],
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 23.226,
+                    "p95_ms": 25.501
+                },
+                {
+                    "name": "index, iterative scan off",
+                    "options": {
+                        "hnsw.iterative_scan": "off"
+                    },
+                    "force_index": true,
+                    "recall_at_10": 0.038200000000000185,
+                    "hits_mean": 0.38,
+                    "hits_min": 0,
+                    "below_take": 1000,
+                    "p50_ms": 3.777,
+                    "p95_ms": 5.785
+                },
+                {
+                    "name": "index, iterative scan relaxed_order",
+                    "options": {
+                        "hnsw.iterative_scan": "relaxed_order"
+                    },
+                    "force_index": true,
+                    "recall_at_10": 0.9643999999999952,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 20,
+                    "p95_ms": 29.457
+                },
+                {
+                    "name": "index, iterative scan strict_order",
+                    "options": {
+                        "hnsw.iterative_scan": "strict_order"
+                    },
+                    "force_index": true,
+                    "recall_at_10": 0.8998999999999938,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 20.628,
+                    "p95_ms": 29.333
+                },
+                {
+                    "name": "exact",
+                    "options": {
+                        "exact": true
+                    },
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 23.494,
+                    "p95_ms": 26.031
+                }
+            ]
+        },
+        {
+            "value": "t01",
+            "share": 0.001,
+            "rows": 100,
+            "variants": [
+                {
+                    "name": "planner default",
+                    "options": [],
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 20.571,
+                    "p95_ms": 21.96
+                },
+                {
+                    "name": "index, iterative scan off",
+                    "options": {
+                        "hnsw.iterative_scan": "off"
+                    },
+                    "force_index": true,
+                    "recall_at_10": 0.0034000000000000015,
+                    "hits_mean": 0.03,
+                    "hits_min": 0,
+                    "below_take": 1000,
+                    "p50_ms": 4.077,
+                    "p95_ms": 5.729
+                },
+                {
+                    "name": "index, iterative scan relaxed_order",
+                    "options": {
+                        "hnsw.iterative_scan": "relaxed_order"
+                    },
+                    "force_index": true,
+                    "recall_at_10": 0.7889999999999977,
+                    "hits_mean": 10,
+                    "hits_min": 8,
+                    "below_take": 4,
+                    "p50_ms": 37.459,
+                    "p95_ms": 43.004
+                },
+                {
+                    "name": "index, iterative scan strict_order",
+                    "options": {
+                        "hnsw.iterative_scan": "strict_order"
+                    },
+                    "force_index": true,
+                    "recall_at_10": 0.7789999999999979,
+                    "hits_mean": 10,
+                    "hits_min": 8,
+                    "below_take": 4,
+                    "p50_ms": 37.075,
+                    "p95_ms": 42.348
+                },
+                {
+                    "name": "exact",
+                    "options": {
+                        "exact": true
+                    },
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 20.934,
+                    "p95_ms": 22.512
+                }
+            ]
+        }
+    ],
+    "infrastructure": {
+        "php": "8.4.23",
+        "os": "Darwin 24.6.0",
+        "machine": {
+            "cpu": "Apple M3 Max",
+            "cores": 16,
+            "memory_bytes": 68719476736,
+            "store_in_docker": true,
+            "docker": "OrbStack, 16 CPUs, 33670656000 bytes"
+        },
+        "container": "agvector-multistore-postgres-1"
+    },
+    "runtime_ms": 844301
+}

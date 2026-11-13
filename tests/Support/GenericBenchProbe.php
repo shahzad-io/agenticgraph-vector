@@ -56,4 +56,9 @@ final class GenericBenchProbe implements BenchStoreProbe
     {
         throw new RuntimeException("Store [{$this->store}] has no probe for exact search.");
     }
+
+    public function forceIndex(bool $on): void
+    {
+        throw new RuntimeException("Store [{$this->store}] has no probe to force its index.");
+    }
 }

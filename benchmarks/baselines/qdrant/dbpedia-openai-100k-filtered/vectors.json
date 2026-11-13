@@ -1,0 +1,229 @@
+{
+    "schema": 1,
+    "kind": "vectors",
+    "created_at": "2026-11-13T08:58:34+00:00",
+    "dataset": {
+        "name": "dbpedia-openai-100k-filtered",
+        "description": "H7 filtered set on dbpedia-openai-100k: declared fields tenant (keyword) and rank (integer); tenants t50, t10, t1 and t01 hold 50%, 10%, 1% and 0.1% of the rows",
+        "license": "MIT",
+        "license_note": "As dbpedia-openai-100k; the fields are generated (seeded)",
+        "citation": "As dbpedia-openai-100k",
+        "built_from": "dbpedia-openai-100k",
+        "source": {
+            "url": "https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-1M",
+            "revision": "4a9731217921bc476a0f03544f11f22ae4903fa5",
+            "column": "text-embedding-3-large-1536-embedding",
+            "files": [
+                {
+                    "path": "data/train-00000-of-00026.parquet",
+                    "sha256": "27519d7104c8ac6d0f51ac18e8ac23b29d67cbab8465bc3302b458ca3dcbbb78"
+                },
+                {
+                    "path": "data/train-00001-of-00026.parquet",
+                    "sha256": "26c2339d6318674a8e12cb95efc09bc7447fe87513f52dcd40155af74f6389a3"
+                },
+                {
+                    "path": "data/train-00002-of-00026.parquet",
+                    "sha256": "16ff6f597d91ee684054b49397c3ada56e71b2acc9a37b8868531c9c500a76b6"
+                }
+            ]
+        },
+        "files": {
+            "base_vectors": "14838d8ea5448e9aa3b5fd14dc49b1ee7899930e309b1e566c91cf572d1a4336",
+            "base_index": "c20449ba2941022fd8bbb4de25867a4d281c2e255fb90cff014153e15ada7707",
+            "queries_vectors": "57dc0040dadffea95d5acf1a142f2256a4875987880166a96ee0b8cf63279d3a",
+            "queries_index": "eccf14c63407bb5c95678e9d07d7835c8dd42a13558720f5f0324b691b022748",
+            "ground_truth": "dceedd9ea1ad945fb9b6fcebb6a6bc76aa87ceaadc14213c4bdf4c20a0cf3712",
+            "fields": "e28dbb92cc147e69dcfe1dcb079788a12d640c2c1aa6387fe52832b1a0ef271c"
+        },
+        "ground_truth": "computed offline: exact cosine top 100 among each tenant's rows",
+        "primary_metric": "recall_at_10"
+    },
+    "sizes": {
+        "rows": 100000,
+        "queries": 1000,
+        "dimensions": 1536,
+        "metric": "cosine",
+        "top_k": 10,
+        "warmup": 20
+    },
+    "store": {
+        "name": "qdrant",
+        "driver": "qdrant",
+        "engine": "qdrant 1.20.0",
+        "capabilities": [
+            "list_ids",
+            "update_metadata",
+            "delete_by_filter",
+            "filter_not",
+            "filter_contains",
+            "filter_range",
+            "aliases"
+        ]
+    },
+    "embedding_calls": 0,
+    "self_check": {
+        "queries": 100,
+        "mismatches": []
+    },
+    "builds": [
+        {
+            "name": "store default",
+            "index_options": [],
+            "documents": 100000,
+            "ingest_workers": 8,
+            "ingest_ms": 17099,
+            "docs_per_second": 5848.3,
+            "ready_wait_ms": 6087,
+            "rebuild_ms": null,
+            "build_ms": 6087,
+            "index": "hnsw m=16 ef_construct=100 full_scan_threshold=10000, 99000 of 100000 points indexed",
+            "sizes": {
+                "table_bytes": null,
+                "index_bytes": 11767808,
+                "total_bytes": 2908155904
+            },
+            "searches": [],
+            "memory": "281.4MiB / 31.36GiB"
+        }
+    ],
+    "filtered": [
+        {
+            "value": "t50",
+            "share": 0.5,
+            "rows": 50000,
+            "variants": [
+                {
+                    "name": "default, declared fields",
+                    "options": [],
+                    "force_index": false,
+                    "recall_at_10": 0.9913999999999987,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 5.226,
+                    "p95_ms": 8.171
+                },
+                {
+                    "name": "exact",
+                    "options": {
+                        "exact": true
+                    },
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 8.753,
+                    "p95_ms": 10.164
+                }
+            ]
+        },
+        {
+            "value": "t10",
+            "share": 0.1,
+            "rows": 10000,
+            "variants": [
+                {
+                    "name": "default, declared fields",
+                    "options": [],
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 4.857,
+                    "p95_ms": 8.051
+                },
+                {
+                    "name": "exact",
+                    "options": {
+                        "exact": true
+                    },
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 5.067,
+                    "p95_ms": 8.393
+                }
+            ]
+        },
+        {
+            "value": "t1",
+            "share": 0.01,
+            "rows": 1000,
+            "variants": [
+                {
+                    "name": "default, declared fields",
+                    "options": [],
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 4.18,
+                    "p95_ms": 7.022
+                },
+                {
+                    "name": "exact",
+                    "options": {
+                        "exact": true
+                    },
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 3.376,
+                    "p95_ms": 6.669
+                }
+            ]
+        },
+        {
+            "value": "t01",
+            "share": 0.001,
+            "rows": 100,
+            "variants": [
+                {
+                    "name": "default, declared fields",
+                    "options": [],
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 3.252,
+                    "p95_ms": 6.284
+                },
+                {
+                    "name": "exact",
+                    "options": {
+                        "exact": true
+                    },
+                    "force_index": false,
+                    "recall_at_10": 1,
+                    "hits_mean": 10,
+                    "hits_min": 10,
+                    "below_take": 0,
+                    "p50_ms": 2.725,
+                    "p95_ms": 6.136
+                }
+            ]
+        }
+    ],
+    "infrastructure": {
+        "php": "8.4.23",
+        "os": "Darwin 24.6.0",
+        "machine": {
+            "cpu": "Apple M3 Max",
+            "cores": 16,
+            "memory_bytes": 68719476736,
+            "store_in_docker": true,
+            "docker": "OrbStack, 16 CPUs, 33670656000 bytes"
+        },
+        "container": "agvector-multistore-qdrant-1"
+    },
+    "runtime_ms": 78832
+}

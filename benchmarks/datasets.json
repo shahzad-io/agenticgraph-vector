@@ -84,6 +84,137 @@
                     "sha256": "342fd6583b999e390ebe57ad2effa4bfe3a9afb9834ceef8e67096bf95277dbe"
                 }
             }
+        },
+        "sift1m": {
+            "description": "TEXMEX ANN_SIFT1M: 1,000,000 SIFT descriptors, 10,000 queries, 128 dimensions, L2",
+            "license": "CC0 1.0",
+            "license_note": "CC0 1.0: the authors waive all copyright and related rights (corpus-texmex.irisa.fr); the source asks to cite the paper",
+            "citation": "Jégou, Douze, Schmid, Product quantization for nearest neighbor search, IEEE TPAMI 33(1), 2011",
+            "tier": "medium",
+            "kind": "vectors",
+            "primary_metric": "recall_at_10",
+            "exporter": "sift1m",
+            "directory": "sift1m",
+            "metric": "l2",
+            "dimensions": 128,
+            "ground_truth": "source (sift_groundtruth.ivecs, top 100)",
+            "source": {
+                "url": "ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz",
+                "sha256": "92f1270c5e3a0cb46b89983e72b0511e4df065c31a9fa0276d8c9b1fca5bc81a"
+            },
+            "files": {
+                "base_vectors": {
+                    "path": "sift1m/base.f32",
+                    "sha256": "ac8e11ed111b09e882bcf0ef1a77ebdd36c89f495bce8fd596603f69c35148e6"
+                },
+                "base_index": {
+                    "path": "sift1m/base.index.jsonl",
+                    "sha256": "e1714e3ec96fc1e186aff0bc01136b0068621e8c881bae5287f208473c35f1bf"
+                },
+                "queries_vectors": {
+                    "path": "sift1m/queries.f32",
+                    "sha256": "bf4c4c9db385017e63e7b0a9ccd8e3aab3744a02e053c135e000fa0b1dea2d6f"
+                },
+                "queries_index": {
+                    "path": "sift1m/queries.index.jsonl",
+                    "sha256": "1630ece1f5266add09ad9e80b62d7e3549ce3ac6979d0309d5ae10580573424c"
+                },
+                "ground_truth": {
+                    "path": "sift1m/ground_truth.json",
+                    "sha256": "dee95468e32c375e50e6c35b99a3b7eff2d630a7fe6930956828b55dadcc0a5f"
+                }
+            }
+        },
+        "dbpedia-openai-100k": {
+            "description": "DBpedia entities embedded with OpenAI text-embedding-3-large at 1,536 dimensions: the first 100,000 rows; 1,000 held-out rows of the same set as queries; cosine",
+            "license": "MIT",
+            "license_note": "MIT (the Hugging Face dataset card); the texts are DBpedia abstracts (CC BY-SA 3.0) and the vectors come from OpenAI's API; check before publishing numbers",
+            "citation": "Qdrant, dbpedia-entities-openai3-text-embedding-3-large-1536-1M (Hugging Face), from BEIR DBpedia-Entity (Hasibi et al., SIGIR 2017)",
+            "tier": "medium",
+            "kind": "vectors",
+            "primary_metric": "recall_at_10",
+            "exporter": "dbpedia",
+            "directory": "dbpedia-openai-100k",
+            "metric": "cosine",
+            "dimensions": 1536,
+            "model": "openai:text-embedding-3-large@1536",
+            "base_rows": 100000,
+            "queries": 1000,
+            "ground_truth": "computed offline: exact cosine top 100 (numpy, float32)",
+            "source": {
+                "url": "https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-1M",
+                "revision": "4a9731217921bc476a0f03544f11f22ae4903fa5",
+                "column": "text-embedding-3-large-1536-embedding",
+                "files": [
+                    {
+                        "path": "data/train-00000-of-00026.parquet",
+                        "sha256": "27519d7104c8ac6d0f51ac18e8ac23b29d67cbab8465bc3302b458ca3dcbbb78"
+                    },
+                    {
+                        "path": "data/train-00001-of-00026.parquet",
+                        "sha256": "26c2339d6318674a8e12cb95efc09bc7447fe87513f52dcd40155af74f6389a3"
+                    },
+                    {
+                        "path": "data/train-00002-of-00026.parquet",
+                        "sha256": "16ff6f597d91ee684054b49397c3ada56e71b2acc9a37b8868531c9c500a76b6"
+                    }
+                ]
+            },
+            "files": {
+                "base_vectors": {
+                    "path": "dbpedia-openai-100k/base.f32",
+                    "sha256": "14838d8ea5448e9aa3b5fd14dc49b1ee7899930e309b1e566c91cf572d1a4336"
+                },
+                "base_index": {
+                    "path": "dbpedia-openai-100k/base.index.jsonl",
+                    "sha256": "c20449ba2941022fd8bbb4de25867a4d281c2e255fb90cff014153e15ada7707"
+                },
+                "queries_vectors": {
+                    "path": "dbpedia-openai-100k/queries.f32",
+                    "sha256": "57dc0040dadffea95d5acf1a142f2256a4875987880166a96ee0b8cf63279d3a"
+                },
+                "queries_index": {
+                    "path": "dbpedia-openai-100k/queries.index.jsonl",
+                    "sha256": "eccf14c63407bb5c95678e9d07d7835c8dd42a13558720f5f0324b691b022748"
+                },
+                "ground_truth": {
+                    "path": "dbpedia-openai-100k/ground_truth.json",
+                    "sha256": "8cf56e9677c77c71c2474bee66c1b3e4690c0cd441c4307ec71a950852c9555e"
+                }
+            }
+        },
+        "dbpedia-openai-100k-filtered": {
+            "description": "H7 filtered set on dbpedia-openai-100k: declared fields tenant (keyword) and rank (integer); tenants t50, t10, t1 and t01 hold 50%, 10%, 1% and 0.1% of the rows",
+            "license": "MIT",
+            "license_note": "As dbpedia-openai-100k; the fields are generated (seeded)",
+            "citation": "As dbpedia-openai-100k",
+            "tier": "medium",
+            "kind": "vectors",
+            "primary_metric": "recall_at_10",
+            "exporter": "filtered",
+            "built_from": "dbpedia-openai-100k",
+            "directory": "dbpedia-openai-100k-filtered",
+            "seed": 7,
+            "selectivities": {
+                "t50": 0.5,
+                "t10": 0.1,
+                "t1": 0.01,
+                "t01": 0.001
+            },
+            "ground_truth": "computed offline: exact cosine top 100 among each tenant's rows",
+            "source": {
+                "built_from": "dbpedia-openai-100k"
+            },
+            "files": {
+                "fields": {
+                    "path": "dbpedia-openai-100k-filtered/fields.json",
+                    "sha256": "e28dbb92cc147e69dcfe1dcb079788a12d640c2c1aa6387fe52832b1a0ef271c"
+                },
+                "ground_truth": {
+                    "path": "dbpedia-openai-100k-filtered/ground_truth.json",
+                    "sha256": "dceedd9ea1ad945fb9b6fcebb6a6bc76aa87ceaadc14213c4bdf4c20a0cf3712"
+                }
+            }
         }
     }
 }

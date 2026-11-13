@@ -1,0 +1,414 @@
+{
+    "schema": 1,
+    "kind": "vectors",
+    "created_at": "2026-11-13T08:24:44+00:00",
+    "dataset": {
+        "name": "sift1m",
+        "description": "TEXMEX ANN_SIFT1M: 1,000,000 SIFT descriptors, 10,000 queries, 128 dimensions, L2",
+        "license": "CC0 1.0",
+        "license_note": "CC0 1.0: the authors waive all copyright and related rights (corpus-texmex.irisa.fr); the source asks to cite the paper",
+        "citation": "J\u00e9gou, Douze, Schmid, Product quantization for nearest neighbor search, IEEE TPAMI 33(1), 2011",
+        "built_from": null,
+        "source": {
+            "url": "ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz",
+            "sha256": "92f1270c5e3a0cb46b89983e72b0511e4df065c31a9fa0276d8c9b1fca5bc81a"
+        },
+        "files": {
+            "base_vectors": "ac8e11ed111b09e882bcf0ef1a77ebdd36c89f495bce8fd596603f69c35148e6",
+            "base_index": "e1714e3ec96fc1e186aff0bc01136b0068621e8c881bae5287f208473c35f1bf",
+            "queries_vectors": "bf4c4c9db385017e63e7b0a9ccd8e3aab3744a02e053c135e000fa0b1dea2d6f",
+            "queries_index": "1630ece1f5266add09ad9e80b62d7e3549ce3ac6979d0309d5ae10580573424c",
+            "ground_truth": "dee95468e32c375e50e6c35b99a3b7eff2d630a7fe6930956828b55dadcc0a5f"
+        },
+        "ground_truth": "source (sift_groundtruth.ivecs, top 100)",
+        "primary_metric": "recall_at_10"
+    },
+    "sizes": {
+        "rows": 1000000,
+        "queries": 1000,
+        "dimensions": 128,
+        "metric": "l2",
+        "top_k": 10,
+        "warmup": 20
+    },
+    "store": {
+        "name": "qdrant",
+        "driver": "qdrant",
+        "engine": "qdrant 1.20.0",
+        "capabilities": [
+            "list_ids",
+            "update_metadata",
+            "delete_by_filter",
+            "filter_not",
+            "filter_contains",
+            "filter_range",
+            "aliases"
+        ]
+    },
+    "embedding_calls": 0,
+    "self_check": {
+        "queries": 100,
+        "mismatches": []
+    },
+    "builds": [
+        {
+            "name": "m8-ef64",
+            "index_options": {
+                "m": 8,
+                "ef_construct": 64
+            },
+            "documents": 1000000,
+            "ingest_workers": 8,
+            "ingest_ms": 30518,
+            "docs_per_second": 32767.5,
+            "ready_wait_ms": 2028,
+            "rebuild_ms": null,
+            "build_ms": 2028,
+            "index": "hnsw m=8 ef_construct=64 full_scan_threshold=10000, 991900 of 1000000 points indexed",
+            "sizes": {
+                "table_bytes": null,
+                "index_bytes": 113102848,
+                "total_bytes": 3910864896
+            },
+            "searches": [
+                {
+                    "name": "hnsw_ef 40",
+                    "options": {
+                        "hnsw_ef": 40
+                    },
+                    "recall_at_10": 0.9486999999999964,
+                    "recall_at_100": 0.968490000000005,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 305.6,
+                            "p50_ms": 3.493,
+                            "p95_ms": 5.099,
+                            "p99_ms": 7.332
+                        },
+                        "8": {
+                            "qps": 3395.4,
+                            "p50_ms": 2.181,
+                            "p95_ms": 3.176,
+                            "p99_ms": 6.574
+                        }
+                    }
+                },
+                {
+                    "name": "hnsw_ef 80",
+                    "options": {
+                        "hnsw_ef": 80
+                    },
+                    "recall_at_10": 0.9793999999999984,
+                    "recall_at_100": 0.968490000000005,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 277.6,
+                            "p50_ms": 3.085,
+                            "p95_ms": 5.66,
+                            "p99_ms": 6.829
+                        },
+                        "8": {
+                            "qps": 3098.2,
+                            "p50_ms": 2.46,
+                            "p95_ms": 3.551,
+                            "p99_ms": 4.44
+                        }
+                    }
+                },
+                {
+                    "name": "hnsw_ef 160",
+                    "options": {
+                        "hnsw_ef": 160
+                    },
+                    "recall_at_10": 0.9931999999999992,
+                    "recall_at_100": 0.985360000000005,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 254.1,
+                            "p50_ms": 3.501,
+                            "p95_ms": 6.213,
+                            "p99_ms": 7.426
+                        },
+                        "8": {
+                            "qps": 2189.1,
+                            "p50_ms": 3.4,
+                            "p95_ms": 5.637,
+                            "p99_ms": 8.003
+                        }
+                    }
+                },
+                {
+                    "name": "hnsw_ef 320",
+                    "options": {
+                        "hnsw_ef": 320
+                    },
+                    "recall_at_10": 0.9965999999999996,
+                    "recall_at_100": 0.9953500000000025,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 249,
+                            "p50_ms": 3.596,
+                            "p95_ms": 6.792,
+                            "p99_ms": 9.058
+                        },
+                        "8": {
+                            "qps": 1517.2,
+                            "p50_ms": 4.775,
+                            "p95_ms": 7.999,
+                            "p99_ms": 9.385
+                        }
+                    }
+                }
+            ],
+            "memory": "467.2MiB / 31.36GiB"
+        },
+        {
+            "name": "m16-ef64",
+            "index_options": {
+                "m": 16,
+                "ef_construct": 64
+            },
+            "documents": 1000000,
+            "ingest_workers": 8,
+            "ingest_ms": 29422,
+            "docs_per_second": 33988.2,
+            "ready_wait_ms": 2039,
+            "rebuild_ms": null,
+            "build_ms": 2039,
+            "index": "hnsw m=16 ef_construct=64 full_scan_threshold=10000, 985500 of 1000000 points indexed",
+            "sizes": {
+                "table_bytes": null,
+                "index_bytes": 138227712,
+                "total_bytes": 3931226112
+            },
+            "searches": [
+                {
+                    "name": "hnsw_ef 40",
+                    "options": {
+                        "hnsw_ef": 40
+                    },
+                    "recall_at_10": 0.9765999999999975,
+                    "recall_at_100": 0.9862600000000051,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 260.6,
+                            "p50_ms": 3.719,
+                            "p95_ms": 5.891,
+                            "p99_ms": 7.399
+                        },
+                        "8": {
+                            "qps": 2850.8,
+                            "p50_ms": 2.59,
+                            "p95_ms": 4.207,
+                            "p99_ms": 6.16
+                        }
+                    }
+                },
+                {
+                    "name": "hnsw_ef 80",
+                    "options": {
+                        "hnsw_ef": 80
+                    },
+                    "recall_at_10": 0.9914999999999989,
+                    "recall_at_100": 0.9862600000000051,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 233.3,
+                            "p50_ms": 4.164,
+                            "p95_ms": 6.558,
+                            "p99_ms": 8.327
+                        },
+                        "8": {
+                            "qps": 2428.7,
+                            "p50_ms": 3.015,
+                            "p95_ms": 5.018,
+                            "p99_ms": 6.311
+                        }
+                    }
+                },
+                {
+                    "name": "hnsw_ef 160",
+                    "options": {
+                        "hnsw_ef": 160
+                    },
+                    "recall_at_10": 0.9964999999999994,
+                    "recall_at_100": 0.9949100000000026,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 225.1,
+                            "p50_ms": 3.993,
+                            "p95_ms": 6.951,
+                            "p99_ms": 8.129
+                        },
+                        "8": {
+                            "qps": 1851.6,
+                            "p50_ms": 3.987,
+                            "p95_ms": 6.483,
+                            "p99_ms": 7.657
+                        }
+                    }
+                },
+                {
+                    "name": "hnsw_ef 320",
+                    "options": {
+                        "hnsw_ef": 320
+                    },
+                    "recall_at_10": 0.9980999999999997,
+                    "recall_at_100": 0.9988300000000009,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 223.4,
+                            "p50_ms": 4.008,
+                            "p95_ms": 7.101,
+                            "p99_ms": 13.973
+                        },
+                        "8": {
+                            "qps": 1285.2,
+                            "p50_ms": 5.71,
+                            "p95_ms": 9.779,
+                            "p99_ms": 12.8
+                        }
+                    }
+                }
+            ],
+            "memory": "483.6MiB / 31.36GiB"
+        },
+        {
+            "name": "m16-ef128",
+            "index_options": {
+                "m": 16,
+                "ef_construct": 128
+            },
+            "documents": 1000000,
+            "ingest_workers": 8,
+            "ingest_ms": 32644,
+            "docs_per_second": 30633.5,
+            "ready_wait_ms": 3036,
+            "rebuild_ms": null,
+            "build_ms": 3036,
+            "index": "hnsw m=16 ef_construct=128 full_scan_threshold=10000, 997100 of 1000000 points indexed",
+            "sizes": {
+                "table_bytes": null,
+                "index_bytes": 159100928,
+                "total_bytes": 4009611264
+            },
+            "searches": [
+                {
+                    "name": "hnsw_ef 40",
+                    "options": {
+                        "hnsw_ef": 40
+                    },
+                    "recall_at_10": 0.9817999999999981,
+                    "recall_at_100": 0.9930800000000034,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 352.6,
+                            "p50_ms": 2.455,
+                            "p95_ms": 5.195,
+                            "p99_ms": 8.184
+                        },
+                        "8": {
+                            "qps": 3052.5,
+                            "p50_ms": 2.427,
+                            "p95_ms": 3.856,
+                            "p99_ms": 4.643
+                        }
+                    }
+                },
+                {
+                    "name": "hnsw_ef 80",
+                    "options": {
+                        "hnsw_ef": 80
+                    },
+                    "recall_at_10": 0.9950999999999992,
+                    "recall_at_100": 0.9930800000000034,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 250.3,
+                            "p50_ms": 3.733,
+                            "p95_ms": 5.936,
+                            "p99_ms": 7.707
+                        },
+                        "8": {
+                            "qps": 2460.6,
+                            "p50_ms": 2.925,
+                            "p95_ms": 4.726,
+                            "p99_ms": 7.67
+                        }
+                    }
+                },
+                {
+                    "name": "hnsw_ef 160",
+                    "options": {
+                        "hnsw_ef": 160
+                    },
+                    "recall_at_10": 0.9987999999999998,
+                    "recall_at_100": 0.9978900000000013,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 248.4,
+                            "p50_ms": 3.621,
+                            "p95_ms": 6.318,
+                            "p99_ms": 8.296
+                        },
+                        "8": {
+                            "qps": 1829,
+                            "p50_ms": 3.982,
+                            "p95_ms": 6.582,
+                            "p99_ms": 7.538
+                        }
+                    }
+                },
+                {
+                    "name": "hnsw_ef 320",
+                    "options": {
+                        "hnsw_ef": 320
+                    },
+                    "recall_at_10": 0.9990999999999999,
+                    "recall_at_100": 0.9995500000000004,
+                    "below_take": 0,
+                    "concurrency": {
+                        "1": {
+                            "qps": 232,
+                            "p50_ms": 3.965,
+                            "p95_ms": 6.164,
+                            "p99_ms": 7.963
+                        },
+                        "8": {
+                            "qps": 1316.1,
+                            "p50_ms": 5.362,
+                            "p95_ms": 9.771,
+                            "p99_ms": 12.206
+                        }
+                    }
+                }
+            ],
+            "memory": "496.6MiB / 31.36GiB"
+        }
+    ],
+    "filtered": null,
+    "infrastructure": {
+        "php": "8.4.23",
+        "os": "Darwin 24.6.0",
+        "machine": {
+            "cpu": "Apple M3 Max",
+            "cores": 16,
+            "memory_bytes": 68719476736,
+            "store_in_docker": true,
+            "docker": "OrbStack, 16 CPUs, 33670656000 bytes"
+        },
+        "container": "agvector-multistore-qdrant-1"
+    },
+    "runtime_ms": 227484
+}

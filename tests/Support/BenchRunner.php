@@ -60,7 +60,7 @@ final class BenchRunner
         'collection:', 'child:', 'slice:', 'results:', 'filtered', 'iterative-scan:', 'match:', 'keyword-weight:', 'keep',
         'rerank:', 'rerank-price-per-1k-searches:', 'rerank-price-per-1m-tokens:', 'chunk:', 'rerank-candidates:',
         'rerank-price-per-1m-input-tokens:', 'rerank-price-per-1m-output-tokens:', 'store:', 'exact', 'yes', 'max-tokens:',
-        'compare-stores:',
+        'compare-stores:', 'sweep:', 'builds:', 'ingest-workers:', 'ingest-child:',
     ];
 
     public const USAGE = <<<'TXT'
@@ -103,6 +103,10 @@ final class BenchRunner
       compares an existing report without a run.
     Or: bin/vector-bench --compare-stores=<a.json>,<b.json>[,...]
       one table for runs of one dataset on several stores, with the top 10 agreement of each run with the first.
+    Or, on a `vectors` set (no model, no key): bin/vector-bench --dataset=<sift1m|dbpedia-openai-100k|dbpedia-openai-100k-filtered>
+      [--store=NAME] [--sweep=benchmarks/sweeps/<driver>.json] [--builds=a,b] [--queries=N] [--concurrency=1,8] [--warmup=20]
+      [--ingest-workers=1]
+      an index sweep (or, on the filtered set, each filter variant at each selectivity) after the H3 self-check.
     Env: OPENAI_API_KEY (or <PROVIDER>_API_KEY), and the store's own keys (see benchmarks/README.md).
 
     TXT;
@@ -135,12 +139,22 @@ final class BenchRunner
             return 0;
         }
 
+        if (isset($options['ingest-child'])) {
+            VectorSetRunner::ingestChild((string) $options['ingest-child'], (string) $options['slice']);
+
+            return 0;
+        }
+
         if (isset($options['compare-stores'])) {
             return self::compareStores(explode(',', (string) $options['compare-stores']));
         }
 
         if (isset($options['report'])) {
             return self::compareReport(self::readJson((string) $options['report']), $options);
+        }
+
+        if (isset($options['dataset']) && VectorSetRunner::isVectorSet((string) $options['dataset'])) {
+            return (new VectorSetRunner)->run($options);
         }
 
         if (isset($options['help']) || ! isset($options['dataset'], $options['model'])) {
@@ -188,10 +202,15 @@ final class BenchRunner
      */
     public static function child(string $jobFile, string $slice, string $resultsFile): void
     {
-        /** @var array{store: string, collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, queries: list<array{id: string, text: string, vector: list<float>, filter: string|int|null}>} $job */
+        /** @var array{store: string, collection: string, top_k: int, mode: string, field: string|null, options: array<string, mixed>, force_index?: bool, queries: list<array{id: string, text: string, vector: list<float>, filter: string|int|null}>} $job */
         $job = self::readJson($jobFile);
         [$index, $of] = array_map('intval', explode('/', $slice));
         self::boot('deterministic', []);
+
+        if ($job['force_index'] ?? false) {
+            (new (self::probeClass($job['store']))($job['store']))->forceIndex(true);
+        }
+
         $mine = array_values(array_filter($job['queries'], static fn (int $i): bool => $i % $of === $index, ARRAY_FILTER_USE_KEY));
         self::searchIds($job, $job['queries'][0]);
 
@@ -1060,6 +1079,7 @@ final class BenchRunner
             'infrastructure' => [
                 'php' => PHP_VERSION,
                 'os' => php_uname('s').' '.php_uname('r'),
+                'machine' => self::machine($this->container),
             ],
             'runtime_ms' => self::ms($runStarted),
         ];
@@ -1188,7 +1208,7 @@ final class BenchRunner
      *
      * @return list<array{id: string, ms: float, at: float, ids: list<string>}>
      */
-    private function runLevel(string $jobFile, string $resultsPrefix, int $level): array
+    public function runLevel(string $jobFile, string $resultsPrefix, int $level): array
     {
         $children = [];
 
@@ -1264,6 +1284,28 @@ final class BenchRunner
         if (preg_match('/^([\d.]+)\s*([KMG]i?B)/', trim($usage), $match)) {
             $this->memory[] = (float) $match[1] * ['KiB' => 1 / 1024, 'KB' => 1 / 1024, 'MiB' => 1, 'MB' => 1, 'GiB' => 1024, 'GB' => 1024][$match[2]];
         }
+    }
+
+    /**
+     * The machine a run ran on: CPU model, core count, memory, and whether the store runs in Docker (a container
+     * publishes its port, $container) with the Docker host's own CPUs and memory.
+     *
+     * @return array{cpu: string|null, cores: int|null, memory_bytes: int|null, store_in_docker: bool, docker: string|null}
+     */
+    public static function machine(?string $container): array
+    {
+        $darwin = PHP_OS_FAMILY === 'Darwin';
+        $sysctl = static fn (string $key): string => trim((string) shell_exec('sysctl -n '.$key.' 2>/dev/null'));
+        $cpuinfo = $darwin ? '' : (string) @file_get_contents('/proc/cpuinfo');
+        $meminfo = $darwin ? '' : (string) @file_get_contents('/proc/meminfo');
+
+        return [
+            'cpu' => ($darwin ? $sysctl('machdep.cpu.brand_string') : (preg_match('/^model name\s*:\s*(.+)$/m', $cpuinfo, $m) ? $m[1] : '')) ?: null,
+            'cores' => (int) ($darwin ? $sysctl('hw.ncpu') : trim((string) shell_exec('nproc 2>/dev/null'))) ?: null,
+            'memory_bytes' => ($darwin ? (int) $sysctl('hw.memsize') : (preg_match('/^MemTotal:\s*(\d+)/m', $meminfo, $m) ? (int) $m[1] * 1024 : 0)) ?: null,
+            'store_in_docker' => $container !== null,
+            'docker' => $container === null ? null : (trim((string) shell_exec('docker info --format "{{.OperatingSystem}}, {{.NCPU}} CPUs, {{.MemTotal}} bytes" 2>/dev/null')) ?: null),
+        ];
     }
 
     /**
