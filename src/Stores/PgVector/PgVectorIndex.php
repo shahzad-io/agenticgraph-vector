@@ -10,6 +10,9 @@ use AgenticGraph\Vector\ValueObjects\CollectionDefinition;
 /**
  * The embedding index of one pgvector collection: type and effective options (defaults filled in).
  *
+ * CollectionDefinition::$index on pgvector: `hnsw` (options `m` 2..100, `ef_construction` 4..1000 and at least
+ * 2 x m) or `ivfflat` (option `lists` 1..32768). Options are integers; anything else throws VectorQueryException.
+ *
  * The requested options are kept in the registry (`index_options`). The real index in Postgres is
  * the check: its type and HNSW options are read back from the index definition. IVFFlat `lists` is
  * clamped to the row count when the index is built (create, migration copy, rebuildIndex()), so its requested

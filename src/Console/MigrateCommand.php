@@ -27,6 +27,7 @@ final class MigrateCommand extends Command
         {--no-keyword : Remove keyword search}
         {--language=* : Language map entry as value=configuration, for example es=spanish; replaces the source map}
         {--language-field= : Metadata field holding the language; the source field (or lang) when omitted}
+        {--filterable=* : Declared filterable field as field:type, for example tenant:keyword; replaces the source fields, so name every field to keep}
         {--batch= : Documents per batch; the store batch size when omitted}
         {--copy : Copy vectors as they are (needed when the source has no recorded embedding model)}
         {--reembed : Re-embed every document with the new provider}
@@ -155,6 +156,18 @@ final class MigrateCommand extends Command
             $languages[$value] = $configuration;
         }
 
+        $filterable = null;
+
+        foreach ((array) $this->option('filterable') as $entry) {
+            [$field, $type] = array_pad(explode(':', (string) $entry, 2), 2, null);
+
+            if ($field === '' || $type === null || $type === '') {
+                throw new InvalidArgumentException("Filterable field [{$entry}] must be field:type, for example tenant:keyword.");
+            }
+
+            $filterable[$field] = $type;
+        }
+
         return new CollectionDefinition(
             name: $alias,
             dimensions: $this->option('dimensions') !== null ? (int) $this->option('dimensions') : null,
@@ -165,6 +178,7 @@ final class MigrateCommand extends Command
             keyword: $this->option('keyword') ? true : ($this->option('no-keyword') ? false : null),
             languages: $languages,
             languageField: $this->option('language-field') !== null ? (string) $this->option('language-field') : null,
+            filterable: $filterable,
         );
     }
 }

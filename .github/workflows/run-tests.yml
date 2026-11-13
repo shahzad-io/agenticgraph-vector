@@ -34,6 +34,10 @@ jobs:
           --health-interval=5s
           --health-timeout=3s
           --health-retries=10
+      qdrant:
+        image: qdrant/qdrant:v1.20.0
+        ports:
+          - 16333:6333
 
     strategy:
       fail-fast: false
@@ -80,6 +84,17 @@ jobs:
           echo "Postgres failed to start"
           exit 1
 
+      - name: Wait for Qdrant
+        run: |
+          for i in `seq 1 30`;
+          do
+            curl -sf http://127.0.0.1:16333/readyz && echo "Qdrant is ready!" && exit 0
+            echo "Waiting for Qdrant..."
+            sleep 1
+          done
+          echo "Qdrant failed to start"
+          exit 1
+
       - name: Setup problem matchers
         run: |
           echo "::add-matcher::${{ runner.tool_cache }}/php.json"
@@ -101,5 +116,6 @@ jobs:
           VECTOR_PG_USERNAME: agenticgraph
           VECTOR_PG_PASSWORD: agenticgraph
           VECTOR_PGVECTOR_INTEGRATION: true
+          VECTOR_QDRANT_URL: http://127.0.0.1:16333
           AGENTICGRAPH_CORE_PATH: ${{ github.workspace }}/.ci/agenticgraph
         run: vendor/bin/pest --ci

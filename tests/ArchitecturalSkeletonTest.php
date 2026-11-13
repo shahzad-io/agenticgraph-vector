@@ -76,8 +76,9 @@ it('declares pgvector and memory capabilities', function (string $store, array $
     ]);
 })->with([
     // The memory store's data lives in one process, so it has no queued ingest (sync runs inline).
-    'pgvector' => ['pgvector', [StoreCapability::QueuedIngest, StoreCapability::RebuildIndex]],
-    'memory' => ['memory', []],
+    'pgvector' => ['pgvector', [StoreCapability::QueuedIngest, StoreCapability::RebuildIndex, StoreCapability::KeywordWebsearch, StoreCapability::KeywordLanguages, StoreCapability::AtomicBatches, StoreCapability::Migrations, StoreCapability::UndeclaredFilters]],
+    // No KeywordLanguages: the memory store records the language map but does not apply it.
+    'memory' => ['memory', [StoreCapability::KeywordWebsearch, StoreCapability::AtomicBatches, StoreCapability::Migrations, StoreCapability::UndeclaredFilters]],
 ]);
 
 it('returns a sensible pgvector batch size', function () {

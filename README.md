@@ -16,7 +16,7 @@ Laravel-native **vector retrieval**: store documents, embed text, run similarity
 
 - PHP 8.3+
 - Laravel 12.61.1+ or 13.12+
-- PostgreSQL with the [pgvector](https://github.com/pgvector/pgvector) extension (typically a **separate** connection from your primary database)
+- A vector store. Drivers: `pgvector` (PostgreSQL with the [pgvector](https://github.com/pgvector/pgvector) extension, typically a **separate** connection from your primary database), `qdrant` (Qdrant v1.20+, see [Qdrant](#qdrant)) and `memory` (in-process, for tests). Every store follows one contract, checked by the shipped `StoreConformanceTests`; a feature a store lacks is a capability it does not declare.
 
 ## Compatibility
 
@@ -34,7 +34,7 @@ The three packages are released together:
 composer require agenticgraph/vector
 ```
 
-Define a pgvector connection in `config/database.php`, then set:
+With the pgvector driver, define a pgvector connection in `config/database.php`, then set:
 
 ```env
 VECTOR_DB_CONNECTION=pgvector
@@ -88,6 +88,52 @@ $results = Vector::store('pgvector')
 $results->first()?->id;        // 'doc-1'
 $results->toContext();         // concatenated content for your LLM layer
 ```
+
+Scores follow the collection's metric in every store: `cosine` gives the cosine similarity (-1 to 1), `l2` gives `1 / (1 + distance)` (above 0, up to 1), `inner_product` gives the dot product. Declare the metadata fields you filter on with `filterable` (`FieldType`), and every store filters them alike.
+
+## pgvector
+
+A declared field (`filterable`) gets its own index and a plain filter predicate. A filtered search on declared fields counts its matches up to a threshold (store settings `filter_exact_max_rows`, default 2,500, and `filter_exact_min_share`, default 0.01 of the table): below it the search is exact through the field index, above it the search walks the vector index. `filter_plan` (`auto`, `exact`, `index`, `planner`) fixes the choice for a caller that knows its data. A filter on an undeclared field and a filtered hybrid search are left to the Postgres planner.
+
+The registry table is created on first use, and a registry from an older release gets its new columns at runtime (`ALTER TABLE ... ADD COLUMN`): the database user needs the right to create tables and to alter the registry table.
+
+After `vector:migrate`, the old collection stays with its data (and `--rollback` works) until `php artisan vector:migrate {name} --drop-old`. To declare a filterable field on an existing collection: `php artisan vector:migrate {name} --filterable=tenant:keyword` (repeat the option; it replaces the declared fields, so name every field to keep).
+
+Keyword and hybrid search need the `Keyword` capability, which Qdrant does not have. An app that may run on either store asks before it sets `keyword`:
+
+```php
+$store = Vector::store();
+$keyword = $store->capabilities()->supports(\AgenticGraph\Vector\Enums\StoreCapability::Keyword);
+$store->createCollection(new CollectionDefinition('articles', keyword: $keyword));
+```
+
+On a large table, a filter that keeps about 1% of the rows has no fast path in pgvector: exact scoring grows with the matches (about 37 ms for 10,000 rows of 1,536 dimensions) and the vector index drops about 99 of every 100 rows it visits.
+
+## Qdrant
+
+```env
+VECTOR_STORE=qdrant
+VECTOR_QDRANT_URL=http://127.0.0.1:6333
+VECTOR_QDRANT_API_KEY=
+```
+
+Other keys of `stores.qdrant`: `VECTOR_QDRANT_TIMEOUT` (10 s), `VECTOR_QDRANT_CONNECT_TIMEOUT` (3 s), `VECTOR_QDRANT_BATCH_SIZE` (100), `VECTOR_QDRANT_COLLECTION_PREFIX` (empty). The driver uses the REST API through the Laravel HTTP client, with no SDK and no automatic retry.
+
+Capabilities: `ListIds`, `UpdateMetadata`, `DeleteByFilter`, `FilterNot`, `FilterContains`, `FilterRange`, `Aliases`. Declare every field you filter on:
+
+```php
+new CollectionDefinition('articles', dimensions: 1536, filterable: ['lang' => 'keyword', 'price' => 'float']);
+```
+
+Limits:
+
+- No keyword or hybrid search: a collection with `keyword: true` is refused at create.
+- No migrations: change a collection by creating a new one, copying the documents, and switching an alias with `pointAlias()`.
+- Filters on declared fields only (`CollectionDefinition::$filterable`); another field throws `VectorUnsupportedOperationException`.
+- A new filterable field needs a new collection.
+- `insert()` checks the ids, then writes in Qdrant's `insert_only` mode. If another writer adds the same id between the check and the write, the existing point is kept and the duplicate is not reported.
+- `updateMetadata()` is one batch request, not atomic.
+- `collection_prefix` (`VECTOR_QDRANT_COLLECTION_PREFIX`, empty by default) is prepended to every collection and alias name the store creates or reads; `listCollections()` and `listAliases()` return only the names with the prefix, without it. Two Qdrant stores with the same URL and the same prefix share their collections.
 
 ## Optional AgenticGraph integration
 

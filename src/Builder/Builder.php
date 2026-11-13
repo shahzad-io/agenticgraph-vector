@@ -507,7 +507,7 @@ final class Builder
         $rerankQuery = $this->rerankQuery();
 
         $context = new VectorTraceContext(
-            store: $this->store instanceof InstrumentedStore ? $this->store->name() : (string) config('vector.default', 'pgvector'),
+            store: $this->store instanceof InstrumentedStore ? $this->store->name() : VectorTraceContext::UNNAMED_STORE,
             collection: $this->collection,
             topK: $this->topK,
             filterCount: count($this->filterConditions),
@@ -630,6 +630,10 @@ final class Builder
 
         $this->assertSupported(StoreCapability::Keyword, 'Hybrid search');
 
+        if ($this->hybrid['match'] === SearchQuery::KEYWORD_MATCH_WEBSEARCH) {
+            $this->assertSupported(StoreCapability::KeywordWebsearch, 'The websearch keyword match');
+        }
+
         if ($this->keywords === null && $this->similarToText === null) {
             throw new VectorQueryException('A hybrid search with usingVector() needs keywords(text).');
         }
@@ -642,9 +646,15 @@ final class Builder
         }
     }
 
+    /**
+     * The operator's capability. The declared-field checks (FieldType operators and values, UndeclaredFilters)
+     * run in InstrumentedStore, so a direct store call gets them too.
+     */
     private function assertFilterSupported(?NormalizedFilter $filter): void
     {
-        foreach ($filter === null ? [] : $filter->conditions as $condition) {
+        $conditions = $filter === null ? [] : $filter->conditions;
+
+        foreach ($conditions as $condition) {
             $capability = $condition->operator->capability();
 
             if ($capability !== null) {

@@ -1,6 +1,6 @@
 <?php
 
-use AgenticGraph\Vector\Contracts\AliasStoreContract;
+use AgenticGraph\Vector\Contracts\MigrationStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Enums\StoreCapability;
@@ -58,6 +58,7 @@ it('records the named provider on the collection', function () {
         'index' => null,
         'embedding' => ['provider' => 'large', 'model' => 'large-model', 'dimensions' => 4],
         'keyword' => null,
+        'filterable' => [],
     ]);
 });
 
@@ -195,9 +196,9 @@ it('stops catch-up passes at vector.migration.catch_up_max_passes', function () 
     config()->set('vector.migration.catch_up_max_passes', 3);
     $planned = new MigrationState('a', 'a__v1', 'a__v2', 'copy', 'catching_up', ['dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'index_options' => [], 'embeddings' => null]);
 
-    $store = Mockery::mock(AliasStoreContract::class, VectorStoreContract::class);
+    $store = Mockery::mock(MigrationStoreContract::class, VectorStoreContract::class);
     $store->shouldReceive('batchSize')->andReturn(10);
-    $store->shouldReceive('describeCollection')->andReturn(['collection' => 'a__v1', 'dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'embedding' => null]);
+    $store->shouldReceive('describeCollection')->andReturn(['collection' => 'a__v1', 'dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'embedding' => null, 'filterable' => []]);
     $store->shouldReceive('migration')->andReturn($planned);
     $store->shouldReceive('catchUpMigration')->times(3)->andReturn(1000);
     $store->shouldReceive('finishMigration')->once()->andReturn($planned->withPhase('switched'));
@@ -209,9 +210,9 @@ it('runs another unlocked pass when the final pass finds rows to embed, and embe
     config()->set('vector.migration.catch_up_max_passes', 3);
     $planned = new MigrationState('a', 'a__v1', 'a__v2', 'reembed', 'catching_up', ['dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'index_options' => [], 'embeddings' => null]);
 
-    $store = Mockery::mock(AliasStoreContract::class, VectorStoreContract::class);
+    $store = Mockery::mock(MigrationStoreContract::class, VectorStoreContract::class);
     $store->shouldReceive('batchSize')->andReturn(10);
-    $store->shouldReceive('describeCollection')->andReturn(['collection' => 'a__v1', 'dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'embedding' => null]);
+    $store->shouldReceive('describeCollection')->andReturn(['collection' => 'a__v1', 'dimensions' => 3, 'metric' => 'cosine', 'index' => null, 'embedding' => null, 'filterable' => []]);
     $store->shouldReceive('migration')->andReturn($planned);
     $store->shouldReceive('catchUpMigration')->times(3)->andReturn(1);
     $store->shouldReceive('finishMigration')->with($planned, 500, false)->twice()->andReturn($planned);
@@ -298,4 +299,32 @@ it('adds and removes keyword search with vector:migrate --keyword, --language, -
     $this->artisan('vector:migrate', ['alias' => 'kw', '--no-keyword' => true])->assertSuccessful();
 
     expect(Vector::store('memory')->describeCollection('kw')['keyword'])->toBeNull();
+});
+
+it('declares filterable fields with vector:migrate --filterable, and the different-definition refusal names it (G4)', function () {
+    memoryWithDocuments('ff', 3);
+    $store = Vector::store('memory');
+
+    expect(fn () => $store->createCollection(new CollectionDefinition('ff', dimensions: 3, filterable: ['tenant' => 'keyword', 'rank' => 'integer'])))
+        ->toThrow(VectorQueryException::class, 'The declared fields differ: php artisan vector:migrate ff --filterable=rank:integer --filterable=tenant:keyword');
+
+    $this->artisan('vector:migrate', ['alias' => 'ff', '--filterable' => ['tenant']])->expectsOutputToContain('must be field:type')->assertFailed();
+    $this->artisan('vector:migrate', ['alias' => 'ff', '--filterable' => ['tenant:bogus']])->expectsOutputToContain('unknown type [bogus]')->assertFailed();
+    $this->artisan('vector:migrate', ['alias' => 'ff', '--filterable' => ['tenant:keyword', 'rank:integer']])->assertSuccessful();
+
+    expect($store->describeCollection('ff')['filterable'])->toBe(['rank' => 'integer', 'tenant' => 'keyword']);
+
+    // A plain definition change keeps the plain refusal.
+    expect(fn () => $store->createCollection(new CollectionDefinition('ff', dimensions: 4)))
+        ->toThrow(VectorQueryException::class, 'different definition')
+        ->and(fn () => $store->createCollection(new CollectionDefinition('ff', dimensions: 4)))->not->toThrow(VectorQueryException::class, '--filterable');
+});
+
+it('names vector:migrate with every field for an undeclared filter on a store with migrations (G2)', function () {
+    $exception = VectorUnsupportedOperationException::undeclaredField('tenant', 'docs', 'custom', ['rank' => 'integer'], true);
+
+    expect($exception->getMessage())
+        ->toContain('Field [tenant] is not declared filterable on collection [docs], and store [custom]')
+        ->toContain("filterable: ['rank' => FieldType::Integer, 'tenant' => FieldType::Keyword]")
+        ->toContain('php artisan vector:migrate docs --store=custom --filterable=rank:integer --filterable=tenant:keyword');
 });

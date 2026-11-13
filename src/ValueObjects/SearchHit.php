@@ -4,6 +4,17 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector\ValueObjects;
 
+/**
+ * Score contract (the collection's Metric):
+ *
+ * | Metric        | Score               | Range            |
+ * |---------------|---------------------|------------------|
+ * | cosine        | cosine similarity   | -1 to 1          |
+ * | l2            | 1 / (1 + distance)  | above 0, up to 1 |
+ * | inner_product | the dot product     | unbounded        |
+ *
+ * `scores['keyword']` is store-defined: compare it only between hits of one query.
+ */
 final readonly class SearchHit
 {
     /**

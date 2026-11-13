@@ -94,7 +94,9 @@ function queuedPrismProvider(): void
 
 function work(): void
 {
-    Artisan::call('queue:work', ['connection' => 'database', '--stop-when-empty' => true, '--sleep' => 0]);
+    // --memory: the worker runs in the test process, whose memory grows over a full suite run; the default 128 MB
+    // limit would stop it after its first job.
+    Artisan::call('queue:work', ['connection' => 'database', '--stop-when-empty' => true, '--sleep' => 0, '--memory' => 2048]);
 }
 
 it('dispatches one job per batch through one job batch, after duplicate removal', function () {

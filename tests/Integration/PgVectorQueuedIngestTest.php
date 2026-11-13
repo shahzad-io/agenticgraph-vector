@@ -70,7 +70,9 @@ it('ingests through a real worker without duplicates when the run record shares 
     $documents = queuedPgDocuments(5);
 
     $run = Vector::store('pgvector')->collection($this->collection)->queue('database')->upsert($documents);
-    Artisan::call('queue:work', ['connection' => 'database', '--stop-when-empty' => true, '--sleep' => 0]);
+    // The worker runs in the test process, and its --memory limit (128 MB by default) counts the whole suite: past it,
+    // the worker stops after one job and leaves the other batches queued.
+    Artisan::call('queue:work', ['connection' => 'database', '--stop-when-empty' => true, '--sleep' => 0, '--memory' => 2048]);
 
     // A batch delivered twice (a worker killed after its commit) rewrites the same rows.
     $storage = 'vcol_'.substr(hash('sha256', $this->collection), 0, 32);

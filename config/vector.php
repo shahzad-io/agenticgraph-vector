@@ -19,7 +19,7 @@ return [
     | Vector Stores
     |--------------------------------------------------------------------------
     |
-    | Named stores. Each entry names its driver: pgvector, memory, or a driver
+    | Named stores. Each entry names its driver: pgvector, qdrant, memory, or a driver
     | registered with Vector::extend(). Vector::store('name') resolves the entry
     | through its driver; several entries may use the same driver.
     |
@@ -43,7 +43,12 @@ return [
             'index' => 'hnsw',
             'metric' => 'cosine',
             'batch_size' => (int) env('VECTOR_PGVECTOR_BATCH_SIZE', 100),
-            'registry_table' => 'vector_collection_registry',
+            // Prefix of this store's tables: the data tables, and the registry, alias and migration tables unless
+            // registry_table names the registry. Two stores on one connection with the same prefix and registry
+            // share their collections; give each its own prefix to keep them apart. Set it before the first
+            // collection: existing tables keep their names.
+            'table_prefix' => env('VECTOR_PGVECTOR_TABLE_PREFIX', ''),
+            // 'registry_table' => 'vector_collection_registry', // default: {table_prefix}vector_collection_registry
             'install_extension' => (bool) env('VECTOR_PGVECTOR_INSTALL_EXTENSION', true),
             // Check once per process that the vector extension exists. false skips the check.
             'verify_extension' => (bool) env('VECTOR_PGVECTOR_VERIFY_EXTENSION', true),
@@ -51,8 +56,31 @@ return [
             // Searches with a filter keep scanning the HNSW index until they have take() hits (pgvector 0.8+):
             // off, relaxed_order or strict_order. Searches without a filter do not use it.
             'iterative_scan' => env('VECTOR_PGVECTOR_ITERATIVE_SCAN', 'relaxed_order'),
+            // An unfiltered, non-exact search on a collection with an index uses the index (SET LOCAL enable_seqscan = off).
+            // Without it the planner picks an exact scan on small collections, whose vectors it costs too low.
+            'prefer_index' => (bool) env('VECTOR_PGVECTOR_PREFER_INDEX', true),
             // The most rows one iterative scan visits (pgvector's default).
             'max_scan_tuples' => (int) env('VECTOR_PGVECTOR_MAX_SCAN_TUPLES', 20000),
+            // A filtered dense search on declared fields counts its matches up to T + 1, T being the larger of
+            // filter_exact_max_rows and filter_exact_min_share x the table's row count: at most T scores them
+            // exactly, more uses the vector index. filter_plan: auto, exact, index or planner.
+            'filter_exact_max_rows' => (int) env('VECTOR_PGVECTOR_FILTER_EXACT_MAX_ROWS', 2500),
+            'filter_exact_min_share' => (float) env('VECTOR_PGVECTOR_FILTER_EXACT_MIN_SHARE', 0.01),
+            'filter_plan' => env('VECTOR_PGVECTOR_FILTER_PLAN', 'auto'),
+        ],
+
+        // Qdrant v1.20+ over REST. Filters run on declared fields only; no keyword search, no migrations.
+        'qdrant' => [
+            'driver' => 'qdrant',
+            'url' => env('VECTOR_QDRANT_URL'),
+            'api_key' => env('VECTOR_QDRANT_API_KEY'),
+            'timeout' => (float) env('VECTOR_QDRANT_TIMEOUT', 10),
+            'connect_timeout' => (float) env('VECTOR_QDRANT_CONNECT_TIMEOUT', 3),
+            'batch_size' => (int) env('VECTOR_QDRANT_BATCH_SIZE', 100),
+
+            // Prepended to every collection and alias name this store creates or reads. Two stores with
+            // the same url and the same prefix share their collections.
+            'collection_prefix' => env('VECTOR_QDRANT_COLLECTION_PREFIX', ''),
         ],
 
         // In-process reference store (exact search, no index). Data lives as long as the

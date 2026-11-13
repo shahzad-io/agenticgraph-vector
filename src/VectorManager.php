@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace AgenticGraph\Vector;
 
 use AgenticGraph\Vector\Concerns\KeepsExtensions;
-use AgenticGraph\Vector\Contracts\AliasStoreContract;
 use AgenticGraph\Vector\Contracts\IndexStoreContract;
+use AgenticGraph\Vector\Contracts\MigrationStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\Enums\StoreCapability;
 use AgenticGraph\Vector\Exceptions\VectorUnsupportedOperationException;
@@ -16,6 +16,7 @@ use AgenticGraph\Vector\Rerankers\InstrumentedReranker;
 use AgenticGraph\Vector\Stores\InstrumentedStore;
 use AgenticGraph\Vector\Stores\MemoryStore;
 use AgenticGraph\Vector\Stores\PgVectorStore;
+use AgenticGraph\Vector\Stores\QdrantStore;
 use AgenticGraph\Vector\Support\MetadataValidator;
 use AgenticGraph\Vector\Tracing\TraceSpan;
 use AgenticGraph\Vector\Tracing\VectorTraceContext;
@@ -27,7 +28,7 @@ use Illuminate\Support\Manager;
 use InvalidArgumentException;
 
 /**
- * Resolves named stores from `vector.stores`. Each entry names its `driver` (pgvector, memory, or one
+ * Resolves named stores from `vector.stores`. Each entry names its `driver` (pgvector, qdrant, memory, or one
  * registered with extend()). Every VectorStoreContract is returned wrapped in an InstrumentedStore.
  */
 class VectorManager extends Manager
@@ -136,8 +137,14 @@ class VectorManager extends Manager
 
         $store = match (true) {
             isset($this->customCreators[$driverName]) => $this->customCreators[$driverName]($this->container, $config, $name),
-            $driverName === 'pgvector' => $this->createPgvectorStore($config),
+            $driverName === 'pgvector' => $this->createPgvectorStore($config, $name),
             $driverName === 'memory' => $this->createMemoryStore($config),
+            $driverName === 'qdrant' => new QdrantStore(
+                config: $config,
+                embeddings: $this->container->make(EmbeddingsManager::class),
+                metadataValidator: $this->container->make(MetadataValidator::class),
+                name: $name,
+            ),
             default => throw new InvalidArgumentException("Vector store driver [{$driverName}] for store [{$name}] is not supported."),
         };
 
@@ -148,8 +155,8 @@ class VectorManager extends Manager
     {
         $store = $this->store($name);
 
-        if (! $store instanceof AliasStoreContract || ! $store->capabilities()->supports(StoreCapability::Aliases)) {
-            throw new VectorUnsupportedOperationException("Aliases and migrations are not supported by store [{$name}].");
+        if (! $store instanceof MigrationStoreContract || ! $store->capabilities()->supports(StoreCapability::Migrations)) {
+            throw new VectorUnsupportedOperationException("Migrations are not supported by store [{$name}].");
         }
 
         return new CollectionMigrator($store, $name, $this->container->make(EmbeddingsManager::class));
@@ -158,13 +165,14 @@ class VectorManager extends Manager
     /**
      * @param  array<string, mixed>  $config
      */
-    private function createPgvectorStore(array $config): PgVectorStore
+    private function createPgvectorStore(array $config, string $name): PgVectorStore
     {
         return new PgVectorStore(
             config: $config,
             db: $this->container->make(DatabaseManager::class),
             embeddings: $this->container->make(EmbeddingsManager::class),
             metadataValidator: $this->container->make(MetadataValidator::class),
+            name: $name,
         );
     }
 

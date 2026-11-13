@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AgenticGraph\Vector\Migration;
 
-use AgenticGraph\Vector\Contracts\AliasStoreContract;
+use AgenticGraph\Vector\Contracts\MigrationStoreContract;
 use AgenticGraph\Vector\Contracts\VectorStoreContract;
 use AgenticGraph\Vector\EmbeddingsManager;
 use AgenticGraph\Vector\Events\VectorMigrationProgressed;
@@ -22,7 +22,7 @@ use Throwable;
 final class CollectionMigrator
 {
     public function __construct(
-        private readonly AliasStoreContract&VectorStoreContract $store,
+        private readonly MigrationStoreContract&VectorStoreContract $store,
         private readonly string $storeName,
         private readonly EmbeddingsManager $embeddings,
     ) {}
@@ -160,6 +160,7 @@ final class CollectionMigrator
             keyword: $definition->keyword ?? (($source['keyword'] ?? null) !== null),
             languages: $definition->languages ?? $source['keyword']['languages'] ?? null,
             languageField: $definition->languageField ?? $source['keyword']['language_field'] ?? null,
+            filterable: $definition->filterable ?? $source['filterable'],
         );
     }
 
@@ -267,7 +268,7 @@ final class CollectionMigrator
      */
     private static function canonical(array $definition): string
     {
-        foreach (['index_options', 'languages'] as $key) {
+        foreach (['index_options', 'languages', 'filterable'] as $key) {
             if (isset($definition[$key])) {
                 $sorted = (array) $definition[$key];
                 ksort($sorted);

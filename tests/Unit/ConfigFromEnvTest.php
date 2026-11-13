@@ -4,15 +4,25 @@ use Illuminate\Support\Arr;
 
 /**
  * Loads config/vector.php with one env value set (or unset) and returns the value at $path.
+ * env() reads $_SERVER and $_ENV before getenv(), so all three are set, then restored as they were.
  */
 function vectorConfigValue(string $path, string $env, ?string $value): mixed
 {
-    $value === null ? putenv($env) : putenv("{$env}={$value}");
+    $previous = [getenv($env), $_ENV, $_SERVER];
+
+    if ($value === null) {
+        putenv($env);
+        unset($_ENV[$env], $_SERVER[$env]);
+    } else {
+        putenv("{$env}={$value}");
+        $_ENV[$env] = $_SERVER[$env] = $value;
+    }
 
     try {
         $config = require __DIR__.'/../../config/vector.php';
     } finally {
-        putenv($env);
+        [$getenv, $_ENV, $_SERVER] = $previous;
+        $getenv === false ? putenv($env) : putenv("{$env}={$getenv}");
     }
 
     return Arr::get($config, $path);
@@ -30,6 +40,11 @@ it('reads each F7 key from its env value', function (string $path, string $env, 
     'prism.api_key empty is null' => ['embeddings.providers.prism.api_key', 'VECTOR_EMBEDDINGS_API_KEY', '', null],
     'pgvector.batch_size' => ['stores.pgvector.batch_size', 'VECTOR_PGVECTOR_BATCH_SIZE', '250', 250],
     'pgvector.install_extension' => ['stores.pgvector.install_extension', 'VECTOR_PGVECTOR_INSTALL_EXTENSION', 'false', false],
+    'qdrant.url' => ['stores.qdrant.url', 'VECTOR_QDRANT_URL', 'http://qdrant:6333', 'http://qdrant:6333'],
+    'qdrant.api_key' => ['stores.qdrant.api_key', 'VECTOR_QDRANT_API_KEY', 'key', 'key'],
+    'qdrant.timeout (cast to float)' => ['stores.qdrant.timeout', 'VECTOR_QDRANT_TIMEOUT', '2.5', 2.5],
+    'qdrant.connect_timeout (cast to float)' => ['stores.qdrant.connect_timeout', 'VECTOR_QDRANT_CONNECT_TIMEOUT', '1', 1.0],
+    'qdrant.batch_size' => ['stores.qdrant.batch_size', 'VECTOR_QDRANT_BATCH_SIZE', '64', 64],
     'events.enabled' => ['events.enabled', 'VECTOR_EVENTS_ENABLED', 'false', false],
     'rerank.default' => ['rerank.default', 'VECTOR_RERANK_PROVIDER', 'cohere', 'cohere'],
     'rerank.fail_open' => ['rerank.fail_open', 'VECTOR_RERANK_FAIL_OPEN', 'false', false],
@@ -49,6 +64,8 @@ it('keeps the current default when the env value is unset', function (string $pa
     'prism.api_key' => ['embeddings.providers.prism.api_key', 'VECTOR_EMBEDDINGS_API_KEY', null],
     'pgvector.batch_size' => ['stores.pgvector.batch_size', 'VECTOR_PGVECTOR_BATCH_SIZE', 100],
     'pgvector.install_extension' => ['stores.pgvector.install_extension', 'VECTOR_PGVECTOR_INSTALL_EXTENSION', true],
+    'guard: qdrant.url has no default' => ['stores.qdrant.url', 'VECTOR_QDRANT_URL', null],
+    'qdrant.batch_size' => ['stores.qdrant.batch_size', 'VECTOR_QDRANT_BATCH_SIZE', 100],
     'events.enabled' => ['events.enabled', 'VECTOR_EVENTS_ENABLED', true],
     'guard: rerank.default has no vendor default' => ['rerank.default', 'VECTOR_RERANK_PROVIDER', null],
     'rerank.fail_open' => ['rerank.fail_open', 'VECTOR_RERANK_FAIL_OPEN', true],
