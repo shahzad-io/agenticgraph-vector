@@ -236,3 +236,35 @@ it('writes to the new target after another store switched the alias the cache re
     expect($store->countDocuments($this->collection))->toBe(0)
         ->and($store->countDocuments("{$this->collection}_b"))->toBe(1);
 });
+
+/**
+ * Runs the search inside an outer transaction, so its SET LOCAL settings are still on, and reads hnsw.ef_search.
+ */
+function latencyEfSearch(callable $search): string
+{
+    $connection = DB::connection('pgvector');
+    $connection->beginTransaction();
+
+    try {
+        $search();
+
+        return (string) $connection->scalar("SELECT current_setting('hnsw.ef_search')");
+    } finally {
+        $connection->rollBack();
+    }
+}
+
+// Spec section 15 (L9).
+it('sets the store ef_search on an unfiltered hnsw search unless the caller sets one', function () {
+    $store = latencyStore();
+    $store->createCollection(new CollectionDefinition($this->collection, dimensions: 8, metric: 'cosine'));
+    $search = fn () => $store->collection($this->collection)->usingVector(latencyVector(8));
+
+    expect(latencyEfSearch(fn () => $search()->take(10)->get()))->toBe('80')
+        ->and(latencyEfSearch(fn () => $search()->options(['hnsw.ef_search' => 33])->take(10)->get()))->toBe('33')
+        ->and(latencyEfSearch(fn () => $search()->take(200)->get()))->toBe('200')
+        ->and(latencyEfSearch(fn () => $search()->where('group', 1)->take(10)->get()))->toBe('40');
+
+    $store = latencyStore(['ef_search' => 120]);
+    expect(latencyEfSearch(fn () => $store->collection($this->collection)->usingVector(latencyVector(8))->take(10)->get()))->toBe('120');
+});

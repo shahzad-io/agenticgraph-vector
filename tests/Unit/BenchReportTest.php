@@ -417,6 +417,11 @@ it('prints the embedding estimate and refuses a run above the token limit withou
     BenchRunner::costGuard(2, 40, 1, 8, 0.02, 11, true);
 });
 
+it('estimates the rerank cost as queries x modes requests, at the price per 1K searches', function () {
+    expect(BenchRunner::rerankCostGuard(200, 30, 2, 2.5))->toBe(1.0)
+        ->and(BenchRunner::rerankCostGuard(200, 100, 2, null))->toBeNull();
+});
+
 it('resolves the probe of a store by its driver name, else the generic probe (H1)', function () {
     config()->set('vector.stores.vectors_a', ['driver' => 'qdrant']);
     config()->set('vector.stores.vectors_b', ['driver' => 'memory']);

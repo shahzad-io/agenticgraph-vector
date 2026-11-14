@@ -65,16 +65,19 @@ final class PgVectorSearchOptions
      * An HNSW scan returns at most `hnsw.ef_search` rows (pgvector's default 40), so a search that needs more (a
      * large take(), a reranker's candidates, a hybrid list depth) raises it to $rows for this transaction. The raise
      * never lowers a higher setting (the batch's own included), and leaves a caller's own `hnsw.ef_search` option alone.
+     * $width is the least width of this search (the store's ef_search on an unfiltered HNSW search), raised the same way.
      *
      * @param  array<string, string|int>  $settings  name => value, from settings() and filterPlanSettings()
      * @param  array<string, mixed>  $options  the caller's search options
      */
-    public static function send(Connection $connection, array $settings, array $options, int $rows): void
+    public static function send(Connection $connection, array $settings, array $options, int $rows, int $width = 40): void
     {
         $sql = array_map(static fn (string $name, string|int $value): string => "SET LOCAL {$name} = {$value}", array_keys($settings), $settings);
 
-        if ($rows > 40 && ! array_key_exists(self::HNSW_EF_SEARCH, $options)) {
-            $sql[] = "SELECT set_config('hnsw.ef_search', GREATEST(COALESCE(current_setting('hnsw.ef_search', true), '40')::int, ".min($rows, 1000).')::text, true)';
+        $width = max($width, min($rows, 1000));
+
+        if ($width > 40 && ! array_key_exists(self::HNSW_EF_SEARCH, $options)) {
+            $sql[] = "SELECT set_config('hnsw.ef_search', GREATEST(COALESCE(current_setting('hnsw.ef_search', true), '40')::int, {$width})::text, true)";
         }
 
         if ($sql !== []) {

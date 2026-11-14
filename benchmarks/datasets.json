@@ -41,6 +41,7 @@
             },
             "split": "wixqa_expertwritten",
             "query_prefix": "expert",
+            "truncate": 24000,
             "files": {
                 "corpus": {
                     "path": "wixqa/corpus.json",
@@ -70,6 +71,7 @@
             },
             "split": "wixqa_simulated",
             "query_prefix": "simulated",
+            "truncate": 24000,
             "files": {
                 "corpus": {
                     "path": "wixqa/corpus.json",
