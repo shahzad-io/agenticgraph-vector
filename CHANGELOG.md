@@ -2,7 +2,7 @@
 
 All notable changes to `agenticgraph/vector` will be documented in this file.
 
-## 0.2.0 - Unreleased
+## 0.2.0 - 2026-11-15
 
 Several stores behind one contract, and a Qdrant driver.
 
