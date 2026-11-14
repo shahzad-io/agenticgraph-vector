@@ -5,7 +5,7 @@ description: "Use AgenticGraph vector search: named stores and configuration, th
 
 # AgenticGraph Vector
 
-docs-sha: e1cd1f7
+docs-sha: 5f62246
 
 Condensed from the AgenticGraph docs (`/docs/vector-...` paths below) at that commit. When a detail here and the package source disagree, the source wins.
 
@@ -29,7 +29,7 @@ Other skills, use them when installed: `agenticgraph-core` for graphs, nodes and
 - It runs alone. Inside an AgenticGraph node, the same call can also become a `vector` span.
 - Namespace: `AgenticGraph\Vector`. Facades: `Vector` and `Embeddings`.
 
-Docs: `/docs/vector-overview`
+Docs: `/docs/vector-overview`, `/docs/vector-guide-choosing-a-store`, `/docs/vector-upgrading-to-0-2`
 
 ## Install and configure
 
@@ -328,7 +328,7 @@ Docs: `/docs/vector-guide-score-ergonomics`
 - A search sends its planner settings (`SET LOCAL`) in one round trip, before its statement.
 - Two pgvector stores on one connection are kept apart by `table_prefix`. With the same connection, prefix and registry they share their collections. A store that finds a collection's table owned by another store (same prefix, another registry) throws `VectorQueryException` naming `table_prefix`; it never reuses the table. Set the prefix before the first collection: existing tables keep their names.
 
-Docs: `/docs/vector-configuration`
+Docs: `/docs/vector-configuration`, `/docs/vector-guide-tuning-pgvector`, `/docs/vector-guide-filtering`, `/docs/vector-benchmarks`
 
 ## Qdrant
 
@@ -349,6 +349,8 @@ VECTOR_QDRANT_URL=http://127.0.0.1:6333
 - `insert()` checks the ids, then writes in Qdrant's `insert_only` mode. If another writer adds the same id between the check and the write, the existing point is kept and the duplicate is not reported.
 - `updateMetadata()` is one batch request, not atomic.
 - `collection_prefix` (`VECTOR_QDRANT_COLLECTION_PREFIX`, empty by default) is prepended to every collection and alias name the store creates or reads; `listCollections()` and `listAliases()` return only the names with the prefix, without it. Two Qdrant stores with the same URL and the same prefix share their collections.
+
+Docs: `/docs/vector-guide-qdrant`
 
 ## Build RAG
 
