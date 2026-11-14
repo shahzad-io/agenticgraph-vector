@@ -107,6 +107,7 @@ final class QdrantStore implements AliasStoreContract, VectorStoreContract
             StoreCapability::FilterContains,
             StoreCapability::FilterRange,
             StoreCapability::Aliases,
+            StoreCapability::QueuedIngest,
         );
     }
 

@@ -583,14 +583,17 @@ final class VectorSetRunner
             '- Machine: '.BenchReport::machineLine($report['infrastructure']['machine']),
             "- Embedding calls: {$report['embedding_calls']} (no model, no API key)",
             "- Self-check: {$report['self_check']['queries']} exact searches agree with the ground truth",
+            $report['store']['driver'] === 'qdrant'
+                ? "- Sizes: collection on disk = du of the collection's folder in the container (segments and WAL, allocated blocks); index on disk = the HNSW graph files only (the vectors are not in it), so index sizes of the two stores are not comparable. Memory is the whole Qdrant container, not the index."
+                : '- Sizes: collection on disk = pg_total_relation_size (table, TOAST and indexes); index on disk = pg_indexes_size (the HNSW index holds a copy of the vectors). Memory is the whole Postgres container, not the index.',
             sprintf('- Run time: %.1f minutes', $report['runtime_ms'] / 60000),
             '',
         ];
 
         foreach ($report['builds'] as $build) {
-            $lines[] = sprintf('## Build %s: ingest %.1f s (%.0f rows/s), build %.1f s, size %s', $build['name'], $build['ingest_ms'] / 1000, $build['docs_per_second'], $build['build_ms'] / 1000, $mb($build['sizes']['total_bytes'] ?? null));
+            $lines[] = sprintf('## Build %s: ingest %.1f s (%.0f rows/s), build %.1f s, collection on disk %s', $build['name'], $build['ingest_ms'] / 1000, $build['docs_per_second'], $build['build_ms'] / 1000, $mb($build['sizes']['total_bytes'] ?? null));
             $lines[] = '';
-            $lines[] = "Index: `{$build['index']}`. Index size ".$mb($build['sizes']['index_bytes'] ?? null).'. Memory after the searches: '.($build['memory'] ?? $na).'.';
+            $lines[] = "Index: `{$build['index']}`. Index on disk ".$mb($build['sizes']['index_bytes'] ?? null).'. Container memory after the searches (docker stats, used / container limit): '.($build['memory'] ?? $na).'.';
             $lines[] = '';
 
             if ($build['searches'] !== []) {
