@@ -1,6 +1,7 @@
 {
+    "note": "Recorded 2026-11-14 at search width 80 (rule L9, spec section 15; pgvector's default was 40), all modes in this file at that width. Chunked 2,000 characters with 200 overlap, collapse by parent, overfetch 3. Truncation 24,000 characters, now the dataset default (the width 40 baseline had none; 11,820 chunks instead of 11,850). Voyage rerank-3, 30 candidates, dense and dense+rerank. Candidate recall@30 0.9208 (unchanged). nDCG@10: dense 0.5424 to 0.5381, dense+rerank 0.6814 to 0.6813. 16 of the 200 rerank requests were new.",
     "schema": 1,
-    "created_at": "2026-11-13T15:32:55+00:00",
+    "created_at": "2026-11-14T17:23:43+00:00",
     "dataset": {
         "name": "wixqa-simulated",
         "description": "WixQA Simulated (200 queries) over the Wix KB corpus",
@@ -20,11 +21,11 @@
         "slug": "openai-text-embedding-3-small",
         "dimensions": 1536
     },
-    "truncate": 0,
+    "truncate": 24000,
     "chunk": {
         "size": 2000,
         "overlap": 200,
-        "chunks": 11850,
+        "chunks": 11820,
         "collapse": "parent_id",
         "overfetch": 3
     },
@@ -39,7 +40,7 @@
         "name": "pgvector",
         "driver": "pgvector",
         "engine": "pgvector 0.8.3, Postgres 16.14 (Debian 16.14-1.pgdg12+1) (shared_buffers 4GB, maintenance_work_mem 4GB, max_parallel_maintenance_workers 7)",
-        "index": "CREATE INDEX vcol_00e7b22d97e566d396cb000c5aa41f3e_embedding_idx ON public.vcol_00e7b22d97e566d396cb000c5aa41f3e USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')",
+        "index": "CREATE INDEX vcol_5c90cbd61500158983b400d365656226_embedding_idx ON public.vcol_5c90cbd61500158983b400d365656226 USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')",
         "exact": false,
         "capabilities": [
             "list_ids",
@@ -62,13 +63,13 @@
     },
     "ingest": {
         "documents": 6221,
-        "wall_ms": 48138,
-        "docs_per_second": 129.2,
+        "wall_ms": 47979,
+        "docs_per_second": 129.7,
         "embedding_ms": 0,
         "embedding_calls": 0,
         "embedding_tokens": null,
         "cached": true,
-        "index_rebuild_ms": 1338
+        "index_rebuild_ms": 1413
     },
     "query_embedding": {
         "calls": 200,
@@ -82,14 +83,14 @@
     "modes": {
         "dense": {
             "quality": {
-                "ndcg_at_10": 0.5424028114411859,
+                "ndcg_at_10": 0.5381494850828606,
                 "recall_at_1": 0.3233333333333333,
-                "recall_at_5": 0.6566666666666667,
-                "recall_at_10": 0.7675,
+                "recall_at_5": 0.6591666666666667,
+                "recall_at_10": 0.7575,
                 "hit_at_1": 0.345,
                 "hit_at_5": 0.69,
-                "hit_at_10": 0.79,
-                "mrr_at_10": 0.47971428571428587
+                "hit_at_10": 0.78,
+                "mrr_at_10": 0.4770198412698414
             },
             "candidates": {
                 "recall_at_30": 0.9208333333333334,
@@ -100,27 +101,27 @@
             "concurrency": {
                 "1": {
                     "queries": 200,
-                    "wall_ms": 714,
-                    "qps": 280.3,
-                    "p50_ms": 3.526,
-                    "p95_ms": 4.502,
-                    "p99_ms": 5.141
+                    "wall_ms": 700,
+                    "qps": 285.6,
+                    "p50_ms": 3.461,
+                    "p95_ms": 4.548,
+                    "p99_ms": 4.906
                 },
                 "4": {
                     "queries": 200,
-                    "wall_ms": 177,
-                    "qps": 1129,
-                    "p50_ms": 3.37,
-                    "p95_ms": 4.877,
-                    "p99_ms": 5.435
+                    "wall_ms": 198,
+                    "qps": 1012.1,
+                    "p50_ms": 3.727,
+                    "p95_ms": 5.882,
+                    "p99_ms": 6.746
                 },
                 "8": {
                     "queries": 200,
-                    "wall_ms": 98,
-                    "qps": 2044.8,
-                    "p50_ms": 3.631,
-                    "p95_ms": 5.579,
-                    "p99_ms": 6.591
+                    "wall_ms": 113,
+                    "qps": 1775.2,
+                    "p50_ms": 3.941,
+                    "p95_ms": 6.503,
+                    "p99_ms": 7.34
                 }
             },
             "per_query": {
@@ -148,7 +149,7 @@
                     "simulated-0020": 0.38685280723454163,
                     "simulated-0021": 0,
                     "simulated-0022": 0.6309297535714575,
-                    "simulated-0023": 0.5249810332008933,
+                    "simulated-0023": 0.5437713091520254,
                     "simulated-0024": 0.5,
                     "simulated-0025": 0,
                     "simulated-0026": 0.8503449055347546,
@@ -194,7 +195,7 @@
                     "simulated-0066": 1,
                     "simulated-0067": 0,
                     "simulated-0068": 0.5,
-                    "simulated-0069": 0.6309297535714575,
+                    "simulated-0069": 0.43067655807339306,
                     "simulated-0070": 1,
                     "simulated-0071": 0.5,
                     "simulated-0072": 1,
@@ -217,7 +218,7 @@
                     "simulated-0089": 1,
                     "simulated-0090": 0,
                     "simulated-0091": 1,
-                    "simulated-0092": 0.3010299956639812,
+                    "simulated-0092": 0,
                     "simulated-0093": 0.38685280723454163,
                     "simulated-0094": 0.2890648263178879,
                     "simulated-0095": 1,
@@ -231,7 +232,7 @@
                     "simulated-0103": 0.38685280723454163,
                     "simulated-0104": 0,
                     "simulated-0105": 0.6309297535714575,
-                    "simulated-0106": 0.3010299956639812,
+                    "simulated-0106": 0.2890648263178879,
                     "simulated-0107": 0.5,
                     "simulated-0108": 0,
                     "simulated-0109": 0.17723928678404774,
@@ -308,7 +309,7 @@
                     "simulated-0180": 0.5,
                     "simulated-0181": 1,
                     "simulated-0182": 1,
-                    "simulated-0183": 0.3562071871080222,
+                    "simulated-0183": 0,
                     "simulated-0184": 0,
                     "simulated-0185": 0,
                     "simulated-0186": 1,
@@ -350,7 +351,7 @@
                     "simulated-0020": 1,
                     "simulated-0021": 0,
                     "simulated-0022": 1,
-                    "simulated-0023": 0.5,
+                    "simulated-0023": 1,
                     "simulated-0024": 1,
                     "simulated-0025": 0,
                     "simulated-0026": 1,
@@ -532,14 +533,14 @@
         },
         "dense+rerank": {
             "quality": {
-                "ndcg_at_10": 0.6813710851464498,
+                "ndcg_at_10": 0.6812567158775764,
                 "recall_at_1": 0.4783333333333333,
                 "recall_at_5": 0.7775,
                 "recall_at_10": 0.85,
                 "hit_at_1": 0.515,
                 "hit_at_5": 0.805,
                 "hit_at_10": 0.87,
-                "mrr_at_10": 0.6395992063492063
+                "mrr_at_10": 0.6394801587301587
             },
             "candidates": {
                 "recall_at_30": 0.9208333333333334,
@@ -553,35 +554,35 @@
                 "candidates": 30,
                 "collapse": "after rerank",
                 "candidate_documents_mean": 23.4,
-                "calls": 200,
-                "cached": 0,
-                "p50_ms": 987,
+                "calls": 16,
+                "cached": 184,
+                "p50_ms": 966,
                 "p95_ms": 1609,
                 "units": null,
-                "tokens": 1706403,
+                "tokens": 1707645,
                 "run_units": null,
-                "run_tokens": 1706403,
-                "input_tokens": 1706403,
+                "run_tokens": 146918,
+                "input_tokens": 1707645,
                 "output_tokens": null,
                 "unsplit": 200,
-                "run_input_tokens": 1706403,
+                "run_input_tokens": 146918,
                 "run_output_tokens": null,
-                "run_unsplit": 200
+                "run_unsplit": 16
             },
             "concurrency": [],
             "paired": {
                 "reference": "dense",
                 "ndcg_at_10": {
-                    "mean": 0.13896827370526427,
-                    "low": 0.10283282750898422,
-                    "high": 0.17611864830623628,
+                    "mean": 0.14310723079471596,
+                    "low": 0.10685222252405033,
+                    "high": 0.1811292431749534,
                     "queries": 200,
                     "resamples": 10000
                 },
                 "recall_at_5": {
-                    "mean": 0.12083333333333333,
-                    "low": 0.06250000000000001,
-                    "high": 0.18,
+                    "mean": 0.11833333333333335,
+                    "low": 0.06083333333333333,
+                    "high": 0.17833333333333332,
                     "queries": 200,
                     "resamples": 10000
                 },
@@ -713,7 +714,7 @@
                     "simulated-0115": 1,
                     "simulated-0116": 0.43067655807339306,
                     "simulated-0117": 0.5,
-                    "simulated-0118": 0.3562071871080222,
+                    "simulated-0118": 0.3333333333333333,
                     "simulated-0119": 1,
                     "simulated-0120": 0,
                     "simulated-0121": 1,
@@ -1003,27 +1004,27 @@
     },
     "union": null,
     "resources": {
-        "table_bytes": 113672192,
-        "index_bytes": 97542144,
-        "total_bytes": 211214336,
+        "table_bytes": 113401856,
+        "index_bytes": 97296384,
+        "total_bytes": 210698240,
         "container": "agvector-multistore-postgres-1",
-        "memory_mib_max": 2516,
+        "memory_mib_max": 415,
         "memory_samples": 16,
         "memory_note": null
     },
     "cost": {
         "price_per_1m_tokens": 0.02,
         "ingest": null,
-        "queries": 5.4e-5,
+        "queries": 5.4e-05,
         "rerank": {
             "reranker": "voyage",
             "model": "rerank-3",
             "price_per_1k_searches": null,
             "price_per_1m_tokens": 0.05,
-            "calls": 200,
+            "calls": 16,
             "units": null,
-            "tokens": 1706403,
-            "run": 0.08532,
+            "tokens": 146918,
+            "run": 0.007346,
             "per_query": 0.000427
         }
     },
@@ -1038,5 +1039,5 @@
             "docker": "OrbStack, 16 CPUs, 33670656000 bytes"
         }
     },
-    "runtime_ms": 276944
+    "runtime_ms": 76914
 }
