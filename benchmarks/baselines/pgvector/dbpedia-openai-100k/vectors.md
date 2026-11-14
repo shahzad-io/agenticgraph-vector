@@ -7,11 +7,12 @@
 - Machine: Apple M3 Max, 16 cores, 64 GiB memory; store in Docker (OrbStack, 16 CPUs, 33670656000 bytes)
 - Embedding calls: 0 (no model, no API key)
 - Self-check: 100 exact searches agree with the ground truth
+- Sizes: collection on disk = pg_total_relation_size (table, TOAST and indexes); index on disk = pg_indexes_size (the HNSW index holds a copy of the vectors). Memory is the whole Postgres container, not the index.
 - Run time: 13.9 minutes
 
-## Build m8-ef64: ingest 37.8 s (2647 rows/s), build 67.3 s, size 1,580 MiB
+## Build m8-ef64: ingest 37.8 s (2647 rows/s), build 67.3 s, collection on disk 1,580 MiB
 
-Index: `CREATE INDEX vcol_173521ae17b7224051fa2de6e7e8c2fc_embedding_idx ON public.vcol_173521ae17b7224051fa2de6e7e8c2fc USING hnsw (embedding vector_cosine_ops) WITH (m='8', ef_construction='64')`. Index size 785 MiB. Memory after the searches: 2.422GiB / 31.36GiB.
+Index: `CREATE INDEX vcol_173521ae17b7224051fa2de6e7e8c2fc_embedding_idx ON public.vcol_173521ae17b7224051fa2de6e7e8c2fc USING hnsw (embedding vector_cosine_ops) WITH (m='8', ef_construction='64')`. Index on disk 785 MiB. Container memory after the searches (docker stats, used / container limit): 2.422GiB / 31.36GiB.
 
 | Search | Recall@10 | Recall@100 | p50 ms | p95 ms | p99 ms | QPS c1 | QPS c8 |
 |---|---|---|---|---|---|---|---|
@@ -20,9 +21,9 @@ Index: `CREATE INDEX vcol_173521ae17b7224051fa2de6e7e8c2fc_embedding_idx ON publ
 | ef_search 160 | 0.9669 | 0.9100 | 4.595 | 5.543 | 7.99 | 213.3 | 1163.8 |
 | ef_search 320 | 0.9807 | 0.9550 | 6.445 | 7.702 | 9.093 | 154.3 | 881.4 |
 
-## Build m16-ef64: ingest 84.7 s (1180 rows/s), build 117.5 s, size 1,580 MiB
+## Build m16-ef64: ingest 84.7 s (1180 rows/s), build 117.5 s, collection on disk 1,580 MiB
 
-Index: `CREATE INDEX vcol_0667337b5133bad4dafd96dfd2783638_embedding_idx ON public.vcol_0667337b5133bad4dafd96dfd2783638 USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')`. Index size 785 MiB. Memory after the searches: 2.423GiB / 31.36GiB.
+Index: `CREATE INDEX vcol_0667337b5133bad4dafd96dfd2783638_embedding_idx ON public.vcol_0667337b5133bad4dafd96dfd2783638 USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')`. Index on disk 785 MiB. Container memory after the searches (docker stats, used / container limit): 2.423GiB / 31.36GiB.
 
 | Search | Recall@10 | Recall@100 | p50 ms | p95 ms | p99 ms | QPS c1 | QPS c8 |
 |---|---|---|---|---|---|---|---|
@@ -31,9 +32,9 @@ Index: `CREATE INDEX vcol_0667337b5133bad4dafd96dfd2783638_embedding_idx ON publ
 | ef_search 160 | 0.9878 | 0.9615 | 6.168 | 7.421 | 8.23 | 161.6 | 867.4 |
 | ef_search 320 | 0.9937 | 0.9841 | 9.083 | 11.241 | 13.113 | 109.8 | 654.6 |
 
-## Build m16-ef128: ingest 115.5 s (866 rows/s), build 203.7 s, size 1,580 MiB
+## Build m16-ef128: ingest 115.5 s (866 rows/s), build 203.7 s, collection on disk 1,580 MiB
 
-Index: `CREATE INDEX vcol_0e58f86418412fe3af0440ddda3912d5_embedding_idx ON public.vcol_0e58f86418412fe3af0440ddda3912d5 USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='128')`. Index size 785 MiB. Memory after the searches: 2.424GiB / 31.36GiB.
+Index: `CREATE INDEX vcol_0e58f86418412fe3af0440ddda3912d5_embedding_idx ON public.vcol_0e58f86418412fe3af0440ddda3912d5 USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='128')`. Index on disk 785 MiB. Container memory after the searches (docker stats, used / container limit): 2.424GiB / 31.36GiB.
 
 | Search | Recall@10 | Recall@100 | p50 ms | p95 ms | p99 ms | QPS c1 | QPS c8 |
 |---|---|---|---|---|---|---|---|

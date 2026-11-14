@@ -378,8 +378,8 @@ final class BenchReport
             '',
             '## Resources',
             '',
-            sprintf('- Storage: table %s, indexes %s, total %s', ...array_map(static fn (?int $bytes): string => $bytes === null ? self::NA : "{$bytes} bytes", [$resources['table_bytes'], $resources['index_bytes'], $resources['total_bytes']])),
-            '- Container memory: '.($resources['memory_mib_max'] !== null
+            sprintf('- Storage on disk (pg_table_size, pg_indexes_size, pg_total_relation_size): table %s, indexes %s, total %s', ...array_map(static fn (?int $bytes): string => $bytes === null ? self::NA : "{$bytes} bytes", [$resources['table_bytes'], $resources['index_bytes'], $resources['total_bytes']])),
+            '- Container memory (whole container, docker stats every 2 s over the run): '.($resources['memory_mib_max'] !== null
                 ? sprintf('max %.1f MiB over %d samples (%s)', $resources['memory_mib_max'], $resources['memory_samples'], $resources['container'])
                 : 'not sampled ('.$resources['memory_note'].')'),
             '- Infrastructure: PHP '.$report['infrastructure']['php'].(isset($report['infrastructure']['os']) ? ", {$report['infrastructure']['os']}" : ''),

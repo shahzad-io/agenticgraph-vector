@@ -7,11 +7,12 @@
 - Machine: Apple M3 Max, 16 cores, 64 GiB memory; store in Docker (OrbStack, 16 CPUs, 33670656000 bytes)
 - Embedding calls: 0 (no model, no API key)
 - Self-check: 100 exact searches agree with the ground truth
+- Sizes: collection on disk = du of the collection's folder in the container (segments and WAL, allocated blocks); index on disk = the HNSW graph files only (the vectors are not in it), so index sizes of the two stores are not comparable. Memory is the whole Qdrant container, not the index.
 - Run time: 4.5 minutes
 
-## Build m8-ef64: ingest 14.5 s (6901 rows/s), build 2.0 s, size 3,510 MiB
+## Build m8-ef64: ingest 14.5 s (6901 rows/s), build 2.0 s, collection on disk 3,510 MiB
 
-Index: `hnsw m=8 ef_construct=64 full_scan_threshold=10000, 99500 of 100000 points indexed`. Index size 10 MiB. Memory after the searches: 316MiB / 31.36GiB.
+Index: `hnsw m=8 ef_construct=64 full_scan_threshold=10000, 99500 of 100000 points indexed`. Index on disk 10 MiB. Container memory after the searches (docker stats, used / container limit): 316MiB / 31.36GiB.
 
 | Search | Recall@10 | Recall@100 | p50 ms | p95 ms | p99 ms | QPS c1 | QPS c8 |
 |---|---|---|---|---|---|---|---|
@@ -20,9 +21,9 @@ Index: `hnsw m=8 ef_construct=64 full_scan_threshold=10000, 99500 of 100000 poin
 | hnsw_ef 160 | 0.9924 | 0.9853 | 5.572 | 8.748 | 10.341 | 167.7 | 751.4 |
 | hnsw_ef 320 | 0.9973 | 0.9948 | 6.749 | 9.914 | 14.244 | 136.8 | 500.4 |
 
-## Build m16-ef64: ingest 14.7 s (6805 rows/s), build 2.0 s, size 3,519 MiB
+## Build m16-ef64: ingest 14.7 s (6805 rows/s), build 2.0 s, collection on disk 3,519 MiB
 
-Index: `hnsw m=16 ef_construct=64 full_scan_threshold=10000, 99000 of 100000 points indexed`. Index size 14 MiB. Memory after the searches: 327.8MiB / 31.36GiB.
+Index: `hnsw m=16 ef_construct=64 full_scan_threshold=10000, 99000 of 100000 points indexed`. Index on disk 14 MiB. Container memory after the searches (docker stats, used / container limit): 327.8MiB / 31.36GiB.
 
 | Search | Recall@10 | Recall@100 | p50 ms | p95 ms | p99 ms | QPS c1 | QPS c8 |
 |---|---|---|---|---|---|---|---|
@@ -31,9 +32,9 @@ Index: `hnsw m=16 ef_construct=64 full_scan_threshold=10000, 99000 of 100000 poi
 | hnsw_ef 160 | 0.9979 | 0.9955 | 6.733 | 9.452 | 11.05 | 144.1 | 528.1 |
 | hnsw_ef 320 | 0.9997 | 0.9988 | 8.65 | 11.977 | 14.434 | 112.4 | 312.5 |
 
-## Build m16-ef128: ingest 18.0 s (5552 rows/s), build 6.1 s, size 2,887 MiB
+## Build m16-ef128: ingest 18.0 s (5552 rows/s), build 6.1 s, collection on disk 2,887 MiB
 
-Index: `hnsw m=16 ef_construct=128 full_scan_threshold=10000, 100000 of 100000 points indexed`. Index size 11 MiB. Memory after the searches: 322MiB / 31.36GiB.
+Index: `hnsw m=16 ef_construct=128 full_scan_threshold=10000, 100000 of 100000 points indexed`. Index on disk 11 MiB. Container memory after the searches (docker stats, used / container limit): 322MiB / 31.36GiB.
 
 | Search | Recall@10 | Recall@100 | p50 ms | p95 ms | p99 ms | QPS c1 | QPS c8 |
 |---|---|---|---|---|---|---|---|

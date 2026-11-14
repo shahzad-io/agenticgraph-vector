@@ -63,8 +63,8 @@ Query embedding (one client, from cache): p50 498 ms, p95 544 ms, p99 784 ms; 20
 
 ## Resources
 
-- Storage: table 113393664 bytes, indexes 97304576 bytes, total 210698240 bytes
-- Container memory: max 413.6 MiB over 16 samples (agvector-multistore-postgres-1)
+- Storage on disk (pg_table_size, pg_indexes_size, pg_total_relation_size): table 113393664 bytes, indexes 97304576 bytes, total 210698240 bytes
+- Container memory (whole container, docker stats every 2 s over the run): max 413.6 MiB over 16 samples (agvector-multistore-postgres-1)
 - Infrastructure: PHP 8.4.23, Darwin 24.6.0
 - Machine: Apple M3 Max, 16 cores, 64 GiB memory; store in Docker (OrbStack, 16 CPUs, 33670656000 bytes)
 

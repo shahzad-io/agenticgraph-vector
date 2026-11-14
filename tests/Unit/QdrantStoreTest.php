@@ -93,7 +93,7 @@ function pid(string|int $id): string
 it('declares exactly the capabilities of B2', function () {
     expect(qdrantStore()->capabilities()->capabilities)->toBe([
         StoreCapability::ListIds, StoreCapability::UpdateMetadata, StoreCapability::DeleteByFilter,
-        StoreCapability::FilterNot, StoreCapability::FilterContains, StoreCapability::FilterRange, StoreCapability::Aliases,
+        StoreCapability::FilterNot, StoreCapability::FilterContains, StoreCapability::FilterRange, StoreCapability::Aliases, StoreCapability::QueuedIngest,
     ]);
 });
 

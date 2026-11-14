@@ -7,11 +7,12 @@
 - Machine: Apple M3 Max, 16 cores, 64 GiB memory; store in Docker (OrbStack, 16 CPUs, 33670656000 bytes)
 - Embedding calls: 0 (no model, no API key)
 - Self-check: 100 exact searches agree with the ground truth
+- Sizes: collection on disk = du of the collection's folder in the container (segments and WAL, allocated blocks); index on disk = the HNSW graph files only (the vectors are not in it), so index sizes of the two stores are not comparable. Memory is the whole Qdrant container, not the index.
 - Run time: 1.3 minutes
 
-## Build store default: ingest 17.5 s (5722 rows/s), build 5.1 s, size 2,754 MiB
+## Build store default: ingest 17.5 s (5722 rows/s), build 5.1 s, collection on disk 2,754 MiB
 
-Index: `hnsw m=16 ef_construct=100 full_scan_threshold=10000, 99700 of 100000 points indexed`. Index size 10 MiB. Memory after the searches: 317.9MiB / 31.36GiB.
+Index: `hnsw m=16 ef_construct=100 full_scan_threshold=10000, 99700 of 100000 points indexed`. Index on disk 10 MiB. Container memory after the searches (docker stats, used / container limit): 317.9MiB / 31.36GiB.
 
 ## Filter tenant = t50 (0.5 of the rows, 50000 rows)
 

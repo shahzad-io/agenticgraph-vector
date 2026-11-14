@@ -7,11 +7,12 @@
 - Machine: Apple M3 Max, 16 cores, 64 GiB memory; store in Docker (OrbStack, 16 CPUs, 33670656000 bytes)
 - Embedding calls: 0 (no model, no API key)
 - Self-check: 100 exact searches agree with the ground truth
+- Sizes: collection on disk = pg_total_relation_size (table, TOAST and indexes); index on disk = pg_indexes_size (the HNSW index holds a copy of the vectors). Memory is the whole Postgres container, not the index.
 - Run time: 2.3 minutes
 
-## Build store default: ingest 84.4 s (1186 rows/s), build 20.7 s, size 1,588 MiB
+## Build store default: ingest 84.4 s (1186 rows/s), build 20.7 s, collection on disk 1,588 MiB
 
-Index: `CREATE INDEX vcol_2784251c802bc0d46097c386a56a72eb_embedding_idx ON public.vcol_2784251c802bc0d46097c386a56a72eb USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')`. Index size 788 MiB. Memory after the searches: 2.44GiB / 31.36GiB.
+Index: `CREATE INDEX vcol_2784251c802bc0d46097c386a56a72eb_embedding_idx ON public.vcol_2784251c802bc0d46097c386a56a72eb USING hnsw (embedding vector_cosine_ops) WITH (m='16', ef_construction='64')`. Index on disk 788 MiB. Container memory after the searches (docker stats, used / container limit): 2.44GiB / 31.36GiB.
 
 ## Filter tenant = t50 (0.5 of the rows, 50000 rows)
 

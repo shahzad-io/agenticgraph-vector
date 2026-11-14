@@ -25,7 +25,7 @@ The three packages are released together:
 | Package | Version | Works with |
 |---|---|---|
 | `agenticgraph/agenticgraph` (core) | 0.2.x | PHP 8.3+, Laravel 12.61.1+ or 13.12+, Prism 0.102 |
-| `agenticgraph/vector` | 0.1.x | PHP 8.3+, Laravel 12.61.1+ or 13.12+, Prism 0.102, PostgreSQL with pgvector (0.8+ for iterative scan). Core 0.2.x is optional (tracing) |
+| `agenticgraph/vector` | 0.2.x | PHP 8.3+, Laravel 12.61.1+ or 13.12+, Prism 0.102, PostgreSQL with pgvector (0.8+ for iterative scan). Core 0.2.x is optional (tracing) |
 | `@agenticgraph/stream-client`, `@agenticgraph/stream-react`, `@agenticgraph/stream-vue` | 0.1.x | Core 0.2.x on the server (stream wire contract v1.1; core 0.2.1 and client 0.1.1 together for custom events and error details), Node.js 18+, React 18+ or Vue 3.4+ for the adapters |
 
 ## Installation
@@ -107,7 +107,7 @@ $keyword = $store->capabilities()->supports(\AgenticGraph\Vector\Enums\StoreCapa
 $store->createCollection(new CollectionDefinition('articles', keyword: $keyword));
 ```
 
-On a large table, a filter that keeps about 1% of the rows has no fast path in pgvector: exact scoring grows with the matches (about 37 ms for 10,000 rows of 1,536 dimensions) and the vector index drops about 99 of every 100 rows it visits.
+On a large table, a filter that keeps about 1% of the rows has no fast path in pgvector: exact scoring grows with the matches, and the vector index drops most of the rows it visits.
 
 ## Qdrant
 
@@ -119,7 +119,7 @@ VECTOR_QDRANT_API_KEY=
 
 Other keys of `stores.qdrant`: `VECTOR_QDRANT_TIMEOUT` (10 s), `VECTOR_QDRANT_CONNECT_TIMEOUT` (3 s), `VECTOR_QDRANT_BATCH_SIZE` (100), `VECTOR_QDRANT_COLLECTION_PREFIX` (empty). The driver uses the REST API through the Laravel HTTP client, with no SDK and no automatic retry.
 
-Capabilities: `ListIds`, `UpdateMetadata`, `DeleteByFilter`, `FilterNot`, `FilterContains`, `FilterRange`, `Aliases`. Declare every field you filter on:
+Capabilities: `ListIds`, `UpdateMetadata`, `DeleteByFilter`, `FilterNot`, `FilterContains`, `FilterRange`, `Aliases`, `QueuedIngest`. Declare every field you filter on:
 
 ```php
 new CollectionDefinition('articles', dimensions: 1536, filterable: ['lang' => 'keyword', 'price' => 'float']);
