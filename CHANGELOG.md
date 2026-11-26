@@ -2,6 +2,13 @@
 
 All notable changes to `agenticgraph/vector` will be documented in this file.
 
+## 0.2.1 - unreleased
+
+### Changed
+
+- **Boost skill:** `docs-sha` points to the docs of this release.
+- **README:** the compatibility table lists core 0.4.x, stream client 0.2.x and vector 0.2.x.
+
 ## 0.2.0 - 2026-11-15
 
 Several stores behind one contract, and a Qdrant driver.

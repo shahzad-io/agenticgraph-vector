@@ -24,9 +24,9 @@ The three packages are released together:
 
 | Package | Version | Works with |
 |---|---|---|
-| `agenticgraph/agenticgraph` (core) | 0.2.x | PHP 8.3+, Laravel 12.61.1+ or 13.12+, Prism 0.102 |
-| `agenticgraph/vector` | 0.2.x | PHP 8.3+, Laravel 12.61.1+ or 13.12+, Prism 0.102, PostgreSQL with pgvector (0.8+ for iterative scan). Core 0.2.x is optional (tracing) |
-| `@agenticgraph/stream-client`, `@agenticgraph/stream-react`, `@agenticgraph/stream-vue` | 0.1.x | Core 0.2.x on the server (stream wire contract v1.1; core 0.2.1 and client 0.1.1 together for custom events and error details), Node.js 18+, React 18+ or Vue 3.4+ for the adapters |
+| `agenticgraph/agenticgraph` (core) | 0.4.x | PHP 8.3+, Laravel 12.61.1+ or 13.12+, Prism 0.102 |
+| `agenticgraph/vector` | 0.2.x | PHP 8.3+, Laravel 12.61.1+ or 13.12+, Prism 0.102, PostgreSQL with pgvector (0.8+ for iterative scan). Core 0.2.x, 0.3.x or 0.4.x is optional (tracing) |
+| `@agenticgraph/stream-client`, `@agenticgraph/stream-react`, `@agenticgraph/stream-vue` | 0.2.x | Core 0.3.x or 0.4.x on the server (stream wire contract v1.1; `BroadcastTransport` needs core 0.3.0 or later; `SSETransport` also works with core 0.2.x; the `skipped` reason of core 0.4.0 is in the types from client 0.2.1), Node.js 18+, React 18+ or Vue 3.4+ for the adapters |
 
 ## Installation
 
