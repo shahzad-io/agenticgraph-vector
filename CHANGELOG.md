@@ -2,7 +2,7 @@
 
 All notable changes to `agenticgraph/vector` will be documented in this file.
 
-## 0.2.1 - unreleased
+## 0.2.1 - 2026-11-27
 
 ### Changed
 
