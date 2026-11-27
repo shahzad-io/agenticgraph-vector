@@ -19,7 +19,14 @@ vendor/bin/phpstan analyse
 vendor/bin/pint --test
 ```
 
-PHP 8.3+. The pgvector and provider integration tests run only when you turn them on: `VECTOR_PGVECTOR_INTEGRATION=true` (PostgreSQL with pgvector on 127.0.0.1:5433) and `VECTOR_PRISM_INTEGRATION=true` with `OPENAI_API_KEY`, `COHERE_API_KEY` and `VOYAGE_API_KEY`. `BoostSkillsDriftTest` reads the core package; set `AGENTICGRAPH_CORE_PATH` when core is not next to this repo.
+PHP 8.3+. `docker compose up -d` starts the test databases.
+
+- The pgvector tests run whenever the test database answers (default 127.0.0.1:5433; the `VECTOR_PG_*` variables change the connection). `VECTOR_PGVECTOR_INTEGRATION=false` turns them off.
+- The Qdrant tests run whenever Qdrant answers at `VECTOR_QDRANT_URL`. When that is not set, they use 127.0.0.1 on `VECTOR_QDRANT_PORT` (default 16333). `VECTOR_QDRANT_INTEGRATION=false` turns them off.
+- The provider integration tests run only when you turn them on: `VECTOR_PRISM_INTEGRATION=true` with `OPENAI_API_KEY`, `COHERE_API_KEY` and `VOYAGE_API_KEY`.
+- The benchmark tests in `tests/Benchmark` run only with `VECTOR_BENCHMARK=true`. They need pgvector, the exported dataset (see [benchmarks/README.md](benchmarks/README.md)) and Ollama with `mxbai-embed-large` pulled. `OLLAMA_URL` sets the Ollama address (default `http://127.0.0.1:11434`).
+
+`BoostSkillsDriftTest` reads the core package; set `AGENTICGRAPH_CORE_PATH` when core is not next to this repo.
 
 ## Rules for code and text
 
