@@ -9,6 +9,8 @@ on:
       - 'phpunit.xml.dist'
       - 'composer.json'
       - 'composer.lock'
+      - 'resources/boost/**'
+      - 'README.md'
       - 'docker-compose.yml'
 
 concurrency:
