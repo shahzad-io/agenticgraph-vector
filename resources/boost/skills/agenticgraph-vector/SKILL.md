@@ -5,7 +5,7 @@ description: "Use AgenticGraph vector search: named stores and configuration, th
 
 # AgenticGraph Vector
 
-docs-sha: 00f8a70
+docs-sha: 92afece
 
 Condensed from the AgenticGraph docs (`/docs/vector-...` paths below) at that commit. When a detail here and the package source disagree, the source wins.
 
